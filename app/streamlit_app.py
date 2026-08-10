@@ -102,7 +102,7 @@ def _persist_kb_sessions() -> None:
 
 def _load_persisted_state() -> None:
     """从磁盘恢复关键状态（启动时调用一次，仅在 session_state 缺失时填充）。"""
-    from edu_agent.workflows.study_plan.schemas import StudentInput
+    from edu_agent.workflows.study_plan.schemas import DecompositionResult, StudentInput
 
     # 学习计划 + 学生输入
     if "study_plan_result" not in st.session_state:
@@ -110,7 +110,14 @@ def _load_persisted_state() -> None:
         if isinstance(payload, dict):
             result = payload.get("result")
             student_input = payload.get("student_input")
-            if isinstance(result, dict) and isinstance(student_input, StudentInput):
+            # 结构校验：旧版本数据（如 practice_directions 改名前的）反序列化会回落成
+            # 普通 dict，workbench 无法访问 .prerequisite_concepts 等属性 → 不恢复。
+            decomposition = result.get("decomposition") if isinstance(result, dict) else None
+            if (
+                isinstance(result, dict)
+                and isinstance(decomposition, DecompositionResult)
+                and isinstance(student_input, StudentInput)
+            ):
                 st.session_state["study_plan_result"] = result
                 st.session_state["student_input"] = student_input
                 st.session_state.setdefault("app_screen", "workbench")
