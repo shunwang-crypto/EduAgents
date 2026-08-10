@@ -54,7 +54,7 @@ def build_knowledge_map(
 
     prerequisite_items = _unique_items(decomposition.prerequisite_concepts)
     core_items = _unique_items(decomposition.core_concepts)
-    practice_items = _unique_items(decomposition.practice_directions)
+    application_items = _unique_items(decomposition.application_directions)
     prerequisite_titles = [title for title, _ in prerequisite_items]
     core_titles = [title for title, _ in core_items]
     stages = decomposition.stage_suggestions or ["基础准备", "核心学习", "综合实践"]
@@ -68,7 +68,7 @@ def build_knowledge_map(
         stage: str,
         prerequisites: list[str],
         objective: str,
-        practice: str,
+        application: str,
         check: str,
     ) -> None:
         nonlocal node_index
@@ -85,7 +85,7 @@ def build_knowledge_map(
                 estimated_minutes=minutes,
                 stage=stage,
                 learning_objective=objective,
-                practice_task=practice,
+                application_task=application,
                 check_method=check,
             )
         )
@@ -101,8 +101,8 @@ def build_knowledge_map(
             stage=_clean_title(stages[0]),
             prerequisites=[],
             objective=f"能用自己的话说明「{title}」并完成一个最小示例。",
-            practice=f"整理「{title}」的 3 条核心笔记，并完成一个小练习。",
-            check=f"不看资料解释「{title}」，并提交练习结果。",
+            application=f"整理「{title}」的 3 条核心笔记，并完成一个最小应用案例。",
+            check=f"不看资料解释「{title}」，并提交案例结果。",
         )
 
     for index, (title, summary) in enumerate(core_items):
@@ -116,11 +116,11 @@ def build_knowledge_map(
             stage=stage,
             prerequisites=prerequisite_titles[:3],
             objective=f"能解释「{title}」的核心原理，并在学习目标场景中正确使用。",
-            practice=f"完成一个直接应用「{title}」的案例或计算任务。",
+            application=f"完成一个直接应用「{title}」的案例或计算任务。",
             check=f"提交案例结果，并说明「{title}」在其中解决了什么问题。",
         )
 
-    for index, (title, summary) in enumerate(practice_items):
+    for index, (title, summary) in enumerate(application_items):
         stage = _clean_title(stages[min(index + 1, len(stages) - 1)])
         add_node(
             title=title,
@@ -131,7 +131,7 @@ def build_knowledge_map(
             stage=stage,
             prerequisites=core_titles[:4],
             objective=f"独立完成「{title}」并留下可检查的学习产出。",
-            practice=summary,
+            application=summary,
             check="提交作品、关键步骤说明和一条复盘记录。",
         )
 
@@ -145,7 +145,7 @@ def build_knowledge_map(
             stage="核心学习",
             prerequisites=[],
             objective=f"能说明 {student_input.topic} 的核心概念和使用场景。",
-            practice=f"完成一个与 {student_input.topic} 直接相关的小案例。",
+            application=f"完成一个与 {student_input.topic} 直接相关的小案例。",
             check="提交案例结果并说明关键步骤。",
         )
 

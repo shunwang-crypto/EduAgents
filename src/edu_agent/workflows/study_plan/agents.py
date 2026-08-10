@@ -55,7 +55,7 @@ def _fallback_decomposition(
     topic = analysis.topic or student_input.topic
     prerequisites = analysis.prerequisites or [
         f"{topic} 相关术语和基本概念",
-        "准备可执行的练习环境和记录模板",
+        "准备可运行的学习环境",
     ]
     suffix = f"（降级生成：{reason}）" if reason else ""
 
@@ -69,7 +69,7 @@ def _fallback_decomposition(
         learning_sequence=[
             "先补齐前置知识并确认学习环境可用",
             f"再学习 {topic} 的核心概念和最小可运行示例",
-            "随后按阶段完成练习、复盘问题并迭代产出",
+            "随后按阶段完成应用案例、复盘问题并迭代产出",
             f"最后完成一个贴近目标的 {topic} 综合任务",
         ],
         difficulty_points=[
@@ -79,10 +79,10 @@ def _fallback_decomposition(
         ],
         stage_suggestions=[
             f"基础准备阶段：补齐 {topic} 前置知识并跑通环境",
-            f"核心学习阶段：围绕 {topic} 主流程完成小练习",
+            f"核心学习阶段：围绕 {topic} 主流程完成最小应用案例",
             "综合产出阶段：完成最终作品、复盘薄弱点并整理验收记录",
         ],
-        practice_directions=[
+        application_directions=[
             f"围绕 {topic} 制作一份概念卡片和错误清单",
             f"完成一个能体现学习目标的 {topic} 小案例",
             "每天保留一条可检查产出，例如笔记、代码、截图或讲解录音",
@@ -279,11 +279,14 @@ def planner_agent(
     decomposition: DecompositionResult | None = None,
     evaluated_research: EvaluatedResearchResult | None = None,
     knowledge_context: str = "无",
+    learner_context: str = "",
+    adaptive_instructions: str = "",
 ) -> DraftPlan:
     """
     学习规划 Agent：
     使用 LangChain LLM 生成 Markdown 学习计划。
     knowledge_context：来自已导入知识库的参考资料文本（命中块拼接），可为"无"。
+    learner_context / adaptive_instructions：AdaptiveService 产出的画像上下文与教学指令。
     """
 
     from langchain_core.prompts import ChatPromptTemplate
@@ -305,6 +308,8 @@ def planner_agent(
             "research": model_to_text(research),
             "evaluated_research": model_to_text(evaluated_research),
             "knowledge_context": knowledge_context or "无",
+            "learner_context": learner_context or "（暂无学习者上下文，按通用水平规划）",
+            "adaptive_instructions": adaptive_instructions or "按学生当前状态安排学习顺序与重点。",
         }
     )
     return DraftPlan(plan_markdown=normalize_markdown_output(response))

@@ -26,10 +26,10 @@ def _fallback_answer(question: str, reason: Exception) -> PlanChatAnswer:
         answer_markdown=(
             f"暂时无法完成模型回答。你可以先依据当前学习计划拆解问题：\n\n"
             f"1. 明确问题中的具体知识点；\n2. 对照计划中的学习任务和检查方式；\n"
-            f"3. 完成一个最小练习并记录结果。\n\n问题：{question}\n\n原因：{reason}"
+            f"3. 完成一个最小应用案例并记录结果。\n\n问题：{question}\n\n原因：{reason}"
         ),
         citations=[],
-        suggested_questions=["这个问题对应计划中的哪一天？", "给我一个最小练习。", "如何检查我是否学会？"],
+        suggested_questions=["这个问题对应计划中的哪一天？", "这个知识点需要补哪些前置？", "如何检查我是否学会？"],
         plan_change_suggested=False,
     )
 
@@ -41,6 +41,7 @@ def answer_plan_question(
     history: List[ChatTurn] | None = None,
     selected_topic: KnowledgeNode | None = None,
     resources: List[EvaluatedResource] | None = None,
+    learner_context: str = "",
 ) -> PlanChatAnswer:
     history = history or []
     resources = resources or []
@@ -80,6 +81,7 @@ def answer_plan_question(
                 "resources": json.dumps(
                     resource_payload, ensure_ascii=False, indent=2
                 ),
+                "learner_context": learner_context or "（暂无学习者上下文，按通用水平回答）",
                 "question": question,
             },
             get_llm(temperature=0.3),

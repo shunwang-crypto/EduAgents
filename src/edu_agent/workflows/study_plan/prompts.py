@@ -176,6 +176,14 @@ PLANNER_PROMPT = """
 
 {knowledge_context}
 
+学习者上下文（来自外部 LearnerState，用于安排顺序、跳过已掌握、补前置）：
+
+{learner_context}
+
+自适应教学指令（必须遵守，用于控制计划节奏与重点）：
+
+{adaptive_instructions}
+
 请生成一份 Markdown 格式的学习规划。
 
 学习规划必须严格使用以下结构和标题，不要新增同级主章节：

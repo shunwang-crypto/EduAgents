@@ -39,7 +39,7 @@ class DecompositionResult(BaseModel):
     learning_sequence: List[str] = Field(description="推荐学习顺序")
     difficulty_points: List[str] = Field(description="学习难点")
     stage_suggestions: List[str] = Field(description="阶段划分建议")
-    practice_directions: List[str] = Field(description="推荐实践方向")
+    application_directions: List[str] = Field(description="推荐应用/产出方向（案例、项目等）")
 
 
 class KnowledgeNode(BaseModel):
@@ -53,7 +53,7 @@ class KnowledgeNode(BaseModel):
     estimated_minutes: int = Field(ge=10, le=600, description="建议学习时间，单位：分钟")
     stage: str = Field(description="所属学习阶段")
     learning_objective: str = Field(description="可检查的学习目标")
-    practice_task: str = Field(description="建议实践任务")
+    application_task: str = Field(description="建议应用/产出任务（案例或小项目）")
     check_method: str = Field(description="完成检查方式")
 
 
@@ -84,14 +84,6 @@ class EvaluatedResearchResult(BaseModel):
 
 class DraftPlan(BaseModel):
     plan_markdown: str = Field(description="初版 Markdown 学习计划")
-
-
-class PracticePlan(BaseModel):
-    practice_summary: str = Field(description="练习设计摘要")
-    daily_practice_tasks: List[str] = Field(description="每日练习任务")
-    stage_check_tasks: List[str] = Field(description="阶段检查任务")
-    final_project: str = Field(description="最终项目或综合任务")
-    reflection_questions: List[str] = Field(description="复盘反思问题")
 
 
 class PlanValidationResult(BaseModel):

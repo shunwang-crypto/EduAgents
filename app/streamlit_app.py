@@ -100,18 +100,8 @@ def _persist_kb_sessions() -> None:
     app_state_store.save("kb_sessions", dict(sessions))
 
 
-def _persist_profile() -> None:
-    """把学生画像落到 data/student_profile.json。"""
-    profile = st.session_state.get("student_profile")
-    if profile is None:
-        app_state_store.save("student_profile", None)
-        return
-    app_state_store.save("student_profile", profile)
-
-
 def _load_persisted_state() -> None:
     """从磁盘恢复关键状态（启动时调用一次，仅在 session_state 缺失时填充）。"""
-    from edu_agent.core.student_profile import StudentProfile
     from edu_agent.workflows.study_plan.schemas import StudentInput
 
     # 学习计划 + 学生输入
@@ -124,12 +114,6 @@ def _load_persisted_state() -> None:
                 st.session_state["study_plan_result"] = result
                 st.session_state["student_input"] = student_input
                 st.session_state.setdefault("app_screen", "workbench")
-
-    # 学生画像
-    if "student_profile" not in st.session_state:
-        profile = app_state_store.load("student_profile")
-        if isinstance(profile, StudentProfile):
-            st.session_state["student_profile"] = profile
 
     # 多会话历史
     if "kb_sessions" not in st.session_state:
@@ -236,8 +220,24 @@ def _render_form() -> bool:
         )
 
         try:
+            # 自适应上下文：读 LearnerState → 决策 → 注入 Planner（画像不可用时为空）
+            from edu_agent.adaptive.service import prepare_adaptive_context
+
+            try:
+                _ctx, _dec, plan_ctx = prepare_adaptive_context(
+                    task_type="study_plan", query=topic.strip()
+                )
+                plan_learner_context = plan_ctx.get("learner_context", "")
+                plan_adaptive_instructions = plan_ctx.get("adaptive_instructions", "")
+            except Exception:  # noqa: BLE001
+                plan_learner_context, plan_adaptive_instructions = "", ""
+
             with st.spinner("正在生成学习规划..."):
-                result = run_study_plan_workflow(student_input)
+                result = run_study_plan_workflow(
+                    student_input,
+                    learner_context=plan_learner_context,
+                    adaptive_instructions=plan_adaptive_instructions,
+                )
         except Exception as exc:  # noqa: BLE001 - UI should show a friendly error
             st.error(f"生成失败：{exc}")
             return False
@@ -367,7 +367,7 @@ def _render_learning_overview(
             task_col, check_col = st.columns(2, gap="large")
             with task_col:
                 st.markdown("**实践任务**")
-                st.write(current.practice_task)
+                st.write(current.application_task)
             with check_col:
                 st.markdown("**完成检查**")
                 st.write(current.check_method)
@@ -476,8 +476,8 @@ def _render_generated_topic_detail(detail: TopicDetail) -> None:
     with st.container(border=True):
         st.markdown(f"### {detail.title}")
         st.write(detail.learning_objective)
-        explain_tab, example_tab, practice_tab, resource_tab = st.tabs(
-            ["核心讲解", "示例", "练习与检查", "参考与追问"]
+        explain_tab, example_tab, check_tab, resource_tab = st.tabs(
+            ["核心讲解", "示例", "检查与下一步", "参考与追问"]
         )
         with explain_tab:
             st.markdown(detail.explanation_markdown)
@@ -485,11 +485,11 @@ def _render_generated_topic_detail(detail: TopicDetail) -> None:
             st.markdown(detail.example_markdown)
             st.markdown("#### 常见错误")
             st.markdown(_list_to_markdown(detail.common_mistakes))
-        with practice_tab:
-            st.markdown("#### 练习任务")
-            st.markdown(_list_to_markdown(detail.exercises))
+        with check_tab:
             st.markdown("#### 完成检查")
             st.markdown(_list_to_markdown(detail.completion_checks))
+            st.markdown("#### 下一步学习建议")
+            st.markdown(_list_to_markdown(detail.next_learning_suggestions))
         with resource_tab:
             st.markdown("#### 参考资源")
             st.markdown(_list_to_markdown(detail.resource_urls))
@@ -581,7 +581,7 @@ def _render_knowledge_map(
                 st.markdown(_list_to_markdown(selected.prerequisites))
             with task_col:
                 st.markdown("**实践任务**")
-                st.write(selected.practice_task)
+                st.write(selected.application_task)
                 st.markdown("**完成检查**")
                 st.write(selected.check_method)
 
@@ -606,11 +606,35 @@ def _render_knowledge_map(
 
     if tutor_clicked:
         try:
+            # 自适应上下文：按节点标题映射 KC → 决策 → 注入讲解 prompt
+            from edu_agent.adaptive.service import decision_summary, prepare_adaptive_context
+            from edu_agent.domain.kc_graph import get_course
+
+            course = get_course(_learner_state_bundle().course_id)
+            kc_match = course.find_kc_by_title(selected.title) if course else None
+            target_kc = kc_match.kc_id if kc_match else selected.title
+            _emit_event("EXPLANATION_REQUESTED", kc_id=target_kc)
+            try:
+                _ctx, _dec, tutor_prompt_ctx = prepare_adaptive_context(
+                    task_type="topic_tutor",
+                    target_kc=target_kc,
+                )
+                learner_context = tutor_prompt_ctx.get("learner_context", "")
+                adaptive_instructions = tutor_prompt_ctx.get("adaptive_instructions", "")
+                decision_summary_text = "\n".join(
+                    f"- {k}: {v}" for k, v in decision_summary(_dec).items() if k != "explain"
+                )
+            except Exception:  # noqa: BLE001
+                learner_context, adaptive_instructions, decision_summary_text = "", "", ""
+
             with st.spinner(f"正在生成「{selected.title}」专题讲解..."):
                 topic_detail = run_topic_tutor_workflow(
                     student_input=student_input,
                     knowledge_node=selected,
                     resources=result["evaluated_research"].resources,
+                    learner_context=learner_context,
+                    adaptive_instructions=adaptive_instructions,
+                    adaptive_decision_summary=decision_summary_text,
                 )
             st.session_state.setdefault("topic_details", {})[
                 selected.id
@@ -620,219 +644,113 @@ def _render_knowledge_map(
 
 
 # ---------------------------------------------------------------------------
-# 自适应练习看板（掌握度 + 一轮多题 + 多维展示）
+# 学习画像（Learner State 只读展示：数据来自 LearnerStateProvider，不在此修改画像）
 # ---------------------------------------------------------------------------
 
 
-def _mastery_state() -> dict:
-    """掌握度状态：session_state + 持久化 data/mastery.json。"""
-    if "mastery" not in st.session_state:
-        st.session_state["mastery"] = app_state_store.load("mastery", default={}) or {}
-    return st.session_state["mastery"]
+def _learner_state_bundle():
+    """读取 LearnerStateBundle（配置 mock/remote），失败返回空 bundle 不中断。"""
+    from edu_agent.adaptive.service import load_bundle
+
+    try:
+        return load_bundle()
+    except Exception:  # noqa: BLE001 - 画像服务不可用时前端仍可用
+        from edu_agent.integrations.learner_state.schemas import LearnerStateBundle
+
+        return LearnerStateBundle()
 
 
-def _render_radar_svg(labels: list, values: list, target: list, max_value: float = 1.0) -> str:
-    """宏观维度雷达图（小红书学科诊断风格）：蓝色实线=当前，橙色虚线=达标参考。"""
-    import math as _math
+def _render_learner_state_panel(bundle=None) -> None:
+    """只读展示学习者画像：当前课程/目标/进度/掌握度/能力/误解/偏好/版本。"""
+    from edu_agent.domain.kc_graph import get_course
+    from edu_agent.integrations.learner_state.schemas import LearnerStateBundle
 
-    n = len(labels)
-    cx, cy = 180, 180
-    max_r = 110
-    levels = [0.25, 0.5, 0.75, 1.0]
+    bundle = bundle or _learner_state_bundle()
+    course_state = bundle.course_state
+    global_state = bundle.global_state
+    goal = bundle.active_goal
 
-    # 网格圈
-    grid = ""
-    for lvl in levels:
-        pts = []
-        for i in range(n):
-            angle = 2 * _math.pi * i / n - _math.pi / 2
-            x = cx + max_r * lvl * _math.cos(angle)
-            y = cy + max_r * lvl * _math.sin(angle)
-            pts.append(f"{x:.1f},{y:.1f}")
-        grid += f'<polygon points="{" ".join(pts)}" fill="none" stroke="#e5e7eb" stroke-width="1"/>\n'
-    # 轴线
-    axes = ""
-    for i in range(n):
-        angle = 2 * _math.pi * i / n - _math.pi / 2
-        x = cx + max_r * _math.cos(angle)
-        y = cy + max_r * _math.sin(angle)
-        axes += f'<line x1="{cx}" y1="{cy}" x2="{x:.1f}" y2="{y:.1f}" stroke="#e5e7eb" stroke-width="1"/>\n'
-    # 标签
-    labels_svg = ""
-    for i, label in enumerate(labels):
-        angle = 2 * _math.pi * i / n - _math.pi / 2
-        lx = cx + (max_r + 18) * _math.cos(angle)
-        ly = cy + (max_r + 18) * _math.sin(angle)
-        if _math.cos(angle) > 0.3:
-            anchor = "start"
-        elif _math.cos(angle) < -0.3:
-            anchor = "end"
-        else:
-            anchor = "middle"
-        labels_svg += (
-            f'<text x="{lx:.1f}" y="{ly:.1f}" text-anchor="{anchor}" '
-            f'font-size="13" fill="#374151" dy="0.35em">{html.escape(label)}</text>\n'
-        )
-    # 达标（虚线橙）
-    target_pts = []
-    for i, v in enumerate(target):
-        v = max(0.0, min(v, max_value)) / max_value
-        angle = 2 * _math.pi * i / n - _math.pi / 2
-        x = cx + max_r * v * _math.cos(angle)
-        y = cy + max_r * v * _math.sin(angle)
-        target_pts.append(f"{x:.1f},{y:.1f}")
-    target_svg = (
-        f'<polygon points="{" ".join(target_pts)}" '
-        f'fill="rgba(245,158,11,0.05)" stroke="#f59e0b" stroke-width="1.5" '
-        f'stroke-dasharray="4 3"/>\n'
-    )
-    # 当前（实线蓝）
-    current_pts = []
-    for i, v in enumerate(values):
-        v = max(0.0, min(v, max_value)) / max_value
-        angle = 2 * _math.pi * i / n - _math.pi / 2
-        x = cx + max_r * v * _math.cos(angle)
-        y = cy + max_r * v * _math.sin(angle)
-        current_pts.append(f"{x:.1f},{y:.1f}")
-    current_svg = (
-        f'<polygon points="{" ".join(current_pts)}" '
-        f'fill="rgba(79,70,229,0.16)" stroke="#4f46e5" stroke-width="2.2"/>\n'
-    )
-    for i, v in enumerate(values):
-        v = max(0.0, min(v, max_value)) / max_value
-        angle = 2 * _math.pi * i / n - _math.pi / 2
-        x = cx + max_r * v * _math.cos(angle)
-        y = cy + max_r * v * _math.sin(angle)
-        current_svg += f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4" fill="#4f46e5"/>\n'
-
-    legend = """
-    <g transform="translate(20, 350)">
-      <circle cx="6" cy="0" r="4" fill="#4f46e5"/>
-      <text x="16" y="4" font-size="12" fill="#374151">当前水平</text>
-      <line x1="80" y1="0" x2="100" y2="0" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="4 3"/>
-      <text x="106" y="4" font-size="12" fill="#374151">达标参考</text>
-    </g>
-    """
-    return f"""
-    <svg viewBox="0 0 360 380" width="360" height="380" style="display:block;margin:0 auto;">
-      {grid}
-      {axes}
-      {labels_svg}
-      {target_svg}
-      {current_svg}
-      {legend}
-    </svg>
-    """
-
-
-def _render_macro_radar_html(svg_html: str) -> None:
-    """注入 SVG 雷达图：用 components.v1.html 通过 iframe 渲染（最稳定，兼容所有版本）。"""
-    import streamlit.components.v1 as components
-    components.html(svg_html, height=400, scrolling=False)
-
-
-def _mastery_macro_cards(mastery: dict, knowledge_map) -> None:
-    """宏观掌握度雷达图（小红书学科诊断风格）：6 个宏观维度展示。"""
-    from edu_agent.core.mastery import get_p, is_mastered
-
-    nodes = knowledge_map.nodes
-    n_nodes = len(nodes)
-    ps = [get_p(mastery, node.title) for node in nodes]
-    avg_p = sum(ps) / n_nodes if n_nodes else 0.0
-    mastered_count = sum(1 for p in ps if p >= 0.7)
-    coverage = sum(1 for p in ps if p > 0) / n_nodes if n_nodes else 0.0
-    weak_p = min(ps) if ps else 0.0
-    weak_gap = 1.0 - weak_p
-    if n_nodes:
-        mean = avg_p
-        variance = sum((p - mean) ** 2 for p in ps) / n_nodes
-        std = variance ** 0.5
-        balance = max(0.0, 1.0 - std / 0.5)
-    else:
-        balance = 0.0
-
-    labels = ["平均掌握度", "已掌握占比", "当前难度档", "薄弱差距", "知识覆盖", "进度均衡"]
-    values = [avg_p, mastered_count / n_nodes if n_nodes else 0.0, avg_p, weak_gap, coverage, balance]
-    target = [0.7, 0.7, 0.7, 0.5, 0.8, 0.8]
-
-    _render_macro_radar_html(_render_radar_svg(labels, values, target))
-    st.markdown(
-        f'<div style="font-size:0.85rem;color:#6b7280;text-align:center;margin-top:-0.4rem;">'
-        f'📊 平均掌握度 <b>{avg_p:.0%}</b> · 已掌握 <b>{mastered_count}/{n_nodes}</b>'
-        f' · 最薄弱 <b>{html.escape(min(nodes, key=lambda n: get_p(mastery, n.title)).title)}</b>'
-        f'</div>',
-        unsafe_allow_html=True,
+    st.markdown('<div class="section-title">学习画像（Learner State · 只读）</div>', unsafe_allow_html=True)
+    st.caption(
+        f"数据来源：LearnerStateProvider · 状态新鲜度：{course_state.freshness}"
+        f" · 画像版本：v{course_state.state_version or '-'}"
     )
 
+    profile = global_state.profile
+    col1, col2, col3 = st.columns(3)
+    col1.metric("用户", profile.display_name or profile.user_id or "未命名", border=False)
+    col2.metric("当前课程", bundle.course_id, border=False)
+    col3.metric("课程进度", f"{course_state.progress:.0%}", border=False)
 
-def _render_mastery_dashboard(result: dict) -> None:
-    """自适应练习看板：一屏四维——推荐下一步 / 掌握度总览 / 本轮练习 / 作答结果。"""
-    from edu_agent.core.mastery import get_p, is_mastered, next_node
-    from edu_agent.workflows.quiz.workflow import answer_round, generate_round
+    if goal:
+        st.markdown(f"**当前目标**：{goal.goal_name}（进度 {goal.progress:.0%}）")
+        if goal.target:
+            st.caption(goal.target)
 
-    knowledge_map = result.get("knowledge_map")
-    if knowledge_map is None or not getattr(knowledge_map, "nodes", []):
-        st.info("暂无知识图谱，请先在学习概览生成学习计划。")
-        return
-
-    mastery = _mastery_state()
-    titles = [node.title for node in knowledge_map.nodes]
-    prereqs = [
-        ",".join(node.prerequisites)
-        for node in knowledge_map.nodes
-        if getattr(node, "prerequisites", None)
-    ]
-
-    st.markdown('<div class="section-title">自适应练习</div>', unsafe_allow_html=True)
-
-    # 维度一：推荐下一步
-    rec = next_node(titles, prereqs, mastery)
-    if rec:
-        st.success(f"推荐下一步：{rec}")
-    else:
-        st.success("当前学习序列已全部掌握，可进入下一阶段。")
-
-    # 维度二：宏观掌握度（App 学习报告风格指标卡）
-    st.markdown("#### 宏观掌握度")
-    _mastery_macro_cards(mastery, knowledge_map)
-
-    # 维度三：本轮练习（一次一组题，弱项优先 + 按掌握度选难度）
-    st.markdown("#### 本轮练习")
-    round_key = "mastery_current_round"
-    if st.session_state.get(round_key) is None:
-        st.session_state[round_key] = generate_round(mastery, titles, num_questions=5)
-    quiz = st.session_state[round_key]
-    if not quiz:
-        st.info("题库暂未覆盖当前知识点，可换一个学习主题再试。")
-        return
-
-    answers = {}
-    for index, item in enumerate(quiz):
-        answers[index] = st.radio(
-            f"[{item['level']}] {item['question']}",
-            item["options"],
-            key=f"mq-{index}-{item['node_id'][:8]}",
-            index=None,  # 强制学生主动选，不默认选中第一项
+    # 掌握度
+    if course_state.knowledge:
+        st.markdown("#### 知识掌握度")
+        rows = []
+        for item in sorted(course_state.knowledge, key=lambda k: k.mastery):
+            status_icon = "✅" if item.mastery >= 0.7 else ("🔶" if item.mastery >= 0.3 else "❌")
+            conf = item.confidence
+            rows.append(
+                f"| {item.name or item.kc_id} | {item.mastery:.2f} | {conf:.2f} | "
+                f"{status_icon} {item.status} | {item.trend} |"
+            )
+        st.markdown(
+            "| 知识点 | 掌握度 | 置信度 | 状态 | 趋势 |\n"
+            "| -- | -- | -- | -- | -- |\n" + "\n".join(rows)
         )
 
-    # 维度四：提交 → 判题 → 更新掌握度 → 报告
-    if st.button("提交本轮练习", key="mastery-submit", type="primary", use_container_width=True):
-        answer_indexes = []
-        for index, item in enumerate(quiz):
-            chosen = answers.get(index)
-            answer_indexes.append(item["options"].index(chosen) if chosen in item["options"] else -1)
-        mastery, results = answer_round(mastery, quiz, answer_indexes)
-        st.session_state["mastery"] = mastery
-        app_state_store.save("mastery", mastery)
-        st.session_state.pop(round_key, None)
+    # 能力
+    if course_state.abilities:
+        st.markdown("#### 能力维度")
+        ability_rows = [
+            f"| {name} | {item.score:.2f} | {item.confidence:.2f} | {item.trend} |"
+            for name, item in sorted(course_state.abilities.items())
+        ]
+        st.markdown(
+            "| 能力 | 分数 | 置信度 | 趋势 |\n| -- | -- | -- | -- |\n" + "\n".join(ability_rows)
+        )
 
-        correct_count = sum(1 for item in results if item["correct"])
-        st.markdown(f"#### 本轮结果：答对 {correct_count}/{len(results)}")
-        for item in results:
-            mark = "✔" if item["correct"] else "✘"
-            st.markdown(f"- {mark} [{item['level']}] {item['question']}")
-        st.info("掌握度已更新：答对的知识点变难一档，答错的变简单一档。")
-        st.rerun()
+    # 误解
+    if course_state.misconceptions:
+        st.markdown("#### 已知误解")
+        for m in course_state.misconceptions:
+            if m.status == "active":
+                st.markdown(f"- ⚠️ **{m.kc_id}**：{m.description}（严重度 {m.severity:.0%}）")
+            else:
+                st.markdown(f"- {m.kc_id}：{m.description}（已{('解决' if m.status=='resolved' else '休眠')}）")
+
+    # 偏好
+    prefs = global_state.preferences
+    st.markdown("#### 学习偏好")
+    st.caption(
+        f"首选模式：{prefs.preferred_mode or '未记录'} · 节奏系数：{prefs.pace_factor} · "
+        f"支架偏好：{prefs.scaffold_preference:.0%}"
+    )
+    if prefs.mode_effectiveness:
+        eff_rows = [
+            f"| {mode} | {item.score:.2f} | {item.confidence:.2f} | {item.sample_size} |"
+            for mode, item in prefs.mode_effectiveness.items()
+        ]
+        st.markdown(
+            "| 模式 | 实测效果 | 置信度 | 样本量 |\n| -- | -- | -- | -- |\n" + "\n".join(eff_rows)
+        )
+
+    # 行为
+    behavior = course_state.behavior
+    st.markdown("#### 近期行为")
+    st.caption(
+        f"30 天活动：{behavior.activity_count_30d} · 连续学习：{behavior.streak_days} 天 · "
+        f"平均每次 {behavior.average_session_minutes:.0f} 分钟"
+    )
+    if behavior.recent_topics:
+        st.caption("最近主题：" + "、".join(behavior.recent_topics))
+
+    st.caption("---")
+    st.caption("本页面为只读 Learner State 展示；EduAgents 不在此修改画像数值。")
 
 
 def _render_process_details(result: dict) -> None:
@@ -1011,16 +929,60 @@ def _last_user_question(history: list) -> str:
     return ""
 
 
+def _emit_event(
+    event_type: str,
+    kc_id: str = "",
+    payload: dict | None = None,
+    session_id: str = "",
+) -> None:
+    """把学习行为写成 Event（写 Outbox；失败不阻塞主流程）。"""
+    try:
+        from edu_agent.config.settings import get_settings
+        from edu_agent.integrations.learner_state.event_emitter import build_event, emit_event
+
+        settings = get_settings()
+        event = build_event(
+            event_type=event_type,
+            user_id=settings.learner_state_user_id,
+            course_id=settings.learner_state_course_id,
+            kc_id=kc_id,
+            session_id=session_id or "",
+            payload=payload or {},
+        )
+        emit_event(event)
+    except Exception:  # noqa: BLE001 - 事件失败绝不阻塞用户请求
+        pass
+
+
+def _adaptive_qa_prompt_context(question: str) -> tuple[str, str, dict]:
+    """构建 kb_qa 的自适应上下文 + 决策摘要（画像服务不可用时返回空，不中断）。"""
+    from edu_agent.adaptive.service import decision_summary, prepare_adaptive_context
+
+    try:
+        _context, _decision, prompt_ctx = prepare_adaptive_context(
+            task_type="adaptive_qa",
+            query=question,
+        )
+        return (
+            prompt_ctx.get("learner_context", ""),
+            prompt_ctx.get("adaptive_instructions", ""),
+            decision_summary(_decision),
+        )
+    except Exception:  # noqa: BLE001 - 画像服务不可用时走通用问答
+        return "", "", {}
+
+
 def _run_kb_answer(question: str, engine: str):
     """按引擎选择问答实现（当前统一走 kb_qa 手写流水线）。"""
     knowledge_base = _kb_instance()
     student_input = st.session_state.get("student_input")
-    student_profile = st.session_state.get("student_profile")
+    learner_context, adaptive_instructions, _ = _adaptive_qa_prompt_context(question)
     return run_kb_qa_workflow(
         question=question,
         knowledge_base=knowledge_base,
         student_input=student_input,
-        student_profile=student_profile,
+        learner_context=learner_context,
+        adaptive_instructions=adaptive_instructions,
     )
 
 
@@ -1032,6 +994,12 @@ def _send_kb_question(question: str, engine: str = "kb_qa") -> None:
         session["title"] = question[:14] + ("..." if len(question) > 14 else "")
     session["messages"].append({"role": "user", "content": question})
     _persist_kb_sessions()  # 用户消息即落盘，重启不丢对话内容
+    # 学习行为事件：Emit Evidence（写 Outbox，不阻塞）
+    _emit_event(
+        "EDUCATIONAL_QUESTION_ASKED",
+        payload={"question": question[:200]},
+        session_id=session_id,
+    )
 
     if engine == "kb_qa":
         # 双 rerun 模式：先写 user history + 标记 pending，让用户消息立即显示；
@@ -1154,6 +1122,7 @@ def _run_stream_to_assistant(question: str, engine: str, session_id: str, sessio
         captured["answer"] = answer
 
     # GPT 风格：无头像、无气泡，纯文本流式输出
+    learner_context, adaptive_instructions, _decision_summary = _adaptive_qa_prompt_context(question)
     st.markdown('<div class="chat-msg ai-msg"><div class="ai-content">', unsafe_allow_html=True)
     full_text = st.write_stream(
         stream_kb_qa_answer(
@@ -1161,7 +1130,8 @@ def _run_stream_to_assistant(question: str, engine: str, session_id: str, sessio
             knowledge_base=_kb_instance(),
             student_input=st.session_state.get("student_input"),
             on_path=_capture,
-            student_profile=st.session_state.get("student_profile"),
+            learner_context=learner_context,
+            adaptive_instructions=adaptive_instructions,
         )
     )
     st.markdown("</div></div>", unsafe_allow_html=True)
@@ -1181,6 +1151,8 @@ def _run_stream_to_assistant(question: str, engine: str, session_id: str, sessio
         "citations": [c.model_dump() for c in meta_answer.citations],
     }
     _persist_kb_sessions()  # AI 回复回填即落盘
+    # 讲解已完成 → Emit Evidence（写 Outbox）
+    _emit_event("EXPLANATION_DELIVERED", payload={"question": question[:200]}, session_id=session_id)
     st.rerun()
 
 
@@ -1429,29 +1401,21 @@ def _render_kb_qa_page(engine: str = "kb_qa") -> None:
     kb = _kb_instance()
     doc_count = len({c.doc_title for c in kb.chunks})
 
-    # 学生画像：显示当前水平，可手动调整（个性化调制入口）
-    from edu_agent.core.student_profile import LEVEL_LABELS, StudentProfile
-
-    profile = st.session_state.get("student_profile") or StudentProfile()
-    label_col, level_col, hint_col = st.columns([0.42, 0.28, 0.30])
-    with label_col:
+    # 学习者状态摘要（只读，来自 LearnerStateProvider；EduAgents 不修改画像）
+    learner_state = _learner_state_bundle()
+    course_state = learner_state.course_state
+    mastered_count = sum(1 for k in course_state.knowledge if k.mastery >= 0.7)
+    weak_count = sum(1 for k in course_state.knowledge if k.mastery < 0.3)
+    kb_col, state_col, hint_col = st.columns([0.42, 0.30, 0.28])
+    with kb_col:
         st.caption(f"知识库 · {len(kb.chunks)} 块 · {doc_count} 个文档")
-    with level_col:
-        selected_label = st.selectbox(
-            "学生水平",
-            list(LEVEL_LABELS.values()),
-            index=list(LEVEL_LABELS.values()).index(profile.level_label),
-            key="kb_level_override",
-            label_visibility="collapsed",
+    with state_col:
+        st.caption(
+            f"画像 v{course_state.state_version or '-'} · 进度 {course_state.progress:.0%}"
+            f" · 已掌握 {mastered_count} · 薄弱 {weak_count}"
         )
-        new_level = {v: k for k, v in LEVEL_LABELS.items()}[selected_label]
-        if profile.level != new_level:
-            profile.level = new_level
-            profile.level_evidence = "用户手动调整"
-            st.session_state["student_profile"] = profile
-            _persist_profile()
     with hint_col:
-        st.caption(f"水平：{profile.level_label}（{profile.level_evidence[:20]}）")
+        st.caption(f"新鲜度：{course_state.freshness}（{course_state.course_id}）")
 
     # 导入完成提示：banner 引导用户到学习计划 tab
     if st.session_state.get("_kb_last_import"):
@@ -1545,15 +1509,6 @@ def _render_study_plan_tab() -> None:
             st.warning("请完整填写所有字段。")
         else:
             try:
-                # 从"当前基础"与"学习目标"构建学生画像（个性化状态，供问答/计划调制）
-                from edu_agent.core.student_profile import build_profile
-
-                st.session_state["student_profile"] = build_profile(
-                    level_text=level.strip(),
-                    goal=goal.strip(),
-                )
-                _persist_profile()
-
                 # 从知识库检索与主题相关的内容，作为 Planner 的参考资料（没有则"无"）
                 hits = _kb_instance().search(topic.strip(), top_k=4)
                 if hits:
@@ -1564,6 +1519,20 @@ def _render_study_plan_tab() -> None:
                     st.caption(f"已参考知识库 {len(hits)} 个块生成学习计划。")
                 else:
                     knowledge_context = "无"
+
+                # 自适应上下文：读 LearnerState → 决策 → 注入 Planner（画像不可用时为空，不中断）
+                from edu_agent.adaptive.service import prepare_adaptive_context
+
+                try:
+                    _ctx, _dec, plan_prompt_ctx = prepare_adaptive_context(
+                        task_type="study_plan",
+                        query=topic.strip(),
+                    )
+                    learner_context = plan_prompt_ctx.get("learner_context", "")
+                    adaptive_instructions = plan_prompt_ctx.get("adaptive_instructions", "")
+                except Exception:  # noqa: BLE001
+                    learner_context, adaptive_instructions = "", ""
+
                 with st.spinner("正在生成学习规划（多步流水线，可能 1-3 分钟）..."):
                     result = run_study_plan_workflow(
                         StudentInput(
@@ -1574,6 +1543,8 @@ def _render_study_plan_tab() -> None:
                             goal=goal.strip(),
                         ),
                         knowledge_context=knowledge_context,
+                        learner_context=learner_context,
+                        adaptive_instructions=adaptive_instructions,
                     )
                 st.session_state["_kb_plan_result"] = result
                 st.session_state["study_plan_result"] = result
@@ -1623,7 +1594,7 @@ def _render_workflow_center(result: dict | None) -> None:
             _render_quick_input()
             with st.container(border=True):
                 st.markdown("#### 工作流能力")
-                st.write("需求分析、内容拆解、联网检索、资源筛选、计划生成、练习设计与质量校验。")
+                st.write("需求分析、内容拆解、联网检索、资源筛选、自适应决策、计划生成与质量校验。")
                 st.caption(
                     f"联网搜索：{_search_status_text()} / 输出格式：Markdown"
                 )
@@ -1694,10 +1665,10 @@ def _render_workflow_center(result: dict | None) -> None:
         st.markdown('<div class="section-title">后续工作流</div>', unsafe_allow_html=True)
         with st.container(border=True):
             future_workflows = [
-                ("练习生成", "根据主题和难度生成练习与检查任务"),
                 ("错题反思", "分析错误原因并形成针对性改进建议"),
                 ("学情报告", "汇总学习状态并生成阶段学习报告"),
                 ("课程问答", "结合课程资料进行上下文问答"),
+                ("迁移学习", "跨课程知识类比（如 Java→Python）"),
             ]
             for index, (name, description) in enumerate(future_workflows):
                 if index:
@@ -1785,7 +1756,7 @@ def _render_ai_assistant_dialog(
     suggested = (
         [
             f"解释一下「{selected.title}」",
-            f"为「{selected.title}」生成练习",
+            f"「{selected.title}」和它的前置知识有什么关系？",
             f"如何检查我是否掌握「{selected.title}」？",
         ]
         if knowledge_scope
@@ -1819,6 +1790,17 @@ def _render_ai_assistant_dialog(
         history_data.append({"role": "user", "content": question})
         try:
             with st.spinner("正在结合当前计划回答..."):
+                # 自适应上下文（plan_chat：计划调整 + 画像）
+                from edu_agent.adaptive.service import prepare_adaptive_context
+
+                try:
+                    _ctx, _dec, _chat_ctx = prepare_adaptive_context(
+                        task_type="plan_chat",
+                        query=question,
+                    )
+                    chat_learner_context = _chat_ctx.get("learner_context", "")
+                except Exception:  # noqa: BLE001
+                    chat_learner_context = ""
                 answer = answer_plan_question(
                     question=question,
                     student_input=student_input,
@@ -1826,6 +1808,7 @@ def _render_ai_assistant_dialog(
                     history=[ChatTurn(**item) for item in history_data[:-1]],
                     selected_topic=selected if knowledge_scope else None,
                     resources=result["evaluated_research"].resources,
+                    learner_context=chat_learner_context,
                 )
             answer_parts = [answer.answer_markdown]
             if answer.citations:
@@ -2220,7 +2203,7 @@ else:
 
     knowledge_map = build_knowledge_map(last_input, result["decomposition"])
     result["knowledge_map"] = knowledge_map
-    view_names = ["学习概览", "知识学习", "自适应练习", "完整计划"]
+    view_names = ["学习概览", "知识学习", "学习画像", "完整计划"]
     if st.session_state.get("workbench_view") not in view_names:
         st.session_state["workbench_view"] = "学习概览"
     selected_view = st.segmented_control(
@@ -2235,8 +2218,8 @@ else:
         _render_learning_overview(result, last_input, knowledge_map)
     elif selected_view == "知识学习":
         _render_knowledge_map(result, last_input, knowledge_map)
-    elif selected_view == "自适应练习":
-        _render_mastery_dashboard(result)
+    elif selected_view == "学习画像":
+        _render_learner_state_panel()
     else:
         _render_final_plan(result)
 

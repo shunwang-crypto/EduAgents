@@ -8,10 +8,15 @@ from edu_agent.workflows.topic_tutor.workflow import run_topic_tutor_workflow
 
 
 def run_workflow(workflow_name: str, payload: dict) -> dict:
+    learner_context = payload.get("learner_context", "")
+    adaptive_instructions = payload.get("adaptive_instructions", "")
+
     if workflow_name == "study_plan":
         return run_study_plan_workflow(
             StudentInput(**payload),
             knowledge_context=payload.get("knowledge_context", "无"),
+            learner_context=learner_context,
+            adaptive_instructions=adaptive_instructions,
         )
 
     if workflow_name == "kb_qa":
@@ -22,6 +27,8 @@ def run_workflow(workflow_name: str, payload: dict) -> dict:
                 if payload.get("student_input")
                 else None
             ),
+            learner_context=learner_context,
+            adaptive_instructions=adaptive_instructions,
         ).model_dump()
 
     if workflow_name == "topic_tutor":
@@ -29,6 +36,9 @@ def run_workflow(workflow_name: str, payload: dict) -> dict:
             student_input=StudentInput(**payload["student_input"]),
             knowledge_node=KnowledgeNode(**payload["knowledge_node"]),
             resources=[EvaluatedResource(**item) for item in payload.get("resources", [])],
+            learner_context=learner_context,
+            adaptive_instructions=adaptive_instructions,
+            adaptive_decision_summary=payload.get("adaptive_decision_summary", ""),
         ).model_dump()
 
     if workflow_name == "plan_chat":
@@ -43,6 +53,7 @@ def run_workflow(workflow_name: str, payload: dict) -> dict:
                 else None
             ),
             resources=[EvaluatedResource(**item) for item in payload.get("resources", [])],
+            learner_context=learner_context,
         ).model_dump()
 
     raise ValueError(f"Unsupported workflow: {workflow_name}")

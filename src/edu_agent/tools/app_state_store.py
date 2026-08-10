@@ -1,9 +1,9 @@
-"""应用状态持久化存储（学习计划 / 学生输入 / 会话历史 / 学生画像）。
+"""应用状态持久化存储（学习计划 / 学生输入 / 会话历史 / LearnerState 缓存）。
 
 文件位置：
 - ``data/study_plan.json``   学习计划结果 + 学生输入
 - ``data/kb_sessions.json``   知识库问答多会话历史
-- ``data/student_profile.json``   学生画像（个性化状态）
+- ``data/cache_learner-state-*.json``   LearnerState 缓存（EduAgents 不维护第二套画像）
 
 读写都做容错：文件缺失或损坏时回退为默认值。
 为保证调用方零负担，序列化策略支持三种常见类型：
@@ -27,9 +27,18 @@ DATA_DIR = PROJECT_ROOT / "data"
 _FILES = {
     "study_plan": DATA_DIR / "study_plan.json",
     "kb_sessions": DATA_DIR / "kb_sessions.json",
-    "student_profile": DATA_DIR / "student_profile.json",
-    "mastery": DATA_DIR / "mastery.json",
 }
+
+# 动态 key 前缀 → 允许按需落盘（如 LearnerState 缓存、Event Outbox）
+_DYNAMIC_PREFIXES = ("cache_", "learning_event_", "adaptive_decision_")
+
+
+def _resolve_path(key: str) -> Path | None:
+    if key in _FILES:
+        return _FILES[key]
+    if key.startswith(_DYNAMIC_PREFIXES):
+        return DATA_DIR / f"{key}.json"
+    return None
 
 
 def _ensure_dir() -> None:
@@ -58,7 +67,6 @@ def _restore_classes() -> dict:
     """惰性加载所有需要反序列化重建的模型类（按类名索引）。"""
     global _RESTORE_REGISTRY
     if _RESTORE_REGISTRY is None:
-        from edu_agent.core.student_profile import StudentProfile
         from edu_agent.workflows.study_plan.schemas import (
             AnalysisResult,
             DecompositionResult,
@@ -75,7 +83,6 @@ def _restore_classes() -> dict:
         _RESTORE_REGISTRY = {
             cls.__name__: cls
             for cls in (
-                StudentProfile,
                 StudentInput,
                 AnalysisResult,
                 DecompositionResult,
@@ -112,7 +119,7 @@ def _deserialize(value: Any) -> Any:
 
 def load(key: str, default: Any = None) -> Any:
     """从磁盘加载指定 key 的状态。"""
-    path = _FILES.get(key)
+    path = _resolve_path(key)
     if path is None or not path.exists():
         return default
     try:
@@ -126,11 +133,12 @@ def load(key: str, default: Any = None) -> Any:
 
 def save(key: str, value: Any) -> None:
     """把状态写入磁盘。"""
-    if key not in _FILES:
+    path = _resolve_path(key)
+    if path is None:
         raise ValueError(f"未知持久化 key：{key}")
     _ensure_dir()
     payload = _serialize(value)
-    _FILES[key].write_text(
+    path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
@@ -138,10 +146,11 @@ def save(key: str, value: Any) -> None:
 
 def clear(key: str) -> None:
     """清空指定 key 的持久化状态（写入 null）。"""
-    if key not in _FILES:
+    path = _resolve_path(key)
+    if path is None:
         return
     _ensure_dir()
-    _FILES[key].write_text("null", encoding="utf-8")
+    path.write_text("null", encoding="utf-8")
 
 
 def clear_all() -> None:

@@ -1,4 +1,8 @@
-"""对话问答工作流（kb_qa）：知识库问答 + 来源引用 + AI 标识 + 模糊澄清 + 失败降级。"""
+"""对话问答工作流（kb_qa）：知识库问答 + 来源引用 + AI 标识 + 模糊澄清 + 失败降级。
+
+Adaptive 集成：调用方（AdaptiveService）把 LearnerState 压缩成
+learner_context + adaptive_instructions 注入 prompt，EduAgents 不维护第二套画像。
+"""
 
 from __future__ import annotations
 
@@ -10,7 +14,6 @@ from langchain_core.prompts import ChatPromptTemplate
 from edu_agent.config.settings import get_settings
 from edu_agent.core.agent_runner import normalize_markdown_output
 from edu_agent.core.llm import get_kb_llm
-from edu_agent.core.student_profile import StudentProfile, profile_to_prompt
 from edu_agent.tools.course_kb import CourseKnowledgeBase, KbChunk
 from edu_agent.workflows.kb_qa.mock_answer import build_mock_answer
 from edu_agent.workflows.kb_qa.prompts import CLARIFY_GUIDANCE, KB_QA_PROMPT
@@ -52,7 +55,7 @@ def _suggested_questions(hits: List[KbChunk]) -> List[str]:
     return [
         f"把「{first_location}」展开成完整讲解",
         f"「{first_location}」有什么易错点？",
-        "给我出一道和刚才内容相关的练习题",
+        f"「{first_location}」和它的前置知识有什么关系？",
     ]
 
 
@@ -87,7 +90,8 @@ def run_kb_qa_workflow(
     knowledge_base: Optional[CourseKnowledgeBase] = None,
     student_input: Optional[StudentInput] = None,
     mock: Optional[bool] = None,
-    student_profile: Optional[StudentProfile] = None,
+    learner_context: str = "",
+    adaptive_instructions: str = "",
 ) -> KbAnswer:
     """
     对话问答工作流入口。
@@ -99,7 +103,8 @@ def run_kb_qa_workflow(
          → 模型失败/超时 → 自动降级为本地检索结果拼装（不中断、不报错）
 
     mock 参数：True=强制演示模式；False=强制真实模型；None=自动判断（默认）。
-    student_profile：学生画像，用于调制回答深度（可传 None）。
+    learner_context / adaptive_instructions：AdaptiveService 产出的画像上下文
+        （EduAgents 不维护第二套画像，只消费外部 LearnerState 的压缩视图）。
     """
     question = (question or "").strip()
     if not question:
@@ -165,7 +170,8 @@ def run_kb_qa_workflow(
             {
                 "references": references,
                 "question": question,
-                "student_profile": profile_to_prompt(student_profile),
+                "learner_context": learner_context or "（暂无学生画像上下文，按通用水平回答）",
+                "adaptive_instructions": adaptive_instructions or "直接清晰讲解。",
             }
         )
         answer = normalize_markdown_output(response)
@@ -194,7 +200,8 @@ def stream_kb_qa_answer(
     student_input: Optional[StudentInput] = None,
     mock: Optional[bool] = None,
     on_path: Optional[object] = None,
-    student_profile: Optional[StudentProfile] = None,
+    learner_context: str = "",
+    adaptive_instructions: str = "",
 ):
     """
     GPT 式流式生成器：yield 文本片段。
@@ -203,7 +210,7 @@ def stream_kb_qa_answer(
     - 其他路径（clarify / not_covered / mock / fallback）整段作为单 token 流出
     - `on_path` 可选回调，签名 on_path(KbAnswer)；在决定路径后、yield 文本前调用，
       供前端拿到 answer 的元信息（meta/citations/ai_generated 等）以补全历史记录。
-    - `student_profile`：学生画像，用于调制回答深度（可传 None）。
+    - `learner_context` / `adaptive_instructions`：AdaptiveService 产出的画像上下文。
     """
     question = (question or "").strip()
     if not question:
@@ -293,7 +300,8 @@ def stream_kb_qa_answer(
             {
                 "references": references,
                 "question": question,
-                "student_profile": profile_to_prompt(student_profile),
+                "learner_context": learner_context or "（暂无学生画像上下文，按通用水平回答）",
+                "adaptive_instructions": adaptive_instructions or "直接清晰讲解。",
             }
         ):
             yield chunk

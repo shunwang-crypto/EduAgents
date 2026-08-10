@@ -49,7 +49,7 @@ def _fallback_analysis(student_input: StudentInput, exc: Exception) -> AnalysisR
         topic=student_input.topic,
         level_summary=f"需求分析 Agent 暂时不可用，已保留学生原始基础描述：{student_input.level}",
         goal_summary=student_input.goal,
-        prerequisites=["根据学习主题补充必要基础知识", "准备可运行的学习与练习环境"],
+        prerequisites=["根据学习主题补充必要基础知识", "准备可运行的学习环境"],
         need_web_search=False,
         search_queries=[],
     )
@@ -77,11 +77,11 @@ def _fallback_decomposition(
             f"{topic} 学习目标对应的交付产出",
         ],
         prerequisite_concepts=analysis.prerequisites
-        or [f"{topic} 的前置知识", "可执行的练习环境"],
+        or [f"{topic} 的前置知识", "可运行的学习环境"],
         learning_sequence=[
             "补齐前置知识并确认工具环境",
             f"学习 {topic} 的核心概念和最小示例",
-            "完成阶段练习并复盘错误",
+            "完成阶段应用案例并复盘问题",
             "完成最终综合任务并整理验收记录",
         ],
         difficulty_points=[
@@ -90,10 +90,10 @@ def _fallback_decomposition(
         ],
         stage_suggestions=[
             "基础准备阶段：补齐前置知识和环境",
-            "核心学习阶段：完成主题主线学习与小练习",
+            "核心学习阶段：完成主题主线学习与最小应用案例",
             "综合产出阶段：完成作品、验收和复盘",
         ],
-        practice_directions=[
+        application_directions=[
             f"完成一个和 {topic} 直接相关的小案例",
             "每天保留笔记、代码、截图或讲解记录作为检查证据",
             f"内容拆解步骤使用降级结果，原因：{exc}",
@@ -140,7 +140,7 @@ def _fallback_draft(
         concept = sequence[(day - 1) % len(sequence)]
         daily_rows.append(
             f"| 第 {day} 天 | {concept} | 整理 3 条概念笔记并标出 1 个疑问 | "
-            f"完成一个与「{concept}」相关的小练习 | 提交笔记、练习结果和疑问记录 | {student_input.daily_time} |"
+            f"完成一个与「{concept}」相关的最小应用案例 | 提交笔记、案例结果和疑问记录 | {student_input.daily_time} |"
         )
 
     stage_rows = []
@@ -150,7 +150,7 @@ def _fallback_draft(
         end_day = max(start_day, round(index * student_input.days / len(stage_suggestions)))
         stage_rows.append(
             f"| 阶段 {index} | 第 {start_day}-{end_day} 天 | {stage} | "
-            "提交阶段练习、问题清单和复盘记录 |"
+            "提交阶段应用案例、问题清单和复盘记录 |"
         )
 
     if evaluated_research.resources:
@@ -203,7 +203,7 @@ def _fallback_draft(
 ## 三、学习路线概览
 
 - 先用前置知识和环境检查降低启动成本，确保后续任务能实际提交。
-- 围绕核心知识点安排每日学习和小练习，避免把旁支内容挤进主线。
+- 围绕核心知识点安排每日学习和最小应用案例，避免把旁支内容挤进主线。
 - 每个阶段都提交可检查产出，用问题清单驱动下一天调整。
 - 最后用综合任务对照学习目标完成验收。
 
@@ -228,7 +228,7 @@ def _fallback_draft(
 ## 七、最终验收标准
 
 - 能独立说明 {topic} 的核心概念、使用场景和常见限制。
-- 能提交覆盖每日任务的笔记、练习结果和问题清单。
+- 能提交覆盖每日任务的笔记、案例结果和问题清单。
 - 能完成一个和学习目标直接相关的综合作品或案例。
 - 能用自检清单指出 2 个薄弱点和下一步修正动作。
 
@@ -245,7 +245,7 @@ def _fallback_validation(exc: Exception) -> PlanValidationResult:
     return PlanValidationResult(
         passed=False,
         issues=[f"规则校验步骤未完成，原因：{exc}。"],
-        suggestions=["请人工检查计划章节、每日天数、任务量、练习任务和资源链接。"],
+        suggestions=["请人工检查计划章节、每日天数、任务量、应用任务和资源链接。"],
         checked_rules=[],
     )
 
@@ -261,12 +261,19 @@ def _fallback_review(draft_plan: DraftPlan, exc: Exception) -> ReviewResult:
 def run_study_plan_workflow(
     student_input: StudentInput,
     knowledge_context: str = "无",
+    learner_context: str = "",
+    adaptive_instructions: str = "",
 ) -> dict:
-    """学习规划主工作流。knowledge_context：知识库参考资料文本（可为"无"）。"""
+    """学习规划主工作流。
+
+    knowledge_context：知识库参考资料文本（可为"无"）。
+    learner_context / adaptive_instructions：AdaptiveService 产出的画像上下文与教学指令。
+    """
     workflow_start = time.time()
     print(
         f"[study_plan] 开始生成学习计划: topic={student_input.topic!r} "
-        f"days={student_input.days} 知识库参考={'有' if knowledge_context and knowledge_context != '无' else '无'}",
+        f"days={student_input.days} 知识库参考={'有' if knowledge_context and knowledge_context != '无' else '无'} "
+        f"自适应上下文={'有' if learner_context else '无'}",
         flush=True,
     )
     analysis = _run_step(
@@ -308,6 +315,8 @@ def run_study_plan_workflow(
         decomposition,
         evaluated_research,
         knowledge_context,
+        learner_context,
+        adaptive_instructions,
     )
     validation = _run_step(
         "validation",

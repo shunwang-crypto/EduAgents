@@ -29,6 +29,19 @@ class Settings(BaseModel):
     # 留空/不配置=自动（未配置任何模型 API key 时自动进入演示模式）。
     kb_qa_mock: Optional[bool] = Field(default=None, alias="KB_QA_MOCK")
 
+    # 学习者画像（LearnerState）外部服务
+    learner_state_provider: str = Field(default="auto", alias="LEARNER_STATE_PROVIDER")
+    learner_state_base_url: str = Field(default="", alias="LEARNER_STATE_BASE_URL")
+    learner_state_api_key: str = Field(default="", alias="LEARNER_STATE_API_KEY")
+    learner_state_timeout_seconds: float = Field(default=8.0, alias="LEARNER_STATE_TIMEOUT_SECONDS")
+    learner_state_cache_ttl: int = Field(default=300, alias="LEARNER_STATE_CACHE_TTL")
+    learner_state_course_id: str = Field(default="JAVA-OOP", alias="LEARNER_STATE_COURSE_ID")
+    learner_state_user_id: str = Field(default="STU-001", alias="LEARNER_STATE_USER_ID")
+
+    # 学习事件回传
+    learning_event_delivery_enabled: bool = Field(default=False, alias="LEARNING_EVENT_DELIVERY_ENABLED")
+    learning_event_delivery_url: str = Field(default="", alias="LEARNING_EVENT_DELIVERY_URL")
+
 
 @lru_cache
 def get_settings() -> Settings:
@@ -38,6 +51,9 @@ def get_settings() -> Settings:
         mock_value = True
     elif mock_raw in {"0", "false", "no", "off"}:
         mock_value = False
+
+    event_enabled_raw = os.getenv("LEARNING_EVENT_DELIVERY_ENABLED", "").strip().lower()
+    event_enabled = event_enabled_raw in {"1", "true", "yes", "on"}
 
     return Settings(
         OPENAI_API_KEY=os.getenv("OPENAI_API_KEY", ""),
@@ -51,4 +67,17 @@ def get_settings() -> Settings:
         or None,
         XINGCHEN_MODEL=os.getenv("XINGCHEN_MODEL") or os.getenv("OPENCODE_ZEN_MODEL", ""),
         KB_QA_MOCK=mock_value,
+        LEARNER_STATE_PROVIDER=os.getenv("LEARNER_STATE_PROVIDER", "auto").strip() or "auto",
+        LEARNER_STATE_BASE_URL=os.getenv("LEARNER_STATE_BASE_URL", "").strip(),
+        LEARNER_STATE_API_KEY=os.getenv("LEARNER_STATE_API_KEY", "").strip(),
+        LEARNER_STATE_TIMEOUT_SECONDS=float(
+            os.getenv("LEARNER_STATE_TIMEOUT_SECONDS", "8.0") or 8.0
+        ),
+        LEARNER_STATE_CACHE_TTL=int(os.getenv("LEARNER_STATE_CACHE_TTL", "300") or 300),
+        LEARNER_STATE_COURSE_ID=os.getenv("LEARNER_STATE_COURSE_ID", "JAVA-OOP").strip()
+        or "JAVA-OOP",
+        LEARNER_STATE_USER_ID=os.getenv("LEARNER_STATE_USER_ID", "STU-001").strip()
+        or "STU-001",
+        LEARNING_EVENT_DELIVERY_ENABLED=event_enabled,
+        LEARNING_EVENT_DELIVERY_URL=os.getenv("LEARNING_EVENT_DELIVERY_URL", "").strip(),
     )

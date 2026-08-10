@@ -4,5 +4,7 @@ __pycache__/
 .pytest_cache/
 *.pyc
 scripts/
-tests/
 data/
+
+# 合作伙伴对接模板（样本数据，不入库）
+LearnerState_v1_对接模板/
