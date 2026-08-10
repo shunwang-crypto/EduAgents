@@ -19,7 +19,7 @@ from edu_agent.adaptive.schemas import (  # noqa: E402
     REASON_TARGET_MASTERED,
 )
 from edu_agent.adaptive.temporal_resolver import resolve  # noqa: E402
-from edu_agent.domain.kc_graph import java_oop_course  # noqa: E402
+from edu_agent.domain.learning.kc_graph import java_oop_course  # noqa: E402
 from edu_agent.integrations.learner_state.mock_provider import MockLearnerStateProvider  # noqa: E402
 from edu_agent.integrations.learner_state.schemas import KnowledgeItem  # noqa: E402
 
@@ -120,4 +120,11 @@ def test_temporal_policy_review_risk():
 
 def test_decision_records_state_version():
     decision = make_decision(_context_for(0.24, 0.78), COURSE, "topic_tutor")
-    assert decision.learner_state_version == 37
+    # mock 未提供 state_version → None（不编造）；有版本时应透传
+    assert decision.learner_state_version is None
+    from edu_agent.adaptive.schemas import SelectedLearnerContext
+
+    ctx = _context_for(0.24, 0.78)
+    ctx.learner_state_version = 37
+    decision2 = make_decision(ctx, COURSE, "topic_tutor")
+    assert decision2.learner_state_version == 37

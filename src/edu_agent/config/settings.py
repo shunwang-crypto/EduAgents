@@ -34,13 +34,15 @@ class Settings(BaseModel):
     learner_state_base_url: str = Field(default="", alias="LEARNER_STATE_BASE_URL")
     learner_state_api_key: str = Field(default="", alias="LEARNER_STATE_API_KEY")
     learner_state_timeout_seconds: float = Field(default=8.0, alias="LEARNER_STATE_TIMEOUT_SECONDS")
-    learner_state_cache_ttl: int = Field(default=300, alias="LEARNER_STATE_CACHE_TTL")
+    learner_state_cache_ttl_seconds: int = Field(default=300, alias="LEARNER_STATE_CACHE_TTL_SECONDS")
     learner_state_course_id: str = Field(default="JAVA-OOP", alias="LEARNER_STATE_COURSE_ID")
     learner_state_user_id: str = Field(default="STU-001", alias="LEARNER_STATE_USER_ID")
 
     # 学习事件回传
     learning_event_delivery_enabled: bool = Field(default=False, alias="LEARNING_EVENT_DELIVERY_ENABLED")
     learning_event_delivery_url: str = Field(default="", alias="LEARNING_EVENT_DELIVERY_URL")
+    learning_event_max_retries: int = Field(default=5, alias="LEARNING_EVENT_MAX_RETRIES")
+    learning_event_retry_base_seconds: int = Field(default=2, alias="LEARNING_EVENT_RETRY_BASE_SECONDS")
 
 
 @lru_cache
@@ -73,11 +75,17 @@ def get_settings() -> Settings:
         LEARNER_STATE_TIMEOUT_SECONDS=float(
             os.getenv("LEARNER_STATE_TIMEOUT_SECONDS", "8.0") or 8.0
         ),
-        LEARNER_STATE_CACHE_TTL=int(os.getenv("LEARNER_STATE_CACHE_TTL", "300") or 300),
+        LEARNER_STATE_CACHE_TTL_SECONDS=int(
+            os.getenv("LEARNER_STATE_CACHE_TTL_SECONDS", "300") or 300
+        ),
         LEARNER_STATE_COURSE_ID=os.getenv("LEARNER_STATE_COURSE_ID", "JAVA-OOP").strip()
         or "JAVA-OOP",
         LEARNER_STATE_USER_ID=os.getenv("LEARNER_STATE_USER_ID", "STU-001").strip()
         or "STU-001",
         LEARNING_EVENT_DELIVERY_ENABLED=event_enabled,
         LEARNING_EVENT_DELIVERY_URL=os.getenv("LEARNING_EVENT_DELIVERY_URL", "").strip(),
+        LEARNING_EVENT_MAX_RETRIES=int(os.getenv("LEARNING_EVENT_MAX_RETRIES", "5") or 5),
+        LEARNING_EVENT_RETRY_BASE_SECONDS=int(
+            os.getenv("LEARNING_EVENT_RETRY_BASE_SECONDS", "2") or 2
+        ),
     )

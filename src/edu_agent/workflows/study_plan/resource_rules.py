@@ -43,7 +43,7 @@ def _decomposition_terms(decomposition: DecompositionResult) -> set[str]:
         decomposition.core_concepts
         + decomposition.prerequisite_concepts
         + decomposition.learning_sequence
-        + decomposition.practice_directions
+        + decomposition.application_directions
     )
     terms: set[str] = set()
     for item in items:

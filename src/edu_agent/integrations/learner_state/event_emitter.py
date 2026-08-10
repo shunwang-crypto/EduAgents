@@ -196,15 +196,22 @@ def flush_outbox(
     delivery_url: Optional[str] = None,
     api_key: str = "",
     timeout: float = 5.0,
-    max_attempts: int = 5,
+    max_attempts: Optional[int] = None,
     max_batch: int = 20,
+    retry_base_seconds: Optional[int] = None,
 ) -> Dict[str, int]:
     """尝试把 pending 事件投递给合作伙伴；失败留在队列中，退避重试。
 
     幂等：合作伙伴按 event_id 去重，重复投递无副作用。
     返回 {"delivered": n, "failed": n, "pending": n}。
     """
-    from edu_agent.integrations.learner_state.remote_provider import _http_get_json  # noqa: F401
+    from edu_agent.config.settings import get_settings
+
+    settings = get_settings()
+    if max_attempts is None:
+        max_attempts = settings.learning_event_max_retries
+    if retry_base_seconds is None:
+        retry_base_seconds = settings.learning_event_retry_base_seconds
 
     if not delivery_url:
         return {"delivered": 0, "failed": 0, "pending": len(_load_outbox())}
@@ -246,7 +253,9 @@ def flush_outbox(
                 delivered += 1
         except (urllib.error.URLError, TimeoutError, OSError):
             item["retry_count"] = item.get("retry_count", 0) + 1
-            item["next_retry_at"] = now + min(2 ** item["retry_count"], 3600)  # 指数退避
+            item["next_retry_at"] = now + min(
+                (retry_base_seconds or 2) ** item["retry_count"], 3600
+            )  # 指数退避
             item["delivery_state"] = "pending"
             failed += 1
         pending_items.append(item)

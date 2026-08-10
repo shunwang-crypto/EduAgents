@@ -104,15 +104,19 @@ class GlobalLearnerState(BaseModel):
 
 
 class KnowledgeItem(BaseModel):
-    """单个 KC 的掌握状态。Mastery 与 Confidence 分离。"""
+    """单个 KC 的掌握状态。Mastery 与 Confidence 分离。
+
+    未知字段（confidence/trend/evidence_count/last_evidence_at）允许为 None，
+    表示合作伙伴尚未提供（禁止编造）。
+    """
 
     kc_id: str = Field(default="", description="知识组件 ID")
     name: str = Field(default="", description="名称")
     mastery: float = Field(default=0.0, ge=0.0, le=1.0, description="掌握度 0-1")
-    confidence: float = Field(default=0.0, ge=0.0, le=1.0, description="置信度 0-1")
+    confidence: Optional[float] = Field(default=None, description="置信度 0-1（未知为 None）")
     status: KnowledgeStatus = Field(default="unknown", description="状态")
-    trend: Trend = Field(default="unknown", description="趋势")
-    evidence_count: int = Field(default=0, description="证据数")
+    trend: Optional[Trend] = Field(default=None, description="趋势（未知为 None）")
+    evidence_count: Optional[int] = Field(default=None, description="证据数（未知为 None）")
     last_evidence_at: Optional[str] = Field(default=None, description="最近证据时间")
     is_estimated: bool = Field(default=False, description="是否为估计值")
 
@@ -121,9 +125,9 @@ class AbilityItem(BaseModel):
     """六维能力之一：understanding/application/reasoning/expression/reflection/transfer。"""
 
     score: float = Field(default=0.0, ge=0.0, le=1.0)
-    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
-    trend: Trend = Field(default="unknown")
-    evidence_count: int = Field(default=0)
+    confidence: Optional[float] = Field(default=None, description="置信度（未知为 None）")
+    trend: Optional[Trend] = Field(default=None)
+    evidence_count: Optional[int] = Field(default=None)
 
 
 class Misconception(BaseModel):

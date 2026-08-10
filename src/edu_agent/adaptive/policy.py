@@ -1,200 +1,34 @@
-"""AdaptivePolicy：规则式自适应教学决策（V1 baseline）。
+"""AdaptivePolicy 主入口：组装各策略组件生成 AdaptiveDecision。
 
-输入：LearnerState + SelectedContext + TemporalState + Domain Context + Task Type。
-输出：AdaptiveDecision（结构化 + reason_codes）。
+策略组件在 `adaptive/policies/` 独立拆分（可单独测试）：
+- mastery / confidence / prerequisite / misconception / preference / temporal / ability
 
-策略组件拆分（避免 1000 行 if/else）：
-- mastery_policy        ：掌握度 → 深度/难度/动作
-- confidence_policy     ：置信度 → 保守程度
-- prerequisite_policy   ：前置掌握度 → 是否先补前置
-- misconception_policy  ：活跃误解 → 针对性动作
-- preference_policy     ：偏好 → 交付模式/示例数（Pedagogical Need > Preference）
-- temporal_policy       ：时间衰减 → 复习 or 新学
-
-接口未来可扩展：rule-based → LLM-based → contextual bandit → RL。
+本文件只负责编排与合并，不做 1000 行 if/else。
 """
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import Dict, List
 
+from edu_agent.adaptive.policies import (  # noqa: F401
+    ability_policy,
+    confidence_policy,
+    mastery_policy,
+    misconception_policy,
+    preference_policy,
+    prerequisite_policy,
+    temporal_policy,
+)
 from edu_agent.adaptive.schemas import (
-    REASON_ACTIVE_MISCONCEPTION,
-    REASON_HIGH_REVIEW_RISK,
-    REASON_LOW_MASTERY_CONFIDENCE,
-    REASON_LOW_PREREQUISITE_MASTERY,
-    REASON_LOW_TARGET_MASTERY,
-    REASON_LOW_UNDERSTANDING_ABILITY,
     REASON_NO_DATA,
-    REASON_PREFERENCE_WORKED_EXAMPLE,
     REASON_REPEATED_REEXPLANATION,
-    REASON_TARGET_MASTERED,
     AdaptiveDecision,
     SelectedLearnerContext,
     TaskType,
 )
 from edu_agent.adaptive.temporal_resolver import resolve
-from edu_agent.domain.kc_graph import Course
-from edu_agent.integrations.learner_state.schemas import (
-    CourseLearnerState,
-    KnowledgeItem,
-)
-
-MASTERED_THRESHOLD = 0.7
-CONFIDENCE_THRESHOLD = 0.5
-
-
-# ---------------------------------------------------------------------------
-# 策略组件
-# ---------------------------------------------------------------------------
-
-
-def mastery_policy(mastery: float, reason_codes: List[str]) -> Dict[str, object]:
-    """掌握度 → 深度/难度/基础动作。"""
-    if mastery < 0.3:
-        reason_codes.append(REASON_LOW_TARGET_MASTERY)
-        return {
-            "depth": "basic",
-            "difficulty": "easy",
-            "scaffold_level": "high",
-            "pedagogical_actions": ["EXPLAIN", "WORKED_EXAMPLE"],
-            "review_or_new": "new",
-        }
-    if mastery < MASTERED_THRESHOLD:
-        return {
-            "depth": "medium",
-            "difficulty": "medium",
-            "scaffold_level": "medium",
-            "pedagogical_actions": ["EXPLAIN", "WORKED_EXAMPLE", "CHECK_UNDERSTANDING"],
-            "review_or_new": "new",
-        }
-    reason_codes.append(REASON_TARGET_MASTERED)
-    return {
-        "depth": "concise",
-        "difficulty": "hard",
-        "scaffold_level": "low",
-        "pedagogical_actions": ["SUMMARIZE", "DEEPEN", "SOCRATIC_QUESTION"],
-        "review_or_new": "review",
-    }
-
-
-def confidence_policy(confidence: float, reason_codes: List[str]) -> Dict[str, object]:
-    """置信度低 → 保守教学（不武断 mastered/weak），多检查。"""
-    if confidence < CONFIDENCE_THRESHOLD:
-        reason_codes.append(REASON_LOW_MASTERY_CONFIDENCE)
-        return {
-            "pedagogical_actions": ["EXPLAIN", "CHECK_UNDERSTANDING"],
-            "scaffold_level": "medium",
-        }
-    return {}
-
-
-def prerequisite_policy(
-    target_kc: str,
-    course: Course,
-    knowledge_map: Dict[str, KnowledgeItem],
-    reason_codes: List[str],
-) -> Dict[str, object]:
-    """前置未掌握 → REVIEW_PREREQUISITE（用传递前置链，如 多态→继承→封装）。"""
-    missing: List[str] = []
-    for prereq in course.all_prerequisites_transitive(target_kc):
-        item = knowledge_map.get(prereq)
-        if item is None or item.mastery < MASTERED_THRESHOLD:
-            missing.append(prereq)
-    if missing:
-        reason_codes.append(REASON_LOW_PREREQUISITE_MASTERY)
-        return {
-            "review_prerequisite": True,
-            "prerequisite_topics": missing,
-            "pedagogical_actions": ["REVIEW_PREREQUISITE"] + ["EXPLAIN", "WORKED_EXAMPLE"],
-            "content_order": missing + [target_kc],
-        }
-    return {}
-
-
-def misconception_policy(
-    misconceptions: List[dict],
-    reason_codes: List[str],
-) -> Dict[str, object]:
-    """活跃误解 → 针对性动作（反例/概念对比）。"""
-    active = [
-        m for m in misconceptions
-        if m.get("status", "active") == "active" and m.get("severity", 0) >= 0.5
-    ]
-    if active:
-        reason_codes.append(REASON_ACTIVE_MISCONCEPTION)
-        return {
-            "pedagogical_actions": ["CONCEPT_COMPARISON", "COUNTEREXAMPLE"] + ["EXPLAIN"],
-            "content_order": ["misconception_clarify"],
-        }
-    return {}
-
-
-def preference_policy(
-    preferences: dict,
-    pedagogical_need: str,
-    reason_codes: List[str],
-) -> Dict[str, object]:
-    """偏好只决定「交付形式」，不改变「教学需要」。
-
-    Pedagogical Need > Task Suitability > User Preference。
-    """
-    preferred_mode = preferences.get("preferred_mode", "")
-    mode_effectiveness = preferences.get("mode_effectiveness", {}) or {}
-
-    # 教学需要是 worked example 时，偏好决定例子形式
-    if pedagogical_need in ("EXPLAIN", "WORKED_EXAMPLE"):
-        if preferred_mode in ("example_driven", "worked_example"):
-            reason_codes.append(REASON_PREFERENCE_WORKED_EXAMPLE)
-            return {"delivery_mode": "worked_example", "example_count": 2}
-        if preferred_mode == "visual":
-            return {"delivery_mode": "visual", "example_count": 1}
-        if preferred_mode == "reading":
-            return {"delivery_mode": "reading", "example_count": 1}
-
-    # 用实测效果兜底：选效果最好的模式
-    if mode_effectiveness:
-        best_mode = max(
-            mode_effectiveness.items(),
-            key=lambda kv: kv[1].get("score", 0) if isinstance(kv[1], dict) else kv[1],
-        )[0]
-        return {"delivery_mode": best_mode, "example_count": 1}
-    return {}
-
-
-def temporal_policy(
-    temporal: object,
-    reason_codes: List[str],
-) -> Dict[str, object]:
-    """时间衰减 → review_or_new。"""
-    state = temporal
-    if getattr(state, "review_risk", "low") in ("high", "medium"):
-        reason_codes.append(REASON_HIGH_REVIEW_RISK)
-        return {
-            "review_or_new": "review",
-            "pedagogical_actions": ["SUMMARIZE", "CHECK_UNDERSTANDING"],
-        }
-    return {}
-
-
-def ability_policy(
-    abilities: Dict[str, float],
-    reason_codes: List[str],
-) -> Dict[str, object]:
-    """理解能力低 → 简化 + 分步骤。"""
-    understanding = abilities.get("understanding", 0.5)
-    if understanding < 0.3:
-        reason_codes.append(REASON_LOW_UNDERSTANDING_ABILITY)
-        return {
-            "pedagogical_actions": ["DECOMPOSE", "SIMPLIFY", "EXPLAIN"],
-            "depth": "basic",
-        }
-    return {}
-
-
-# ---------------------------------------------------------------------------
-# 主入口
-# ---------------------------------------------------------------------------
+from edu_agent.domain.learning.kc_graph import Course
+from edu_agent.integrations.learner_state.schemas import KnowledgeItem
 
 
 def make_decision(
@@ -226,7 +60,8 @@ def make_decision(
                     break
 
     target_mastery = target_item.mastery if target_item else 0.0
-    target_confidence = target_item.confidence if target_item else 0.0
+    # confidence 未知（None）→ 按 0.0 保守处理（不武断 mastered/weak）
+    target_confidence = (target_item.confidence if target_item else None) or 0.0
 
     # 2) 时间衰减
     temporal = resolve(target_item)
@@ -276,9 +111,9 @@ def make_decision(
     else:
         _merge(preference_policy(context.preferences, pedagogical_need, reasons))
 
-    # 5) 下一步推荐：可达前沿
+    # 5) 下一步推荐：可达前沿（KST-lite）
     try:
-        from edu_agent.domain.kc_graph import recommended_next
+        from edu_agent.domain.learning.kc_graph import recommended_next
 
         mastery_map = {
             item["kc_id"]: item.get("mastery", 0.0)

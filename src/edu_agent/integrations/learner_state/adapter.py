@@ -78,6 +78,31 @@ def _as_bool(value: Any, default: bool = False) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _as_optional_float(value: Any) -> Optional[float]:
+    """缺失/空 → None（不编造），有值 → float。"""
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_optional_int(value: Any) -> Optional[int]:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_optional_str(value: Any) -> Optional[str]:
+    if value is None or value == "":
+        return None
+    return str(value)
+
+
 # ---------------------------------------------------------------------------
 # Global State 解析
 # ---------------------------------------------------------------------------
@@ -203,11 +228,11 @@ def parse_knowledge(raw: Any) -> List[KnowledgeItem]:
                 ),
                 name=str(_pick(item, "name", "title", default="") or ""),
                 mastery=_as_float(_pick(item, "mastery", "p", "value", default=0.0), 0.0),
-                confidence=_as_float(_pick(item, "confidence", "conf", default=0.0), 0.0),
+                confidence=_as_optional_float(_pick(item, "confidence", "conf", default=None)),
                 status=str(_pick(item, "status", default="unknown") or "unknown"),
-                trend=str(_pick(item, "trend", default="unknown") or "unknown"),
-                evidence_count=_as_int(
-                    _pick(item, "evidence_count", "evidenceCount", "count", default=0), 0
+                trend=_as_optional_str(_pick(item, "trend", default=None)),
+                evidence_count=_as_optional_int(
+                    _pick(item, "evidence_count", "evidenceCount", "count", default=None)
                 ),
                 last_evidence_at=_pick(
                     item, "last_evidence_at", "lastEvidenceAt", default=None
@@ -228,12 +253,14 @@ def parse_abilities(raw: Any) -> Dict[str, AbilityItem]:
         if isinstance(value, dict):
             result[str(ability)] = AbilityItem(
                 score=_as_float(value.get("score", 0.0), 0.0),
-                confidence=_as_float(value.get("confidence", 0.0), 0.0),
-                trend=str(value.get("trend", "unknown") or "unknown"),
-                evidence_count=_as_int(value.get("evidence_count", value.get("evidenceCount", 0)), 0),
+                confidence=_as_optional_float(value.get("confidence")),
+                trend=_as_optional_str(value.get("trend")),
+                evidence_count=_as_optional_int(
+                    value.get("evidence_count", value.get("evidenceCount"))
+                ),
             )
         elif isinstance(value, (int, float)):
-            result[str(ability)] = AbilityItem(score=float(value), confidence=0.5, evidence_count=1)
+            result[str(ability)] = AbilityItem(score=float(value))
     return result
 
 

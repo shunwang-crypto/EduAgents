@@ -12,7 +12,7 @@ from edu_agent.adaptive.context_selector import select_context
 from edu_agent.adaptive.policy import make_decision
 from edu_agent.adaptive.prompt_builder import build_prompt_context, decision_instructions
 from edu_agent.adaptive.schemas import AdaptiveDecision, SelectedLearnerContext, TaskType
-from edu_agent.domain.kc_graph import Course, get_course
+from edu_agent.domain.learning.kc_graph import Course, get_course
 from edu_agent.integrations.learner_state.provider import get_learner_state_provider
 from edu_agent.integrations.learner_state.schemas import LearnerStateBundle
 

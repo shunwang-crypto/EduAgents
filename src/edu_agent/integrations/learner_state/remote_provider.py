@@ -29,13 +29,13 @@ from edu_agent.integrations.learner_state.mock_provider import (
     _java_course_raw,
     JAVA_GLOBAL_RAW,
 )
+from edu_agent.integrations.learner_state.cache import LearnerStateCache
 from edu_agent.integrations.learner_state.provider import LearnerStateProvider
 from edu_agent.integrations.learner_state.schemas import (
     CourseLearnerState,
     GlobalLearnerState,
     Goal,
 )
-from edu_agent.tools import app_state_store
 
 _UA = "EduAgents-LearnerState/1.0"
 
@@ -47,10 +47,6 @@ def _http_get_json(url: str, api_key: str, timeout: float) -> dict:
     request = urllib.request.Request(url, headers=headers, method="GET")
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8", errors="replace"))
-
-
-def _cache_key(user_id: str, course_id: str) -> str:
-    return f"learner-state:{user_id}:{course_id}"
 
 
 class RemoteLearnerStateProvider(LearnerStateProvider):
@@ -68,9 +64,10 @@ class RemoteLearnerStateProvider(LearnerStateProvider):
         self._base_url = (base_url or settings.learner_state_base_url or "").rstrip("/")
         self._api_key = api_key if api_key is not None else settings.learner_state_api_key
         self._timeout = timeout if timeout else settings.learner_state_timeout_seconds
-        self._cache_ttl = cache_ttl_seconds if cache_ttl_seconds else settings.learner_state_cache_ttl
+        self._cache_ttl = cache_ttl_seconds if cache_ttl_seconds else settings.learner_state_cache_ttl_seconds
         self._mock_fallback = mock_fallback
         self._mock = MockLearnerStateProvider()
+        self._cache = LearnerStateCache(ttl_seconds=self._cache_ttl)
 
     # -- 内部 HTTP 封装 ----------------------------------------------------
 
@@ -83,14 +80,6 @@ class RemoteLearnerStateProvider(LearnerStateProvider):
         except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
             return None
 
-    # -- 缓存 --------------------------------------------------------------
-
-    def _cache_get(self, key: str) -> Optional[dict]:
-        return app_state_store.load(f"cache_{key}", default=None)
-
-    def _cache_set(self, key: str, payload: dict) -> None:
-        app_state_store.save(f"cache_{key}", payload)
-
     # -- 接口实现 ----------------------------------------------------------
 
     def get_global_state(self, user_id: str) -> GlobalLearnerState:
@@ -101,15 +90,14 @@ class RemoteLearnerStateProvider(LearnerStateProvider):
         return parse_global_state(JAVA_GLOBAL_RAW)
 
     def get_course_state(self, user_id: str, course_id: str) -> CourseLearnerState:
-        cache_key = _cache_key(user_id, course_id)
         raw = self._get(f"/api/students/{user_id}/learning-state?course_id={course_id}")
         if raw is not None:
             state = parse_course_state(raw, user_id=user_id, course_id=course_id)
             state.freshness = "fresh"
-            self._cache_set(cache_key, raw)
+            self._cache.set(user_id, course_id, raw)
             return state
         # 远程不可用 → 缓存降级
-        cached = self._cache_get(cache_key)
+        cached = self._cache.get(user_id, course_id)
         if cached is not None:
             state = parse_course_state(cached, user_id=user_id, course_id=course_id)
             state.freshness = "stale"

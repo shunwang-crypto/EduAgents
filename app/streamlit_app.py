@@ -615,7 +615,7 @@ def _render_knowledge_map(
         try:
             # 自适应上下文：按节点标题映射 KC → 决策 → 注入讲解 prompt
             from edu_agent.adaptive.service import decision_summary, prepare_adaptive_context
-            from edu_agent.domain.kc_graph import get_course
+            from edu_agent.domain.learning.kc_graph import get_course
 
             course = get_course(_learner_state_bundle().course_id)
             kc_match = course.find_kc_by_title(selected.title) if course else None
@@ -669,7 +669,7 @@ def _learner_state_bundle():
 
 def _render_learner_state_panel(bundle=None) -> None:
     """只读展示学习者画像：当前课程/目标/进度/掌握度/能力/误解/偏好/版本。"""
-    from edu_agent.domain.kc_graph import get_course
+    from edu_agent.domain.learning.kc_graph import get_course
     from edu_agent.integrations.learner_state.schemas import LearnerStateBundle
 
     bundle = bundle or _learner_state_bundle()
@@ -701,9 +701,11 @@ def _render_learner_state_panel(bundle=None) -> None:
         for item in sorted(course_state.knowledge, key=lambda k: k.mastery):
             status_icon = "✅" if item.mastery >= 0.7 else ("🔶" if item.mastery >= 0.3 else "❌")
             conf = item.confidence
+            conf_text = f"{conf:.2f}" if conf is not None else "—"
+            trend_text = item.trend or "—"
             rows.append(
-                f"| {item.name or item.kc_id} | {item.mastery:.2f} | {conf:.2f} | "
-                f"{status_icon} {item.status} | {item.trend} |"
+                f"| {item.name or item.kc_id} | {item.mastery:.2f} | {conf_text} | "
+                f"{status_icon} {item.status} | {trend_text} |"
             )
         st.markdown(
             "| 知识点 | 掌握度 | 置信度 | 状态 | 趋势 |\n"
@@ -714,7 +716,9 @@ def _render_learner_state_panel(bundle=None) -> None:
     if course_state.abilities:
         st.markdown("#### 能力维度")
         ability_rows = [
-            f"| {name} | {item.score:.2f} | {item.confidence:.2f} | {item.trend} |"
+            f"| {name} | {item.score:.2f} | "
+            f"{item.confidence:.2f if item.confidence is not None else '—'} | "
+            f"{item.trend or '—'} |"
             for name, item in sorted(course_state.abilities.items())
         ]
         st.markdown(
@@ -818,7 +822,7 @@ def _render_process_details(result: dict) -> None:
                 st.markdown("#### 阶段建议")
                 st.markdown(_list_to_markdown(decomposition.stage_suggestions))
                 st.markdown("#### 实践方向")
-                st.markdown(_list_to_markdown(decomposition.practice_directions))
+                st.markdown(_list_to_markdown(decomposition.application_directions))
 
         with tab_search:
             st.markdown(_resources_to_markdown(research))

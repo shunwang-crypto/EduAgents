@@ -9,7 +9,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from edu_agent.adaptive.context_selector import select_context  # noqa: E402
-from edu_agent.domain.kc_graph import java_oop_course  # noqa: E402
+from edu_agent.domain.learning.kc_graph import java_oop_course  # noqa: E402
 from edu_agent.integrations.learner_state.mock_provider import MockLearnerStateProvider  # noqa: E402
 
 
@@ -21,7 +21,7 @@ def test_study_plan_context_has_goal_and_snapshot():
     bundle = _bundle()
     ctx = select_context(bundle, "study_plan", java_oop_course(), target_kc="POLYMORPHISM")
     assert ctx.task_type == "study_plan"
-    assert ctx.goal_name == "成绩管理实训"
+    assert ctx.goal_name == "Java OOP 实训"
     assert len(ctx.knowledge_snapshot) >= 7  # 全课程掌握度快照
 
 
@@ -34,10 +34,10 @@ def test_topic_tutor_context_is_narrow():
     snapshot_ids = {item.get("kc_id") for item in ctx.knowledge_snapshot}
     assert snapshot_ids <= {"POLYMORPHISM", "INHERITANCE", "ENCAPSULATION", "CLASS"}
     assert "IO" not in snapshot_ids
-    # 有前置（传递链：继承+封装） + 误解
+    # 有前置（传递链：继承+封装）；mock 不编造误解（合作伙伴未提供 → 空）
     prereq_ids = {item.get("kc_id") for item in ctx.prerequisite_knowledge}
     assert {"INHERITANCE", "ENCAPSULATION"} <= prereq_ids
-    assert any(m.get("kc_id") == "POLYMORPHISM" for m in ctx.misconceptions)
+    assert ctx.misconceptions == []
 
 
 def test_adaptive_qa_non_learning_question_minimal_context():

@@ -26,7 +26,7 @@ def _fallback_topic_detail(
             f"### {node.title}\n\n{node.summary}\n\n"
             f"建议先确认这些前置知识：{prereq_hint}。"
         ),
-        example_markdown=f"围绕「{node.title}」完成以下实践：{node.practice_task}",
+        example_markdown=f"围绕「{node.title}」完成以下实践：{node.application_task}",
         common_mistakes=["只记结论，没有验证关键步骤。", f"专题讲解使用降级内容，原因：{reason}"],
         completion_checks=[node.check_method],
         next_learning_suggestions=[
