@@ -1,22 +1,23 @@
+import time
 from typing import Any, Callable
 
 from edu_agent.workflows.study_plan.agents import (
     analyzer_agent,
     decomposer_agent,
     planner_agent,
-    practice_designer_agent,
     resource_evaluator_agent,
     researcher_agent,
     reviewer_agent,
 )
+from edu_agent.workflows.study_plan.knowledge_map import build_knowledge_map
 from edu_agent.workflows.study_plan.schemas import (
     AnalysisResult,
     DecompositionResult,
     DraftPlan,
     EvaluatedResearchResult,
     EvaluatedResource,
+    KnowledgeMap,
     PlanValidationResult,
-    PracticePlan,
     ResearchResult,
     ReviewResult,
     StudentInput,
@@ -25,9 +26,21 @@ from edu_agent.workflows.study_plan.validator import validate_study_plan
 
 
 def _run_step(step_name: str, func: Callable[..., Any], fallback: Callable[[Exception], Any], *args):
+    """执行流水线一步，并在控制台打印开始/完成/失败日志（用于诊断卡在哪一步）。"""
+    start = time.time()
+    print(f"[study_plan] ▶ 开始步骤: {step_name}", flush=True)
     try:
-        return func(*args)
+        result = func(*args)
+        print(
+            f"[study_plan] ✓ {step_name} 完成，耗时 {time.time() - start:.1f}s",
+            flush=True,
+        )
+        return result
     except Exception as exc:  # noqa: BLE001 - workflow should return displayable errors
+        print(
+            f"[study_plan] ✗ {step_name} 失败（{time.time() - start:.1f}s）: {exc} → 走降级",
+            flush=True,
+        )
         return fallback(exc)
 
 
@@ -206,63 +219,26 @@ def _fallback_draft(
 | -- | -- | -- | -- | -- | -- |
 {chr(10).join(daily_rows)}
 
-## 六、练习与检查任务
-
-| 阶段/天数 | 练习任务 | 检查标准 |
-| -- | -- | -- |
-| 每日 | 根据当天学习主题完成一个小练习 | 能提交练习结果并说明一个关键判断 |
-| 阶段 | 汇总阶段问题清单并修正至少 2 个卡点 | 复盘记录中包含问题、修正动作和结果 |
-| 最终 | 完成一个贴近目标的综合任务 | 有完整产出、关键步骤说明和自检清单 |
-
-## 七、推荐资源
+## 六、推荐资源
 
 | 类型 | 资源 | 用途 | 适合阶段 |
 | -- | -- | -- | -- |
 {chr(10).join(resource_rows)}
 
-## 八、最终验收标准
+## 七、最终验收标准
 
 - 能独立说明 {topic} 的核心概念、使用场景和常见限制。
 - 能提交覆盖每日任务的笔记、练习结果和问题清单。
 - 能完成一个和学习目标直接相关的综合作品或案例。
 - 能用自检清单指出 2 个薄弱点和下一步修正动作。
 
-## 九、执行建议
+## 八、执行建议
 
 - 每天结束前用 5 分钟记录“完成产出、卡点、明日动作”。
 - 遇到卡点时先缩小问题范围，保留错误信息或过程截图，再查资料。
 - 如果当天任务超过 {student_input.daily_time}，优先保留主线任务，把拓展内容移到复盘后处理。
 """
     return DraftPlan(plan_markdown=markdown)
-
-
-def _fallback_practice(
-    draft_plan: DraftPlan,
-    decomposition: DecompositionResult,
-    exc: Exception,
-) -> PracticePlan:
-    concepts = decomposition.learning_sequence or decomposition.core_concepts or ["当天主题"]
-    daily_tasks = [
-        f"第 {index} 天：围绕「{concept}」完成一个可提交练习，并记录检查结果。"
-        for index, concept in enumerate(concepts[:7], start=1)
-    ]
-    if not daily_tasks:
-        daily_tasks = ["第 1 天：完成一个与学习主题直接相关的小练习，并记录检查结果。"]
-
-    return PracticePlan(
-        practice_summary=f"练习设计步骤未完成，原因：{exc}。已生成可继续 Review 的降级练习任务。",
-        daily_practice_tasks=daily_tasks,
-        stage_check_tasks=[
-            f"{stage}：提交阶段产出、问题清单和下一步修正动作。"
-            for stage in (decomposition.stage_suggestions or ["基础阶段", "实践阶段", "综合阶段"])
-        ],
-        final_project="完成一个贴近学习目标的综合作品，并附上过程说明、结果截图或输出、复盘清单。",
-        reflection_questions=[
-            "今天是否留下了可检查产出？",
-            "哪个卡点阻塞了后续学习？下一步如何验证？",
-            "阶段产出是否仍然对齐最终目标？",
-        ],
-    )
 
 
 def _fallback_validation(exc: Exception) -> PlanValidationResult:
@@ -282,7 +258,17 @@ def _fallback_review(draft_plan: DraftPlan, exc: Exception) -> ReviewResult:
     )
 
 
-def run_study_plan_workflow(student_input: StudentInput) -> dict:
+def run_study_plan_workflow(
+    student_input: StudentInput,
+    knowledge_context: str = "无",
+) -> dict:
+    """学习规划主工作流。knowledge_context：知识库参考资料文本（可为"无"）。"""
+    workflow_start = time.time()
+    print(
+        f"[study_plan] 开始生成学习计划: topic={student_input.topic!r} "
+        f"days={student_input.days} 知识库参考={'有' if knowledge_context and knowledge_context != '无' else '无'}",
+        flush=True,
+    )
     analysis = _run_step(
         "analysis",
         analyzer_agent,
@@ -296,6 +282,7 @@ def run_study_plan_workflow(student_input: StudentInput) -> dict:
         student_input,
         analysis,
     )
+    knowledge_map: KnowledgeMap = build_knowledge_map(student_input, decomposition)
     research = _run_step("research", researcher_agent, _fallback_research, analysis)
     evaluated_research = _run_step(
         "evaluated_research",
@@ -320,13 +307,7 @@ def run_study_plan_workflow(student_input: StudentInput) -> dict:
         research,
         decomposition,
         evaluated_research,
-    )
-    practice_plan = _run_step(
-        "practice_plan",
-        practice_designer_agent,
-        lambda exc: _fallback_practice(draft_plan, decomposition, exc),
-        draft_plan,
-        decomposition,
+        knowledge_context,
     )
     validation = _run_step(
         "validation",
@@ -334,7 +315,6 @@ def run_study_plan_workflow(student_input: StudentInput) -> dict:
         _fallback_validation,
         student_input,
         draft_plan,
-        practice_plan,
         evaluated_research,
     )
     review = _run_step(
@@ -342,17 +322,21 @@ def run_study_plan_workflow(student_input: StudentInput) -> dict:
         reviewer_agent,
         lambda exc: _fallback_review(draft_plan, exc),
         draft_plan,
-        practice_plan,
         validation,
     )
 
+    print(
+        f"[study_plan] 完成学习计划，总耗时 {time.time() - workflow_start:.1f}s "
+        f"（review 是否走降级: {review.review_summary.startswith('Reviewer Agent 暂时不可用')}）",
+        flush=True,
+    )
     return {
         "analysis": analysis,
         "decomposition": decomposition,
+        "knowledge_map": knowledge_map,
         "research": research,
         "evaluated_research": evaluated_research,
         "draft_plan": draft_plan,
-        "practice_plan": practice_plan,
         "validation": validation,
         "review": review,
         "final_plan": review.final_plan_markdown,

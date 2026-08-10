@@ -12,7 +12,11 @@
 - 使用 Tavily 进行联网搜索；未配置 Tavily 时可降级运行。
 - 使用多个 Agent 进行需求分析、内容拆解、资料整理、资源评估、计划生成、练习设计和最终优化。
 - 使用规则校验器检查计划结构、天数、任务完整性、空泛表达和资源链接。
-- 使用 Streamlit 提供正式页面，支持最终计划展示、过程详情查看和 Markdown 下载。
+- 将内容拆解结果组织成知识目录、推荐学习路径和知识卡片。
+- 支持选择知识点生成专题讲解、示例、练习和完成检查。
+- 支持围绕当前学习计划和选中知识点连续提问。
+- 支持知识库对话问答：结合知识库内容生成口语化、分步骤回答，涉及知识点自动附来源引用；知识库未覆盖时明确说明并引导进入学情诊断，不编造内容；模型平台不可用或超时时自动降级为本地知识库检索回答，对话不中断。
+- 使用 Streamlit 提供工作流中心和统一学习工作台，支持知识学习、最终计划、AI 助教、过程详情和 Markdown 下载。
 
 ## 技术栈
 
@@ -42,6 +46,8 @@ EduAgents/
 │     ├─ tools/
 │     │  ├─ web_search.py
 │     │  ├─ course_kb.py
+│     │  ├─ kb_store.py
+│     │  ├─ github_importer.py
 │     │  └─ student_memory.py
 │     ├─ workflows/
 │     │  ├─ study_plan/
@@ -50,8 +56,22 @@ EduAgents/
 │     │  │  ├─ input_parser.py
 │     │  │  ├─ schemas.py
 │     │  │  ├─ prompts.py
+│     │  │  ├─ knowledge_map.py
 │     │  │  ├─ validator.py
 │     │  │  └─ resource_rules.py
+│     │  ├─ kb_qa/
+│     │  │  ├─ workflow.py
+│     │  │  ├─ rules.py
+│     │  │  ├─ prompts.py
+│     │  │  └─ schemas.py
+│     │  ├─ topic_tutor/
+│     │  │  ├─ workflow.py
+│     │  │  ├─ prompts.py
+│     │  │  └─ schemas.py
+│     │  ├─ plan_chat/
+│     │  │  ├─ workflow.py
+│     │  │  ├─ prompts.py
+│     │  │  └─ schemas.py
 │     │  ├─ mistake_reflection/
 │     │  ├─ quiz_generation/
 │     │  └─ learning_report/
@@ -94,6 +114,23 @@ EduAgents/
 | PlanValidator | 使用规则检查计划结构、天数、任务完整性和空泛表达 |
 | Reviewer | 根据校验结果生成最终优化后的学习计划 |
 
+规划完成后提供两个按需交互工作流：
+
+| 工作流 | 职责 |
+| -- | -- |
+| TopicTutor | 围绕选中的知识节点生成专题讲解、示例、练习和完成检查 |
+| PlanChat | 携带学生信息、当前计划、知识点和资源进行连续问答，必要时按需搜索 |
+
+另提供知识库对话问答工作流（kb_qa）：
+
+| 工作流 | 职责 |
+| -- | -- |
+| KbQa | 结合知识库内容生成口语化、分步骤回答，附来源引用（标题+定位）；提问笼统时先引导选择方向（概念/代码/易错点）；知识库未覆盖时明确说明并建议进入学情诊断，不编造；模型平台不可用/超时自动降级为本地检索回答，对话不中断 |
+
+知识库默认从空库开始（不再内置示例数据），导入的内容持久化到 `data/knowledge_base.json`（`tools/kb_store.py`），Streamlit 重启不丢失；侧栏支持**从 GitHub 仓库导入**（`tools/github_importer.py`：浅克隆 → 读取 .md/.txt/.rst/.ipynb 文档 → 分块入知识库，URL 白名单校验防注入），也支持**直接导入 .md/.txt 文件**与粘贴 Markdown 扩充，并可一键**清空知识库**。
+
+知识库对话问答的模型调用优先走星辰平台（`XINGCHEN_*` 或 `OPENCODE_ZEN_*` 配置），未配置时回落 `OPENAI_*`；`OPENAI_MODEL` 支持逗号分隔的**多模型 fallback 链**（主模型限流/失败自动切换下一个）。
+
 ## 环境变量
 
 复制 `.env.example` 为 `.env`：
@@ -109,6 +146,9 @@ OPENAI_API_KEY=
 OPENAI_BASE_URL=https://api.deepseek.com
 OPENAI_MODEL=deepseek-chat
 TAVILY_API_KEY=
+XINGCHEN_API_KEY=
+XINGCHEN_BASE_URL=
+XINGCHEN_MODEL=
 ```
 
 说明：
@@ -117,6 +157,8 @@ TAVILY_API_KEY=
 - `OPENAI_BASE_URL`：可选，默认示例为 DeepSeek OpenAI 兼容接口。
 - `OPENAI_MODEL`：默认示例为 `deepseek-chat`。
 - `TAVILY_API_KEY`：可选。未配置时系统会提示未启用联网搜索，并基于模型和学生输入继续生成学习计划。
+- `XINGCHEN_API_KEY` / `XINGCHEN_BASE_URL` / `XINGCHEN_MODEL`：可选。知识库对话问答工作流专用，OpenAI 兼容接口；配置后优先走星辰平台，留空时自动回落 `OPENAI_*` 配置。
+- `KB_QA_MOCK`：可选。对话问答演示模式开关——`true` 强制演示（不调模型，用知识库原文模拟生成讲解，回答会标注"演示模式"）；`false` 强制真实模型；留空自动判断（未配置任何模型 API key 时自动进入演示模式，开箱即可完整体验）。
 
 ## 安装依赖
 
@@ -187,13 +229,13 @@ streamlit run app/streamlit_app.py --server.address 0.0.0.0 --server.port 8502 -
 - 最终验收标准
 - 执行建议
 
-页面还会在过程详情中展示需求分析、内容拆解、搜索结果、资源评估、练习设计、规则校验和 Reviewer 检查结果。
+页面分为工作流中心和统一工作台两个主层级。学习规划工作台包含学习概览、知识学习和完整计划三个视图；AI 助教与运行过程通过辅助弹窗打开。知识学习采用推荐路径、分类目录和宽版知识点详情，支持状态标记与按需专题讲解；运行过程展示需求分析、内容拆解、搜索结果、资源评估、练习设计、规则校验和 Reviewer 检查结果。
 
 ## 后续扩展
 
 当前项目已经预留以下扩展点：
 
-- `src/edu_agent/tools/course_kb.py`：后续可接入 LlamaIndex 或其他课程知识库。
+- `src/edu_agent/tools/course_kb.py`：已实现最小本地课程知识库（Markdown 分块 + 纯 Python 关键词检索），后续可替换为 LlamaIndex/向量检索实现，接口不变。
 - `src/edu_agent/tools/student_memory.py`：后续可接入学生错题、练习记录和学习历史。
 - `src/edu_agent/workflows/mistake_reflection/`：后续可扩展错题反思工作流。
 - `src/edu_agent/workflows/quiz_generation/`：后续可扩展练习生成工作流。

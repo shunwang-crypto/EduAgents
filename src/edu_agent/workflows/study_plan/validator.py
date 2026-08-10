@@ -6,7 +6,6 @@ from edu_agent.workflows.study_plan.schemas import (
     DraftPlan,
     EvaluatedResearchResult,
     PlanValidationResult,
-    PracticePlan,
     ResearchResult,
     StudentInput,
 )
@@ -144,7 +143,6 @@ def _resources_from(research: Any) -> list[Any]:
 def validate_study_plan(
     student_input: StudentInput,
     draft_plan: DraftPlan,
-    practice_plan: PracticePlan,
     research: ResearchResult | EvaluatedResearchResult,
 ) -> PlanValidationResult:
     markdown = draft_plan.plan_markdown or ""
@@ -202,13 +200,6 @@ def validate_study_plan(
                 f"部分每日计划未填写学习任务、实践任务或检查方式：{', '.join(incomplete_rows)}。"
             )
             suggestions.append("逐日补齐具体学习动作、可执行实践任务和可判断的检查方式。")
-
-    if "练习" not in markdown:
-        issues.append("计划缺少练习任务。")
-        if practice_plan.daily_practice_tasks or practice_plan.stage_check_tasks:
-            suggestions.append("将 PracticeDesigner 生成的练习任务整合进“练习与检查任务”章节。")
-        else:
-            suggestions.append("为每日或每个阶段补充可提交、可检查的练习任务。")
 
     if "最终验收标准" not in markdown:
         issues.append("计划缺少“最终验收标准”章节。")

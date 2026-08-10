@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -40,6 +40,27 @@ class DecompositionResult(BaseModel):
     difficulty_points: List[str] = Field(description="学习难点")
     stage_suggestions: List[str] = Field(description="阶段划分建议")
     practice_directions: List[str] = Field(description="推荐实践方向")
+
+
+class KnowledgeNode(BaseModel):
+    id: str = Field(description="知识节点稳定标识")
+    title: str = Field(description="知识点名称")
+    category: str = Field(description="知识点分类")
+    parent_id: Optional[str] = Field(default=None, description="父节点标识")
+    summary: str = Field(description="知识点摘要")
+    prerequisites: List[str] = Field(default_factory=list, description="前置知识点名称")
+    difficulty: str = Field(description="难度等级")
+    estimated_minutes: int = Field(ge=10, le=600, description="建议学习时间，单位：分钟")
+    stage: str = Field(description="所属学习阶段")
+    learning_objective: str = Field(description="可检查的学习目标")
+    practice_task: str = Field(description="建议实践任务")
+    check_method: str = Field(description="完成检查方式")
+
+
+class KnowledgeMap(BaseModel):
+    topic: str = Field(description="知识地图主题")
+    nodes: List[KnowledgeNode] = Field(description="知识节点列表")
+    recommended_path: List[str] = Field(description="推荐学习路径，内容为知识节点 id")
 
 
 class EvaluatedResource(BaseModel):

@@ -5,5 +5,5 @@ langchain
 langchain-core
 langchain-openai
 langchain-tavily
+langgraph
 pytest
-

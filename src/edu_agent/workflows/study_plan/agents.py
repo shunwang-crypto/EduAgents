@@ -1,5 +1,6 @@
 import json
 import re
+import time
 from typing import List
 
 from edu_agent.core.agent_runner import (
@@ -13,7 +14,6 @@ from edu_agent.workflows.study_plan.prompts import (
     ANALYZER_PROMPT,
     DECOMPOSER_PROMPT,
     PLANNER_PROMPT,
-    PRACTICE_DESIGNER_PROMPT,
     RESOURCE_EVALUATOR_PROMPT,
     RESEARCHER_PROMPT,
     REVIEWER_PROMPT,
@@ -26,7 +26,6 @@ from edu_agent.workflows.study_plan.schemas import (
     EvaluatedResearchResult,
     EvaluatedResource,
     PlanValidationResult,
-    PracticePlan,
     ResearchResult,
     ReviewResult,
     StudentInput,
@@ -138,7 +137,13 @@ def researcher_agent(analysis: AnalysisResult) -> ResearchResult:
             resources=[],
         )
 
+    search_start = time.time()
     search_output = search_many(analysis.search_queries)
+    print(
+        f"[research] 搜索 {len(analysis.search_queries)} 个查询共耗时 {time.time() - search_start:.1f}s，"
+        f"得到 {len(search_output['results'])} 条资源",
+        flush=True,
+    )
     resources: List[WebResource] = search_output["results"]
 
     if not search_output["enabled"]:
@@ -154,6 +159,7 @@ def researcher_agent(analysis: AnalysisResult) -> ResearchResult:
         ensure_ascii=False,
         indent=2,
     )
+    llm_start = time.time()
     result = invoke_structured_output(
         RESEARCHER_PROMPT,
         ResearchResult,
@@ -163,6 +169,10 @@ def researcher_agent(analysis: AnalysisResult) -> ResearchResult:
             "search_results": search_results_text,
         },
         get_llm(temperature=0.2),
+    )
+    print(
+        f"[research] LLM 总结完成，耗时 {time.time() - llm_start:.1f}s",
+        flush=True,
     )
 
     # Keep the real tool status even if the model omits or rewrites it.
@@ -262,77 +272,18 @@ def _infer_day_count(markdown: str) -> int:
     return max(day_numbers) if day_numbers else 0
 
 
-def _fallback_practice_plan(
-    draft_plan: DraftPlan,
-    decomposition: DecompositionResult,
-    reason: Exception | None = None,
-) -> PracticePlan:
-    sequence = decomposition.learning_sequence or decomposition.core_concepts or ["学习主题"]
-    day_count = _infer_day_count(draft_plan.plan_markdown) or min(max(len(sequence), 3), 7)
-    daily_tasks = []
-    for day in range(1, day_count + 1):
-        concept = sequence[(day - 1) % len(sequence)]
-        daily_tasks.append(
-            f"第 {day} 天：围绕「{concept}」完成一个可提交练习，并记录 1 个卡点和 1 条改进动作。"
-        )
-
-    stage_tasks = []
-    stages = decomposition.stage_suggestions or ["基础阶段", "实践阶段", "综合阶段"]
-    for index, stage in enumerate(stages, start=1):
-        direction = decomposition.practice_directions[
-            (index - 1) % len(decomposition.practice_directions)
-        ] if decomposition.practice_directions else "提交一份阶段产出"
-        stage_tasks.append(
-            f"{stage}：完成「{direction}」，并用 3 条证据说明阶段目标已达成。"
-        )
-
-    suffix = f" 降级原因：{reason}" if reason else ""
-    return PracticePlan(
-        practice_summary=f"练习任务围绕知识点拆解生成，覆盖每日产出、阶段检查和最终综合任务。{suffix}".strip(),
-        daily_practice_tasks=daily_tasks,
-        stage_check_tasks=stage_tasks,
-        final_project="完成一个能够展示学习目标的综合作品，并附上操作步骤、关键截图或结果说明、复盘清单。",
-        reflection_questions=[
-            "今天的产出能否被别人复现或检查？还缺哪一步证据？",
-            "哪个概念最影响后续学习？明天要用什么小任务验证它？",
-            "本阶段产出是否直接服务最终目标？需要删减哪些旁支内容？",
-        ],
-    )
-
-
-def practice_designer_agent(
-    draft_plan: DraftPlan,
-    decomposition: DecompositionResult,
-) -> PracticePlan:
-    """
-    练习设计 Agent：
-    根据初版计划和内容拆解生成每日练习、阶段检查、最终项目和反思问题。
-    """
-
-    try:
-        return invoke_structured_output(
-            PRACTICE_DESIGNER_PROMPT,
-            PracticePlan,
-            {
-                "draft_plan": draft_plan.plan_markdown,
-                "decomposition": model_to_text(decomposition),
-            },
-            get_llm(temperature=0.25),
-        )
-    except Exception as exc:  # noqa: BLE001 - agent should return usable tasks
-        return _fallback_practice_plan(draft_plan, decomposition, exc)
-
-
 def planner_agent(
     student_input: StudentInput,
     analysis: AnalysisResult,
     research: ResearchResult,
     decomposition: DecompositionResult | None = None,
     evaluated_research: EvaluatedResearchResult | None = None,
+    knowledge_context: str = "无",
 ) -> DraftPlan:
     """
     学习规划 Agent：
     使用 LangChain LLM 生成 Markdown 学习计划。
+    knowledge_context：来自已导入知识库的参考资料文本（命中块拼接），可为"无"。
     """
 
     from langchain_core.prompts import ChatPromptTemplate
@@ -353,6 +304,7 @@ def planner_agent(
             "decomposition": model_to_text(decomposition),
             "research": model_to_text(research),
             "evaluated_research": model_to_text(evaluated_research),
+            "knowledge_context": knowledge_context or "无",
         }
     )
     return DraftPlan(plan_markdown=normalize_markdown_output(response))
@@ -360,7 +312,6 @@ def planner_agent(
 
 def reviewer_agent(
     draft_plan: DraftPlan,
-    practice_plan: PracticePlan | None = None,
     validation_result: PlanValidationResult | None = None,
 ) -> ReviewResult:
     """
@@ -373,7 +324,6 @@ def reviewer_agent(
         ReviewResult,
         {
             "draft_plan": draft_plan.plan_markdown,
-            "practice_plan": model_to_text(practice_plan) if practice_plan else "未生成练习设计结果。",
             "validation_result": (
                 model_to_text(validation_result)
                 if validation_result
