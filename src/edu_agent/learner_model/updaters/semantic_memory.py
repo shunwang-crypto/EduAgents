@@ -1,11 +1,13 @@
 """Semantic Memory Updater：长期语义记忆（SQLite，未来可迁向量库）。
 
-- CREATE / REINFORCE（重复提及 confidence/importance 上升）/ DEACTIVATE / DELETE。
+- CREATE / REINFORCE（同内容去重，importance 微升）/ DELETE。
 - 用户明确删除 → 真正 DELETE。
+- scope：course_id='' → global；否则 course。
 """
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
@@ -17,11 +19,23 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _normalize(content: str) -> str:
+    """轻量归一化指纹：小写、去空白/标点，减少近重复。"""
+    text = re.sub(r"[\s，。、；：！？.,;:!?（）()\[\]【】\"']", "", content.lower())
+    return text
+
+
 def _find_memory(
     repo: LearnerRepository, user_id: str, content: str, course_id: str = ""
 ) -> Optional[dict]:
-    for m in repo.list_memories(user_id, course_id):
-        if (m.get("content") or "").strip() == content.strip():
+    norm = _normalize(content)
+    candidates = (
+        repo.list_global_memories(user_id)
+        if not course_id
+        else repo.list_effective_memories(user_id, course_id)
+    )
+    for m in candidates:
+        if _normalize(m.get("content") or "") == norm:
             return m
     return None
 
@@ -35,8 +49,9 @@ def add_memory(
     importance: float = 0.5,
     source: str = "USER_EXPLICIT",
 ) -> Dict[str, Any]:
-    """新增或强化一条语义记忆（同内容去重 → REINFORCE）。"""
+    """新增或强化一条语义记忆（归一化去重 → REINFORCE）。"""
     now = _now_iso()
+    scope = "global" if not course_id else "course"
     existing = _find_memory(repo, user_id, content, course_id)
     if existing:
         repo.upsert_memory(
@@ -48,7 +63,14 @@ def add_memory(
                 "updated_at": now,
             }
         )
-        return {"operation": "REINFORCE", "entity": f"memory:{existing['memory_id']}"}
+        return {
+            "operation": "REINFORCE",
+            "entity": f"memory:{existing['memory_id']}",
+            "before": {"importance": existing.get("importance")},
+            "after": {"importance": min(1.0, float(existing.get("importance", 0.5)) + 0.1)},
+            "reason": "duplicate content",
+            "scope": scope,
+        }
 
     memory_id = f"MEM-{uuid.uuid4().hex[:12]}"
     repo.upsert_memory(
@@ -68,7 +90,14 @@ def add_memory(
             "expires_at": None,
         }
     )
-    return {"operation": "CREATE", "entity": f"memory:{memory_id}"}
+    return {
+        "operation": "CREATE",
+        "entity": f"memory:{memory_id}",
+        "before": None,
+        "after": {"content": content[:60], "importance": importance},
+        "reason": "add_memory",
+        "scope": scope,
+    }
 
 
 def delete_memory_direct(
@@ -76,4 +105,11 @@ def delete_memory_direct(
 ) -> Dict[str, Any]:
     """用户明确删除：真正 DELETE。"""
     repo.delete_memory(user_id, memory_id)
-    return {"operation": "DELETE", "entity": f"memory:{memory_id}", "reason": "user requested"}
+    return {
+        "operation": "DELETE",
+        "entity": f"memory:{memory_id}",
+        "before": None,
+        "after": None,
+        "reason": "user requested",
+        "scope": "global",
+    }

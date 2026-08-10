@@ -1,16 +1,15 @@
 """AdaptivePolicy 主入口：组装各策略组件生成 AdaptiveDecision。
 
-策略组件在 `adaptive/policies/` 独立拆分（可单独测试）：
-- mastery / confidence / prerequisite / misconception / preference / temporal / ability
-
-本文件只负责编排与合并，不做 1000 行 if/else。
+策略组件在 `adaptive/policies/` 独立拆分（可单独测试）。
+reason_codes：所有组件只 append 到统一 reasons 列表，
+最后一次性去重写入 decision.reason_codes（避免中途复制丢失）。
 """
 
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 
-from edu_agent.adaptive.policies import (  # noqa: F401
+from edu_agent.adaptive.policies import (
     ability_policy,
     confidence_policy,
     mastery_policy,
@@ -41,7 +40,7 @@ def make_decision(
     """综合各策略组件生成 AdaptiveDecision。"""
     reasons: List[str] = []
 
-    # 1) 目标 KC 状态
+    # 1) 目标 KC 状态（mastery 可能是 None = UNKNOWN）
     knowledge_map: Dict[str, KnowledgeItem] = {}
     for item in context.knowledge_snapshot:
         if item.get("kc_id"):
@@ -49,45 +48,43 @@ def make_decision(
         elif item.get("name"):
             knowledge_map[item["name"]] = KnowledgeItem(kc_id=item["name"], **item)
 
-    target_item = None
+    target_item: Optional[KnowledgeItem] = None
     if context.target_kc:
         target_item = knowledge_map.get(context.target_kc)
         if target_item is None:
-            # 知识快照可能用名称而非 id
             for k, v in knowledge_map.items():
                 if v.name == context.target_kc:
                     target_item = v
                     break
 
-    target_mastery = target_item.mastery if target_item else 0.0
-    # confidence 未知（None）→ 按 0.0 保守处理（不武断 mastered/weak）
-    target_confidence = (target_item.confidence if target_item else None) or 0.0
+    target_mastery = target_item.mastery if target_item else None  # None=UNKNOWN
+    target_confidence = target_item.confidence if target_item else None
 
     # 2) 时间衰减
     temporal = resolve(target_item)
     context.temporal = temporal
 
-    # 3) 逐组件决策（后写的组件在不覆盖已有 key 的前提下合并）
+    # 3) 逐组件决策（后写组件不覆盖已有 key 的前提下合并）
     decision = AdaptiveDecision(
         task_type=task_type,
         target_kc=context.target_kc,
         learner_state_version=context.learner_state_version,
+        global_state_version=context.global_state_version,
         depth="medium",
         difficulty="medium",
         scaffold_level="medium",
         delivery_mode="explanation",
         example_count=1,
         pedagogical_actions=["EXPLAIN"],
-        reason_codes=reasons,
+        reason_codes=[],
     )
 
     def _merge(partial: Dict[str, object]) -> None:
         for key, value in partial.items():
             if key == "pedagogical_actions":
-                existing = decision.pedagogical_actions
                 for action in value:
-                    if action not in existing:
-                        existing.append(action)
+                    if action not in decision.pedagogical_actions:
+                        decision.pedagogical_actions.append(action)
             elif key == "content_order":
                 decision.content_order = value
             elif key == "reason_codes":
@@ -104,22 +101,25 @@ def make_decision(
         _merge(prerequisite_policy(context.target_kc, course, knowledge_map, reasons))
     _merge(misconception_policy(context.misconceptions, reasons))
 
-    # 4) 偏好（Pedagogical Need 优先）
+    # 4) 偏好（Pedagogical Need 优先；前置缺口/误解/困惑不能被偏好覆盖）
     pedagogical_need = decision.pedagogical_actions[0] if decision.pedagogical_actions else "EXPLAIN"
     if delivery_mode_hint:
         decision.delivery_mode = delivery_mode_hint  # type: ignore[assignment]
-    else:
+    elif not decision.review_prerequisite and not context.misconceptions:
         _merge(preference_policy(context.preferences, pedagogical_need, reasons))
 
-    # 5) 下一步推荐：可达前沿（KST-lite）
+    # 5) 下一步推荐：可达前沿（KST-lite；UNKNOWN 排序靠后但优先于无关）
     try:
         from edu_agent.domain.learning.kc_graph import recommended_next
 
         mastery_map = {
-            item["kc_id"]: item.get("mastery", 0.0)
+            item["kc_id"]: item.get("mastery")
             for item in context.knowledge_snapshot if item.get("kc_id")
         }
-        next_kcs = recommended_next(course, mastery_map, goal_kcs=[context.target_kc] if context.target_kc else None)
+        next_kcs = recommended_next(
+            course, mastery_map,
+            goal_kcs=[context.target_kc] if context.target_kc else None,
+        )
         if next_kcs:
             decision.next_kc = next_kcs[0]
     except Exception:  # noqa: BLE001 - 推荐失败不影响主决策
@@ -136,18 +136,18 @@ def make_decision(
             decision.pedagogical_actions.append("WORKED_EXAMPLE")
         decision.example_count = max(decision.example_count, 3)
 
-    # 清理 reason_codes 去重
-    decision.reason_codes = list(dict.fromkeys(reasons))
-
-    # 无目标数据时标记
+    # 7) 无目标数据标记
     if target_item is None and not context.knowledge_snapshot:
         reasons.append(REASON_NO_DATA)
 
+    # 8) 最后一次统一收集 reason_codes（去重保序）
+    decision.reason_codes = list(dict.fromkeys(reasons))
+
     # content_order 默认
     if not decision.content_order:
-        order = []
+        order: List[str] = []
         if decision.review_prerequisite:
-            order = decision.prerequisite_topics + [context.target_kc] if context.target_kc else decision.prerequisite_topics
+            order = (decision.prerequisite_topics or []) + ([context.target_kc] if context.target_kc else [])
         elif context.target_kc:
             order = [context.target_kc]
         decision.content_order = order

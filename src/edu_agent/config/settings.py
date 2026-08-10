@@ -33,8 +33,8 @@ class Settings(BaseModel):
     learner_model_db_path: str = Field(default="", alias="LEARNER_MODEL_DB_PATH")
     learner_model_auto_update: bool = Field(default=True, alias="LEARNER_MODEL_AUTO_UPDATE")
     learner_model_snapshot_interval: int = Field(default=10, alias="LEARNER_MODEL_SNAPSHOT_INTERVAL")
-    learner_model_llm_inference_enabled: bool = Field(
-        default=False, alias="LEARNER_MODEL_LLM_INFERENCE_ENABLED"
+    learner_model_semantic_inference_enabled: bool = Field(
+        default=False, alias="LEARNER_MODEL_SEMANTIC_INFERENCE_ENABLED"
     )
     learner_model_user_id: str = Field(default="STU-001", alias="LEARNER_MODEL_USER_ID")
     learner_model_course_id: str = Field(default="JAVA-OOP", alias="LEARNER_MODEL_COURSE_ID")
@@ -52,8 +52,8 @@ def get_settings() -> Settings:
     auto_update_raw = os.getenv("LEARNER_MODEL_AUTO_UPDATE", "").strip().lower()
     auto_update = auto_update_raw not in {"0", "false", "no", "off"}
 
-    llm_infer_raw = os.getenv("LEARNER_MODEL_LLM_INFERENCE_ENABLED", "").strip().lower()
-    llm_infer = llm_infer_raw in {"1", "true", "yes", "on"}
+    semantic_raw = os.getenv("LEARNER_MODEL_SEMANTIC_INFERENCE_ENABLED", "").strip().lower()
+    semantic_infer = semantic_raw in {"1", "true", "yes", "on"}
 
     return Settings(
         OPENAI_API_KEY=os.getenv("OPENAI_API_KEY", ""),
@@ -72,7 +72,7 @@ def get_settings() -> Settings:
         LEARNER_MODEL_SNAPSHOT_INTERVAL=int(
             os.getenv("LEARNER_MODEL_SNAPSHOT_INTERVAL", "10") or 10
         ),
-        LEARNER_MODEL_LLM_INFERENCE_ENABLED=llm_infer,
+        LEARNER_MODEL_SEMANTIC_INFERENCE_ENABLED=semantic_infer,
         LEARNER_MODEL_USER_ID=os.getenv("LEARNER_MODEL_USER_ID", "STU-001").strip()
         or "STU-001",
         LEARNER_MODEL_COURSE_ID=os.getenv("LEARNER_MODEL_COURSE_ID", "JAVA-OOP").strip()

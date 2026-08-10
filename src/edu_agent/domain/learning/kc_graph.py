@@ -19,21 +19,30 @@ from edu_agent.domain.learning.knowledge_component import KnowledgeComponent
 
 def reachable_frontier(
     course: Course,
-    mastery: Dict[str, float],
+    mastery: Dict[str, Optional[float]],
     threshold: float = 0.7,
 ) -> List[str]:
-    """KST-lite：返回「所有前置已掌握、自身未达标」的 KC。
+    """KST-lite：返回「所有前置已满足、自身未达标」的 KC。
 
-    这是学习路径推荐的核心：
-      候选 = 前置全部 >= threshold 且 自身 < threshold 的节点。
+    UNKNOWN（mastery=None 或缺省）处理：
+    - 前置 UNKNOWN → 不自动通过（不能假设已掌握），因此该 KC 不进入 frontier；
+      （也不判为「确认不会」，由 recommended_next 的 PREREQUISITE_UNKNOWN 语义体现）
+    - 自身 UNKNOWN → 视为未达标（可进入 frontier 学习）。
     """
     result: List[str] = []
     for kc in course.components:
         kc_id = kc.kc_id
-        if mastery.get(kc_id, 0.0) >= threshold:
+        own = mastery.get(kc_id)
+        if own is not None and own >= threshold:
             continue
         prereqs = course.prerequisites(kc_id)
-        if all(mastery.get(p, 0.0) >= threshold for p in prereqs):
+        prereqs_ok = True
+        for p in prereqs:
+            pv = mastery.get(p)
+            if pv is None or pv < threshold:  # UNKNOWN 或未掌握 → 前置未满足
+                prereqs_ok = False
+                break
+        if prereqs_ok:
             result.append(kc_id)
     # 按传递前置数量稳定排序（前置越少的越靠前）
     return sorted(result, key=lambda kc_id: len(course.all_prerequisites_transitive(kc_id)))
@@ -41,11 +50,15 @@ def reachable_frontier(
 
 def recommended_next(
     course: Course,
-    mastery: Dict[str, float],
+    mastery: Dict[str, Optional[float]],
     goal_kcs: Optional[List[str]] = None,
     threshold: float = 0.7,
 ) -> List[str]:
-    """推荐下一步 KC：在可达前沿中，优先目标 KC 相关节点，再按掌握度升序。"""
+    """推荐下一步 KC：在可达前沿中，优先目标 KC 相关节点，再按掌握度升序。
+
+    排序策略（KNOWN 优先于 UNKNOWN，避免未知当 0）：
+      known weak < unknown < 其他
+    """
     frontier = reachable_frontier(course, mastery, threshold)
     if not frontier:
         return []
@@ -60,7 +73,13 @@ def recommended_next(
         else:
             rest.append(kc)
     ordered = relevant + rest
-    return sorted(ordered, key=lambda kc_id: (kc_id not in relevant, mastery.get(kc_id, 0.0)))
+
+    def _sort_key(kc_id: str) -> tuple:
+        value = mastery.get(kc_id)
+        # 相关优先；KNOWN（有值）在 UNKNOWN 之前；再按值升序
+        return (kc_id not in relevant, value is None, value if value is not None else 1.0)
+
+    return sorted(ordered, key=_sort_key)
 
 
 # ---------------------------------------------------------------------------

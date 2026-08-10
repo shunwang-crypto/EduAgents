@@ -183,9 +183,9 @@ def _render_form() -> bool:
             key="form_topic",
         )
         level = st.text_area(
-            "当前基础",
-            placeholder="例如：会基础 Python，不熟悉 pandas 和可视化",
-            height=120,
+            "当前基础（首次使用可选填写）",
+            placeholder="例如：会基础 Python，不熟悉 pandas 和可视化（已有画像时系统自动适配，可留空）",
+            height=100,
             key="form_level",
         )
 
@@ -214,25 +214,55 @@ def _render_form() -> bool:
         submitted = st.form_submit_button("生成学习规划", use_container_width=True)
 
     if submitted:
-        if not topic.strip() or not level.strip() or not daily_time.strip() or not goal.strip():
-            st.warning("请完整填写学习内容、当前基础、每天学习时间和学习目标。")
+        if not topic.strip() or not daily_time.strip() or not goal.strip():
+            st.warning("请完整填写学习内容、每天学习时间和学习目标（当前基础可选）。")
             return False
 
         student_input = StudentInput(
             topic=topic.strip(),
-            level=level.strip(),
+            level=level.strip() or None,
             days=int(days),
             daily_time=daily_time.strip(),
             goal=goal.strip(),
         )
 
         try:
+            # 解析稳定 course_id（多课程：不全部落 JAVA-OOP）
+            from edu_agent.adaptive.course_resolver import resolve_course_id
+            from edu_agent.config.settings import get_settings
+            from edu_agent.learner_model.service import LearnerModelService
+            from edu_agent.learner_model.evidence.extractor import build_event
+
+            settings = get_settings()
+            learner_service = LearnerModelService()
+            existing_courses = [c["course_id"] for c in learner_service.repo.list_domain_courses()]
+            existing_courses.append("JAVA-OOP")
+            course_id = resolve_course_id(topic.strip(), existing_courses)
+            st.session_state["_current_course_id"] = course_id
+
+            # 首次填写「当前基础」→ 写入 USER_EXPLICIT_PROFILE_FACT（画像闭环）
+            if level.strip():
+                learner_service.ingest_event(
+                    build_event(
+                        "USER_EXPLICIT_PROFILE_FACT",
+                        user_id=settings.learner_model_user_id,
+                        payload={
+                            "fact_key": f"background:{course_id}",
+                            "fact_value": level.strip(),
+                            "category": "background",
+                        },
+                    )
+                )
+
             # 自适应上下文：读 LearnerState → 决策 → 注入 Planner（画像不可用时为空）
             from edu_agent.adaptive.service import prepare_adaptive_context
 
             try:
                 _ctx, _dec, plan_ctx = prepare_adaptive_context(
-                    task_type="study_plan", query=topic.strip()
+                    task_type="study_plan",
+                    query=topic.strip(),
+                    user_id=settings.learner_model_user_id,
+                    course_id=course_id,
                 )
                 plan_learner_context = plan_ctx.get("learner_context", "")
                 plan_adaptive_instructions = plan_ctx.get("adaptive_instructions", "")
@@ -258,6 +288,45 @@ def _render_form() -> bool:
         st.session_state["topic_details"] = {}
         st.session_state["knowledge_chat_histories"] = {}
         st.session_state.pop("selected_knowledge_id", None)
+
+        # ---- 画像闭环：注册自定义课程 Domain Model + 创建 Goal + PLAN_CREATED ----
+        try:
+            from edu_agent.adaptive.course_resolver import resolve_goal_id
+            from edu_agent.domain.learning.course_builder import (
+                build_course_from_nodes,
+                persist_course,
+            )
+            from edu_agent.domain.learning.kc_graph import register_course
+
+            service = LearnerModelService()
+            km = result.get("knowledge_map")
+            nodes = [n.model_dump() for n in (km.nodes if km and hasattr(km, "nodes") else [])]
+            if nodes:
+                course = build_course_from_nodes(course_id, topic.strip(), nodes, topic=topic.strip())
+                register_course(course)
+                persist_course(service.repo, course, topic=topic.strip())
+
+            goal_id = resolve_goal_id(settings.learner_model_user_id, course_id)
+            service.upsert_goal(
+                settings.learner_model_user_id,
+                goal_id,
+                course_id,
+                name=f"{topic.strip()} 学习计划",
+                target=goal.strip(),
+                target_kcs=[n.get("id") for n in nodes if n.get("id")][:8] or None,
+            )
+            service.set_current_goal(settings.learner_model_user_id, course_id, goal_id)
+            service.ingest_event(
+                build_event(
+                    "PLAN_CREATED",
+                    user_id=settings.learner_model_user_id,
+                    course_id=course_id,
+                    payload={"topic": topic.strip(), "goal_id": goal_id},
+                )
+            )
+        except Exception:  # noqa: BLE001 - 画像闭环失败不阻断主流程
+            pass
+
         st.rerun()
 
     return False
@@ -325,7 +394,22 @@ def _select_first_node_in_category(first_node_ids: dict[str, str]) -> None:
 
 
 def _update_knowledge_status(node_id: str, widget_key: str) -> None:
-    _knowledge_statuses()[node_id] = st.session_state[widget_key]
+    """学习状态变更 → 事件（TOPIC_STARTED/COMPLETED/REVISITED）+ UI 状态。
+
+    「已完成」只更新进度，绝不自动修改 mastery。
+    """
+    new_status = st.session_state.get(widget_key, "")
+    old_status = _knowledge_statuses().get(node_id, "未开始")
+    _knowledge_statuses()[node_id] = new_status
+    if new_status == old_status:
+        return
+    lctx = _current_learning_context()
+    if new_status == "学习中":
+        _emit_event("TOPIC_STARTED", kc_id=node_id, payload={"topic": node_id}, course_id=lctx.course_id)
+    elif new_status == "已完成":
+        _emit_event("TOPIC_COMPLETED", kc_id=node_id, payload={"topic": node_id}, course_id=lctx.course_id)
+    elif new_status == "需复习":
+        _emit_event("TOPIC_REVISITED", kc_id=node_id, payload={"topic": node_id}, course_id=lctx.course_id)
 
 
 def _selected_knowledge_node(knowledge_map: KnowledgeMap) -> KnowledgeNode:
@@ -503,6 +587,60 @@ def _render_generated_topic_detail(detail: TopicDetail) -> None:
             st.markdown("#### 可以继续问")
             st.markdown(_list_to_markdown(detail.suggested_questions))
 
+        # ---- 教学反馈（非 Quiz：自由文本理解检查 + 轻量信号） ----
+        st.divider()
+        st.markdown("#### 教学反馈（帮助系统下次讲解更适合你）")
+        lctx = _current_learning_context()
+        last_dec = st.session_state.get("_last_tutor_decision") or {}
+        target_kc = last_dec.get("target_kc", "")
+
+        def _tutor_feedback(event_type: str, label: str) -> None:
+            # 重复追问 → session re-explain count +1（按 user+course+kc 隔离）
+            if event_type in ("RE_EXPLAIN_REQUESTED", "SELF_REPORTED_CONFUSION"):
+                key = f"re_explain_{lctx.course_id}_{target_kc}"
+                st.session_state[key] = int(st.session_state.get(key, 0)) + 1
+            _emit_event(
+                event_type,
+                kc_id=target_kc,
+                payload={"topic": detail.title},
+                session_id=lctx.session_id,
+                course_id=lctx.course_id,
+            )
+            st.toast(f"已记录：{label}")
+
+        fb_cols = st.columns(6)
+        feedback_map = [
+            ("SELF_REPORTED_UNDERSTANDING", "我懂了"),
+            ("SELF_REPORTED_CONFUSION", "还没懂"),
+            ("EXAMPLE_REQUESTED", "换个例子"),
+            ("SIMPLIFICATION_REQUESTED", "简单一点"),
+            ("DEEPER_EXPLANATION_REQUESTED", "深入一点"),
+            ("ANALOGY_REQUESTED", "换个类比"),
+        ]
+        for col, (etype, label) in zip(fb_cols, feedback_map):
+            with col:
+                if st.button(label, key=f"tutor-fb-{etype}-{target_kc}", use_container_width=True):
+                    _tutor_feedback(etype, label)
+                    st.rerun()
+
+        # 自由文本理解检查（非 Quiz：不判分，进入语义证据闭环）
+        check_text = st.text_area(
+            "用自己的话说说你现在如何理解这个概念（可选）",
+            key=f"check-text-{target_kc}",
+            height=80,
+        )
+        if st.button("提交理解", key=f"check-submit-{target_kc}"):
+            if check_text.strip():
+                _emit_event(
+                    "CHECK_UNDERSTANDING_RESPONSE",
+                    kc_id=target_kc,
+                    payload={"text": check_text.strip()[:500], "topic": detail.title},
+                    session_id=lctx.session_id,
+                    course_id=lctx.course_id,
+                )
+                st.toast("已记录你的理解（语义证据已进入画像闭环）")
+                st.rerun()
+
 
 def _render_knowledge_map(
     result: dict,
@@ -613,26 +751,46 @@ def _render_knowledge_map(
 
     if tutor_clicked:
         try:
-            # 自适应上下文：按节点标题映射 KC → 决策 → 注入讲解 prompt
+            # 自适应上下文：按节点标题映射 KC（title fallback）→ 决策 → 注入讲解 prompt
             from edu_agent.adaptive.service import decision_summary, prepare_adaptive_context
-            from edu_agent.domain.learning.kc_graph import get_course
+            from edu_agent.learner_model.schemas import LearningContext
 
-            course = get_course(_learner_state_bundle().course_id)
+            lctx = _current_learning_context()
+            course = _current_course()
             kc_match = course.find_kc_by_title(selected.title) if course else None
-            target_kc = kc_match.kc_id if kc_match else selected.title
-            _emit_event("EXPLANATION_REQUESTED", kc_id=target_kc)
+            target_kc = kc_match.kc_id if kc_match else selected.id
+            session_re_explain = st.session_state.get(
+                f"re_explain_{lctx.course_id}_{target_kc}", 0
+            )
+            _emit_event(
+                "EXPLANATION_REQUESTED",
+                kc_id=target_kc,
+                session_id=lctx.session_id,
+                course_id=lctx.course_id,
+            )
             try:
                 _ctx, _dec, tutor_prompt_ctx = prepare_adaptive_context(
                     task_type="topic_tutor",
                     target_kc=target_kc,
+                    user_id=lctx.user_id,
+                    course_id=lctx.course_id,
+                    session_re_explain_count=session_re_explain,
                 )
                 learner_context = tutor_prompt_ctx.get("learner_context", "")
                 adaptive_instructions = tutor_prompt_ctx.get("adaptive_instructions", "")
                 decision_summary_text = "\n".join(
                     f"- {k}: {v}" for k, v in decision_summary(_dec).items() if k != "explain"
                 )
+                st.session_state["_last_tutor_decision"] = {
+                    "target_kc": target_kc,
+                    "decision": decision_summary(_dec),
+                    "course_id": lctx.course_id,
+                    "node_id": selected.id,
+                }
+                last_decision = _dec
             except Exception:  # noqa: BLE001
                 learner_context, adaptive_instructions, decision_summary_text = "", "", ""
+                last_decision = None
 
             with st.spinner(f"正在生成「{selected.title}」专题讲解..."):
                 topic_detail = run_topic_tutor_workflow(
@@ -646,13 +804,46 @@ def _render_knowledge_map(
             st.session_state.setdefault("topic_details", {})[
                 selected.id
             ] = topic_detail.model_dump()
+            # 讲解生成成功 → EXPLANATION_DELIVERED（带 kc/delivery_mode/state_version）
+            _emit_event(
+                "EXPLANATION_DELIVERED",
+                kc_id=target_kc,
+                payload={
+                    "delivery_mode": getattr(last_decision, "delivery_mode", "") if last_decision else "",
+                    "pedagogical_actions": list(getattr(last_decision, "pedagogical_actions", [])) if last_decision else [],
+                    "topic": selected.title,
+                },
+                session_id=lctx.session_id,
+                course_id=lctx.course_id,
+            )
         except Exception as exc:  # noqa: BLE001 - keep the learning view usable
             st.error(f"专题讲解生成失败：{exc}")
 
 
 # ---------------------------------------------------------------------------
-# 学习画像（Learner State 只读展示：数据来自 LearnerStateProvider，不在此修改画像）
+# 学习画像（本地 SQLite Dynamic Learner Model 展示）
 # ---------------------------------------------------------------------------
+
+
+def _current_learning_context():
+    """统一学习上下文（当前用户/课程/会话）。业务禁止到处用默认 course_id。"""
+    from edu_agent.config.settings import get_settings
+    from edu_agent.learner_model.schemas import LearningContext
+
+    settings = get_settings()
+    return LearningContext(
+        user_id=settings.learner_model_user_id,
+        course_id=st.session_state.get("_current_course_id") or settings.learner_model_course_id,
+        goal_id="",
+        session_id=st.session_state.get("_kb_active_session", ""),
+    )
+
+
+def _current_course():
+    """当前课程的领域 Course（内置注册表 → 本地持久化）。"""
+    from edu_agent.adaptive.service import resolve_course_for
+
+    return resolve_course_for(_current_learning_context().course_id)
 
 
 def _learner_state_bundle():
@@ -660,7 +851,8 @@ def _learner_state_bundle():
     from edu_agent.adaptive.service import load_bundle
 
     try:
-        return load_bundle()
+        lctx = _current_learning_context()
+        return load_bundle(user_id=lctx.user_id, course_id=lctx.course_id)
     except Exception:  # noqa: BLE001 - 画像服务不可用时前端仍可用
         from edu_agent.learner_model.schemas import LearnerStateBundle
 
@@ -673,8 +865,9 @@ def _render_learner_state_panel(bundle=None) -> None:
     from edu_agent.learner_model.service import LearnerModelService
 
     settings = get_settings()
-    user_id = settings.learner_model_user_id
-    course_id = settings.learner_model_course_id
+    lctx = _current_learning_context()
+    user_id = lctx.user_id
+    course_id = lctx.course_id
     service = LearnerModelService()
 
     bundle = bundle or _learner_state_bundle()
@@ -688,8 +881,9 @@ def _render_learner_state_panel(bundle=None) -> None:
         unsafe_allow_html=True,
     )
     st.caption(
-        f"数据来源：本地 `data/learner_model.db` · 画像版本 v{course_state.state_version or '-'}"
-        f" · 最近更新：{str(course_state.updated_at or '')[:19]}"
+        f"数据来源：本地 `data/learner_model.db` · 课程 `{course_id}` · "
+        f"版本 global v{bundle.global_state_version or '-'} / course v{bundle.course_state_version or '-'}"
+        f" · 更新：{str(course_state.updated_at or '')[:19]}"
     )
 
     col1, col2, col3 = st.columns(3)
@@ -702,9 +896,40 @@ def _render_learner_state_panel(bundle=None) -> None:
         if goal.target:
             st.caption(goal.target)
 
-    # ---------------- 背景事实（可删除） ----------------
+    # ---------------- 我的学习背景（首次画像初始化；USER_EXPLICIT 进画像闭环） ----------------
+    with st.expander("✏️ 我的学习背景（更新画像）"):
+        st.caption("这些信息会作为 USER_EXPLICIT 证据写入本地画像（影响后续自适应），不会只存在 UI。")
+        edu_level = st.text_input("学历/年级", key="profile-edu-level", placeholder="如：本科二年级 / 在职 / 高中生")
+        skill_input = st.text_input("已有技术/基础", key="profile-skill", placeholder="如：会基础 Java、熟悉 Python")
+        project_input = st.text_input("项目经历", key="profile-project", placeholder="如：做过成绩管理系统")
+        bg_cols = st.columns(2)
+        with bg_cols[0]:
+            if st.button("保存背景", key="profile-save-bg"):
+                service.set_profile_fact(user_id, "education_level", edu_level.strip(), category="profile") if edu_level.strip() else None
+                if skill_input.strip():
+                    service.set_profile_fact(user_id, f"skill:{course_id}", skill_input.strip(), category="background")
+                if project_input.strip():
+                    service.add_memory(user_id, f"用户做过{project_input.strip()}", course_id="", category="experience")
+                st.toast("背景已写入画像（USER_EXPLICIT）")
+                st.rerun()
+        with bg_cols[1]:
+            if st.button("添加学习目标", key="profile-save-goal"):
+                from edu_agent.adaptive.course_resolver import resolve_goal_id
+
+                goal_name = st.session_state.get("profile-goal-name", "")
+                if goal_name.strip():
+                    service.upsert_goal(
+                        user_id, resolve_goal_id(user_id, course_id), course_id,
+                        name=goal_name.strip(),
+                    )
+                    service.set_current_goal(user_id, course_id, resolve_goal_id(user_id, course_id))
+                    st.toast("目标已创建")
+                    st.rerun()
+        st.text_input("学习目标名称", key="profile-goal-name", placeholder="如：14 天完成 Python 数据分析入门")
+
+    # ---------------- 背景事实（Global 作用域，可删除） ----------------
     facts = service.repo.list_profile_facts(user_id)
-    st.markdown("#### 背景事实")
+    st.markdown("#### 背景事实 · Global")
     if not facts:
         st.caption("暂无背景事实。可在「学习计划」提交时填写，或在下方手动添加。")
     for fact in facts:
@@ -719,17 +944,31 @@ def _render_learner_state_panel(bundle=None) -> None:
                 st.toast(f"已删除事实：{fkey}")
                 st.rerun()
 
-    # ---------------- 掌握度 ----------------
+    # ---------------- 掌握度（Course 作用域） ----------------
     if course_state.knowledge:
-        st.markdown("#### 知识掌握度")
+        st.markdown("#### 知识掌握度 · Course")
         rows = []
-        for item in sorted(course_state.knowledge, key=lambda k: k.mastery):
-            status_icon = "✅" if item.mastery >= 0.7 else ("🔶" if item.mastery >= 0.3 else "❌")
+        for item in sorted(
+            course_state.knowledge,
+            key=lambda k: (k.mastery is None, k.mastery if k.mastery is not None else 1.0),
+        ):
+            if item.mastery is None:
+                mastery_text = "未知"
+                status_icon = "❔"
+            elif item.mastery >= 0.7:
+                mastery_text = f"{item.mastery:.2f}"
+                status_icon = "✅"
+            elif item.mastery >= 0.3:
+                mastery_text = f"{item.mastery:.2f}"
+                status_icon = "🔶"
+            else:
+                mastery_text = f"{item.mastery:.2f}"
+                status_icon = "❌"
             conf = item.confidence
             conf_text = f"{conf:.2f}" if conf is not None else "—"
             trend_text = item.trend or "—"
             rows.append(
-                f"| {item.name or item.kc_id} | {item.mastery:.2f} | {conf_text} | "
+                f"| {item.name or item.kc_id} | {mastery_text} | {conf_text} | "
                 f"{status_icon} {item.status} | {trend_text} |"
             )
         st.markdown(
@@ -737,41 +976,42 @@ def _render_learner_state_panel(bundle=None) -> None:
             "| -- | -- | -- | -- | -- |\n" + "\n".join(rows)
         )
     else:
-        st.caption("尚无知识点掌握数据（首次学习后由事件产生，不编造默认值）。")
+        st.caption("尚无知识点掌握数据（首次学习后由事件产生；未观察时显示「未知」，不编造默认值）。")
 
-    # ---------------- 能力 ----------------
+    # ---------------- 能力（Course 作用域） ----------------
     if course_state.abilities:
-        st.markdown("#### 能力维度")
-        ability_rows = [
-            f"| {name} | {item.score:.2f} | "
-            f"{item.confidence:.2f if item.confidence is not None else '—'} | "
-            f"{item.trend or '—'} |"
-            for name, item in sorted(course_state.abilities.items())
-        ]
+        st.markdown("#### 能力维度 · Course")
+        ability_rows = []
+        for name, item in sorted(course_state.abilities.items()):
+            score_text = f"{item.score:.2f}" if item.score is not None else "暂无可靠证据"
+            conf_text = f"{item.confidence:.2f}" if item.confidence is not None else "—"
+            ability_rows.append(
+                f"| {name} | {score_text} | {conf_text} | {item.trend or '—'} |"
+            )
         st.markdown(
             "| 能力 | 分数 | 置信度 | 趋势 |\n| -- | -- | -- | -- |\n" + "\n".join(ability_rows)
         )
 
-    # ---------------- 偏好（可纠正） ----------------
-    st.markdown("#### 学习偏好")
-    prefs = global_state.preferences
+    # ---------------- 偏好（Global / Course 作用域，可纠正） ----------------
+    st.markdown("#### 学习偏好（Global / Course）")
     pref_rows = service.repo.list_preferences(user_id, course_id)
     if pref_rows:
         for pref in pref_rows:
+            scope_tag = "Global" if not pref.get("course_id") else "Course"
             pcol1, pcol2 = st.columns([0.7, 0.3])
             with pcol1:
                 st.markdown(
-                    f"- **{pref['preference_key']}**：score {pref['score']:.2f} · "
+                    f"- **{pref['preference_key']}** [{scope_tag}]：score {pref['score']:.2f} · "
                     f"置信度 {pref['confidence']:.2f} · 样本 {pref['evidence_count']} · {pref['status']}"
                 )
             with pcol2:
                 direction = st.selectbox(
                     "纠正",
                     ["保持", "↑ 更喜欢", "↓ 不喜欢"],
-                    key=f"pref-adj-{pref['preference_key']}",
+                    key=f"pref-adj-{pref['preference_key']}-{pref.get('course_id', 'g')}",
                     label_visibility="collapsed",
                 )
-                if st.button("应用", key=f"pref-apply-{pref['preference_key']}"):
+                if st.button("应用", key=f"pref-apply-{pref['preference_key']}-{pref.get('course_id', 'g')}"):
                     if direction == "↑ 更喜欢":
                         service.set_preference(user_id, pref["preference_key"], direction="pos")
                         st.toast(f"偏好已强化：{pref['preference_key']}")
@@ -782,9 +1022,9 @@ def _render_learner_state_panel(bundle=None) -> None:
     else:
         st.caption("暂无偏好记录（多次请求示例/图解等行为后自动积累）。")
 
-    # ---------------- 误解（生命周期） ----------------
+    # ---------------- 误解（Course 作用域，生命周期） ----------------
     if course_state.misconceptions:
-        st.markdown("#### 已知误解")
+        st.markdown("#### 已知误解 · Course")
         for m in course_state.misconceptions:
             status_label = {
                 "candidate": "候选",
@@ -793,43 +1033,69 @@ def _render_learner_state_panel(bundle=None) -> None:
                 "resolved": "已解决",
                 "dormant": "休眠",
             }.get(m.status, m.status)
+            key_text = f"[{m.misconception_key}] " if m.misconception_key else ""
             st.markdown(
-                f"- {m.kc_id}：{m.description}（{status_label} · 置信度 {m.confidence:.0%}"
+                f"- {m.kc_id} {key_text}:{m.description}（{status_label} · 置信度 {m.confidence:.0%}"
                 f" · 出现 {m.occurrence_count} 次）"
             )
     else:
         st.caption("暂无误解记录。")
 
-    # ---------------- 语义记忆（可删除） ----------------
-    memories = service.repo.list_memories(user_id, "")
-    st.markdown("#### 长期记忆")
+    # ---------------- 语义记忆（Global / Course，可删除） ----------------
+    memories = service.repo.list_effective_memories(user_id, course_id)
+    st.markdown("#### 长期记忆（Global / Course）")
     if not memories:
         st.caption("暂无长期记忆。")
     for mem in memories:
+        scope_tag = "Global" if not mem.get("course_id") else "Course"
         mcol1, mcol2 = st.columns([0.78, 0.22])
         with mcol1:
-            st.markdown(f"- {mem.get('content', '')}（{mem.get('status')}）")
+            st.markdown(f"- {mem.get('content', '')}（{scope_tag} · {mem.get('status')}）")
         with mcol2:
             if st.button("删除", key=f"del-mem-{mem.get('memory_id')}", help="用户明确删除该记忆"):
                 service.delete_memory(user_id, mem.get("memory_id", ""))
                 st.toast("已删除该记忆")
                 st.rerun()
 
-    # ---------------- 画像变化记录 ----------------
+    # ---------------- 画像变化记录（数值变化） ----------------
     st.markdown("#### 画像变化记录")
     changes = service.get_changes(user_id, course_id, limit=15)
     if not changes:
         st.caption("暂无画像变化（用户产生学习行为后自动记录）。")
     for ch in changes:
+        before = ch.get("before_json")
+        after = ch.get("after_json")
+        delta = ""
+        if before and after:
+            try:
+                import json as _json
+
+                b = _json.loads(before)
+                a = _json.loads(after)
+                b_score = b.get("score") if isinstance(b, dict) else None
+                a_score = a.get("score") if isinstance(a, dict) else None
+                b_conf = b.get("confidence") if isinstance(b, dict) else None
+                a_conf = a.get("confidence") if isinstance(a, dict) else None
+                parts = []
+                if b_score is not None and a_score is not None:
+                    parts.append(f"score {b_score} → {a_score}")
+                if b_conf is not None and a_conf is not None:
+                    parts.append(f"confidence {b_conf} → {a_conf}")
+                if b.get("status") != a.get("status"):
+                    parts.append(f"status {b.get('status')} → {a.get('status')}")
+                if parts:
+                    delta = "：" + "；".join(parts)
+            except Exception:  # noqa: BLE001
+                delta = ""
         st.markdown(
-            f"- `{ch.get('operation')}` {ch.get('entity_type')}:{ch.get('entity_id')} "
-            f"— {ch.get('reason', '')}（{str(ch.get('created_at', ''))[:19]}）"
+            f"- `{ch.get('operation')}` {ch.get('entity_type')}:{ch.get('entity_id')}"
+            f"{delta} — {ch.get('reason', '')}（{str(ch.get('created_at', ''))[:19]}）"
         )
 
     st.caption("---")
     st.caption(
         "本页面展示本地 Dynamic Learner Model：事件 → 证据 → 定向更新 → 变化记录。"
-        "画像支持新增/修改/强化/弱化/失效/解决/删除。"
+        "画像支持新增/修改/强化/弱化/失效/解决/删除；Global/Course 作用域分离。"
     )
 
 
@@ -1014,8 +1280,12 @@ def _emit_event(
     kc_id: str = "",
     payload: dict | None = None,
     session_id: str = "",
+    course_id: str = "",
 ) -> None:
-    """把学习行为写成 Event 并更新本地 Learner Model（失败不阻塞主流程）。"""
+    """把学习行为写成 Event 并更新本地 Learner Model（失败不阻塞主流程，仅 warning 日志）。"""
+    import logging
+
+    logger = logging.getLogger("edu_agent.events")
     try:
         from edu_agent.config.settings import get_settings
         from edu_agent.learner_model.evidence.extractor import build_event
@@ -1025,28 +1295,53 @@ def _emit_event(
         event = build_event(
             event_type=event_type,
             user_id=settings.learner_model_user_id,
-            course_id=settings.learner_model_course_id,
+            course_id=course_id or settings.learner_model_course_id,
             kc_id=kc_id,
             session_id=session_id or "",
             payload=payload or {},
         )
-        service = LearnerModelService()
-        if settings.learner_model_auto_update:
-            service.apply_event(event)
-        else:
-            service.record_event(event)
-    except Exception:  # noqa: BLE001 - 事件失败绝不阻塞用户请求
-        pass
+        LearnerModelService().ingest_event(event)
+    except Exception as exc:  # noqa: BLE001 - 事件失败绝不阻塞用户请求
+        logger.warning(
+            "event ingest failed: type=%s user=%s course=%s error=%s",
+            event_type,
+            getattr(settings, "learner_model_user_id", ""),
+            course_id or getattr(settings, "learner_model_course_id", ""),
+            exc,
+        )
 
 
-def _adaptive_qa_prompt_context(question: str) -> tuple[str, str, dict]:
+def _kb_kc_mapping(question: str, course) -> str | None:
+    """KC Mapper：在问题文本中匹配当前课程 KC 的 title/别名 → kc_id（title 匹配，fallback 语义）。"""
+    if course is None or not question:
+        return None
+    q = question.lower()
+    best: str | None = None
+    best_len = 0
+    for kc in course.components:
+        title = (kc.title or "").lower()
+        kc_id = (kc.kc_id or "").lower()
+        for kw in (title, kc_id, *(t.lower() for t in (kc.tags or []))):
+            if kw and len(kw) >= 2 and kw in q:
+                if len(kw) > best_len:
+                    best_len = len(kw)
+                    best = kc.kc_id
+    return best
+
+
+def _adaptive_qa_prompt_context(question: str, target_kc: str | None = None) -> tuple[str, str, dict]:
     """构建 kb_qa 的自适应上下文 + 决策摘要（画像服务不可用时返回空，不中断）。"""
     from edu_agent.adaptive.service import decision_summary, prepare_adaptive_context
+    from edu_agent.learner_model.schemas import LearningContext
 
+    lctx = _current_learning_context()
     try:
         _context, _decision, prompt_ctx = prepare_adaptive_context(
             task_type="adaptive_qa",
             query=question,
+            user_id=lctx.user_id,
+            course_id=lctx.course_id,
+            target_kc=target_kc,
         )
         return (
             prompt_ctx.get("learner_context", ""),
@@ -1061,7 +1356,9 @@ def _run_kb_answer(question: str, engine: str):
     """按引擎选择问答实现（当前统一走 kb_qa 手写流水线）。"""
     knowledge_base = _kb_instance()
     student_input = st.session_state.get("student_input")
-    learner_context, adaptive_instructions, _ = _adaptive_qa_prompt_context(question)
+    course = _current_course()
+    target_kc = _kb_kc_mapping(question, course)
+    learner_context, adaptive_instructions, _ = _adaptive_qa_prompt_context(question, target_kc)
     return run_kb_qa_workflow(
         question=question,
         knowledge_base=knowledge_base,
@@ -1079,11 +1376,16 @@ def _send_kb_question(question: str, engine: str = "kb_qa") -> None:
         session["title"] = question[:14] + ("..." if len(question) > 14 else "")
     session["messages"].append({"role": "user", "content": question})
     _persist_kb_sessions()  # 用户消息即落盘，重启不丢对话内容
-    # 学习行为事件：Emit Evidence（写 Outbox，不阻塞）
+    # 学习行为事件：带 course_id + kc_id（KC Mapper）
+    lctx = _current_learning_context()
+    course = _current_course()
+    target_kc = _kb_kc_mapping(question, course)
     _emit_event(
         "EDUCATIONAL_QUESTION_ASKED",
-        payload={"question": question[:200]},
+        kc_id=target_kc or "",
+        payload={"question": question[:200], "topic": target_kc or ""},
         session_id=session_id,
+        course_id=lctx.course_id,
     )
 
     if engine == "kb_qa":
@@ -1236,14 +1538,29 @@ def _run_stream_to_assistant(question: str, engine: str, session_id: str, sessio
         "citations": [c.model_dump() for c in meta_answer.citations],
     }
     _persist_kb_sessions()  # AI 回复回填即落盘
-    # 讲解已完成 → Emit Evidence（写 Outbox）
-    _emit_event("EXPLANATION_DELIVERED", payload={"question": question[:200]}, session_id=session_id)
+    # 讲解已完成 → Emit Evidence（带 kc_id，来自 KC Mapper）
+    lctx = _current_learning_context()
+    course = _current_course()
+    mapped_kc = _kb_kc_mapping(question, course)
+    _emit_event(
+        "EXPLANATION_DELIVERED",
+        kc_id=mapped_kc or "",
+        payload={
+            "question": question[:200],
+            "topic": mapped_kc or "",
+            "delivery_mode": _decision_summary.get("delivery_mode", ""),
+            "pedagogical_actions": _decision_summary.get("pedagogical_actions", []),
+        },
+        session_id=session_id,
+        course_id=lctx.course_id,
+    )
     st.rerun()
 
 
 def _render_kb_message_actions(session_id: str, index: int, message: dict, citations: list | None = None) -> None:
     """AI 消息下方的 GPT 风格操作图标行：复制 / 赞 / 踩 / 重新生成 / 更多 + 引用编号按钮。"""
     MSG_KEY = message.get("content", "")
+    lctx = _current_learning_context()
 
     def _do_copy() -> None:
         st.session_state["_kb_clipboard"] = MSG_KEY
@@ -1251,10 +1568,29 @@ def _render_kb_message_actions(session_id: str, index: int, message: dict, citat
 
     def _do_up() -> None:
         st.session_state.setdefault("kb_feedback", {})[f"{session_id}-{index}"] = "up"
+        # FEEDBACK_GIVEN（positive）→ 对应教学方式 effectiveness 强化
+        meta = message.get("meta") or {}
+        delivery_mode = (meta.get("adaptive_decision") or {}).get("delivery_mode", "")
+        _emit_event(
+            "FEEDBACK_GIVEN",
+            kc_id=(meta.get("adaptive_decision") or {}).get("target_kc", ""),
+            payload={"direction": "positive", "delivery_mode": delivery_mode},
+            session_id=session_id,
+            course_id=lctx.course_id,
+        )
         st.toast("已记录赞")
 
     def _do_down() -> None:
         st.session_state.setdefault("kb_feedback", {})[f"{session_id}-{index}"] = "down"
+        meta = message.get("meta") or {}
+        delivery_mode = (meta.get("adaptive_decision") or {}).get("delivery_mode", "")
+        _emit_event(
+            "FEEDBACK_GIVEN",
+            kc_id=(meta.get("adaptive_decision") or {}).get("target_kc", ""),
+            payload={"direction": "negative", "delivery_mode": delivery_mode},
+            session_id=session_id,
+            course_id=lctx.course_id,
+        )
         st.toast("已记录踩")
 
     def _do_regen() -> None:
@@ -1262,6 +1598,13 @@ def _render_kb_message_actions(session_id: str, index: int, message: dict, citat
         history = sessions[session_id]["messages"][:index]
         user_msg = _last_user_question(history)
         if user_msg:
+            # RE_EXPLAIN_REQUESTED（重新生成属于再次请求讲解）
+            _emit_event(
+                "RE_EXPLAIN_REQUESTED",
+                payload={"question": user_msg[:200]},
+                session_id=session_id,
+                course_id=lctx.course_id,
+            )
             _send_kb_question(user_msg)
         else:
             st.toast("未找到上一条用户提问")

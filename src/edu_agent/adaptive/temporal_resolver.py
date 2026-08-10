@@ -1,18 +1,12 @@
 """TemporalResolver：处理「掌握度不是永久不变」。
 
-Mastery 高但证据很旧，不能直接认为 mastered。
-V1 使用简单、可解释的规则；接口保留未来升级为复杂遗忘模型的空间。
-
-规则（可解释）：
-- recency_days 未知/空 → effective_state=unknown，review_risk=low
-- recency_days > 90 且 mastery >= .7 → needs_refresh / high
-- recency_days > 30 且 mastery >= .7 → needs_refresh / medium
-- recency_days <= 30 → 按 mastery 正常判（mastered / learning / weak）
+- mastery=None（UNKNOWN）→ effective_state=unknown，raw_mastery=None，不判 mastered/weak。
+- 只有 mastery 有真实值才判断 weak/learning/mastered/needs_refresh。
+- recency_days 由 last_evidence_at 计算（无证据 → None）。
 """
 
 from __future__ import annotations
 
-import math
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -44,9 +38,10 @@ def resolve(
     now: Optional[datetime] = None,
 ) -> TemporalState:
     """把单个 KC 的掌握状态换算成带时间衰减的有效状态。"""
-    if knowledge is None:
-        return TemporalState(raw_mastery=0.0, recency_days=0.0,
-                             review_risk="low", effective_state="unknown")
+    if knowledge is None or knowledge.mastery is None:
+        return TemporalState(
+            raw_mastery=None, recency_days=None, review_risk="low", effective_state="unknown"
+        )
 
     mastery = knowledge.mastery
     recency = _recency_days(knowledge.last_evidence_at, now)
@@ -54,12 +49,12 @@ def resolve(
     if recency is None:
         # 无时间信息 → 保守：按 mastery 判断但不判高复习风险
         if mastery >= 0.7:
-            return TemporalState(raw_mastery=mastery, recency_days=0.0,
+            return TemporalState(raw_mastery=mastery, recency_days=None,
                                  review_risk="low", effective_state="mastered")
         if mastery >= 0.3:
-            return TemporalState(raw_mastery=mastery, recency_days=0.0,
+            return TemporalState(raw_mastery=mastery, recency_days=None,
                                  review_risk="low", effective_state="learning")
-        return TemporalState(raw_mastery=mastery, recency_days=0.0,
+        return TemporalState(raw_mastery=mastery, recency_days=None,
                              review_risk="low", effective_state="weak")
 
     if mastery >= 0.7:

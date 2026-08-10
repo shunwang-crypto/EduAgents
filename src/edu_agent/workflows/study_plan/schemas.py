@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 
 class StudentInput(BaseModel):
     topic: str = Field(description="学生想学习的内容")
-    level: str = Field(description="学生当前基础")
+    level: Optional[str] = Field(default=None, description="学生当前基础（可选，首次使用可填，已有画像时不必填）")
     days: int = Field(description="学习周期，单位：天")
     daily_time: str = Field(description="每天可投入学习时间")
     goal: str = Field(description="学生学习目标")

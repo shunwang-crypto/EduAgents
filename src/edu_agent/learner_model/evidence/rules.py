@@ -1,15 +1,9 @@
 """事件 → 证据 规则表。
 
-定义每个事件类型：
-- 默认证据强度（weak/medium/strong）
-- 可靠度来源
-- 是否 meaningful_for_profile（是否值得写回长期画像）
-- 可能产生的证据（entity_type / direction / entity_key 提取方式）
-
-原则：
-- EXPLANATION_DELIVERED / 浏览类事件只产生「曝光」证据，绝不改 mastery。
-- SELF_REPORTED_UNDERSTANDING 是弱证据：只微调 confidence，不跳 mastery。
-- 用户明确声明（USER_EXPLICIT_*）是强证据，优先于推断。
+新增/修正：
+- CHECK_UNDERSTANDING_RESPONSE / SELF_EXPLANATION_SUBMITTED：知识 + 能力证据（medium）
+- FEEDBACK_GIVEN：偏好有效性证据（按 delivery_mode）
+- 不再用「为什么/区别」等粗糙关键词规则制造 misconception（交给 semantic_classifier 高确定规则）
 """
 
 from __future__ import annotations
@@ -31,11 +25,13 @@ EVENT_TYPES: List[str] = [
     "SELF_REPORTED_UNDERSTANDING", "SELF_REPORTED_CONFUSION",
     "USER_EXPLICIT_PREFERENCE", "USER_EXPLICIT_PROFILE_FACT",
     "TEACHING_MODE_SWITCHED", "FEEDBACK_GIVEN", "PROFILE_FACT_DELETED",
+    # 教学理解检查（非 Quiz）
+    "CHECK_UNDERSTANDING_RESPONSE", "SELF_EXPLANATION_SUBMITTED",
+    "CONCEPT_COMPARISON_RESPONSE",
 ]
 
-# 每个事件类型默认元数据
+# (evidence_strength, source, meaningful_for_profile)
 _EVENT_META: Dict[str, Tuple[EvidenceStrength, SourceReliability, bool]] = {
-    # strength, source, meaningful_for_profile
     "SESSION_STARTED": ("weak", "SYSTEM_OBSERVATION", False),
     "SESSION_ENDED": ("weak", "SYSTEM_OBSERVATION", False),
     "COURSE_OPENED": ("weak", "SYSTEM_OBSERVATION", False),
@@ -51,8 +47,8 @@ _EVENT_META: Dict[str, Tuple[EvidenceStrength, SourceReliability, bool]] = {
     "EXPLANATION_REQUESTED": ("weak", "TEACHING_INTERACTION", True),
     "EXPLANATION_DELIVERED": ("weak", "SYSTEM_OBSERVATION", True),
     "RE_EXPLAIN_REQUESTED": ("medium", "TEACHING_INTERACTION", True),
-    "EXAMPLE_REQUESTED": ("weak", "TEACHING_INTERACTION", True),
-    "ANALOGY_REQUESTED": ("weak", "TEACHING_INTERACTION", True),
+    "EXAMPLE_REQUESTED": ("medium", "TEACHING_INTERACTION", True),
+    "ANALOGY_REQUESTED": ("medium", "TEACHING_INTERACTION", True),
     "SIMPLIFICATION_REQUESTED": ("medium", "TEACHING_INTERACTION", True),
     "DEEPER_EXPLANATION_REQUESTED": ("weak", "TEACHING_INTERACTION", True),
     "PREREQUISITE_REVIEWED": ("weak", "SYSTEM_OBSERVATION", True),
@@ -69,48 +65,41 @@ _EVENT_META: Dict[str, Tuple[EvidenceStrength, SourceReliability, bool]] = {
     "TEACHING_MODE_SWITCHED": ("weak", "TEACHING_INTERACTION", False),
     "FEEDBACK_GIVEN": ("medium", "USER_EXPLICIT", True),
     "PROFILE_FACT_DELETED": ("strong", "USER_EXPLICIT", True),
+    # 教学理解检查（medium，用户自述）
+    "CHECK_UNDERSTANDING_RESPONSE": ("medium", "USER_EXPLICIT", True),
+    "SELF_EXPLANATION_SUBMITTED": ("medium", "USER_EXPLICIT", True),
+    "CONCEPT_COMPARISON_RESPONSE": ("medium", "USER_EXPLICIT", True),
 }
 
-# 各事件 → 证据（entity_type, direction, entity_key 提取函数）
-def _kc(event) -> Optional[str]:
+
+def _kc(event) -> str:
     return event.kc_id or (event.payload or {}).get("kc_id") or ""
 
 
-def _topic(event) -> Optional[str]:
+def _topic(event) -> str:
     payload = event.payload or {}
     return payload.get("topic") or payload.get("kc_name") or event.kc_id or ""
 
 
-def _pref_key(payload) -> Optional[str]:
-    return payload.get("preference_key") or ""
-
-
-def _fact_key(payload) -> Optional[str]:
-    return payload.get("fact_key") or ""
-
-
-# 返回 [(entity_type, direction, entity_key, meaningful)]
 def rules_for(event) -> List[Tuple[str, str, str, bool]]:
-    """按事件类型返回规则（key 为空表示该规则不产出证据）。"""
+    """按事件类型返回规则 [(entity_type, direction, entity_key, meaningful)]。"""
     t = event.event_type
     payload = event.payload or {}
     kc = _kc(event)
     topic = _topic(event)
 
     if t in ("EXPLANATION_DELIVERED", "RESOURCE_COMPLETED", "TOPIC_COMPLETED", "PLAN_STEP_COMPLETED"):
-        # 曝光证据：只更新时间/计数，不改 mastery
         return [("knowledge", "neutral", kc, True)] if kc else []
     if t in ("EXPLANATION_REQUESTED", "TOPIC_STARTED", "TOPIC_REVISITED", "PREREQUISITE_REVIEWED"):
         return [("knowledge", "neutral", kc or topic, True)] if (kc or topic) else []
     if t == "SELF_REPORTED_UNDERSTANDING":
-        # 弱证据：只微调 confidence 正向，不跳 mastery
         return [("knowledge", "pos", kc, True)] if kc else []
     if t == "SELF_REPORTED_CONFUSION":
         return [("knowledge", "neg", kc, True)] if kc else []
     if t in ("RE_EXPLAIN_REQUESTED", "SIMPLIFICATION_REQUESTED"):
         out = []
         if kc:
-            out.append(("knowledge", "neg", kc, True))  # 需要辅导的信号
+            out.append(("knowledge", "neg", kc, True))
         if t == "SIMPLIFICATION_REQUESTED":
             out.append(("preference", "pos", "step_by_step", True))
         return out
@@ -126,19 +115,45 @@ def rules_for(event) -> List[Tuple[str, str, str, bool]]:
     if t == "EDUCATIONAL_QUESTION_ASKED":
         return [("behavior", "neutral", topic, True)] if topic else []
     if t == "USER_EXPLICIT_PREFERENCE":
-        key = _pref_key(payload)
+        key = payload.get("preference_key") or ""
         direction = payload.get("direction", "pos")
         return [("preference", direction, key, True)] if key else []
     if t == "USER_EXPLICIT_PROFILE_FACT":
-        key = _fact_key(payload)
+        key = payload.get("fact_key") or ""
         return [("profile_fact", "pos", key, True)] if key else []
     if t == "PROFILE_FACT_DELETED":
-        key = _fact_key(payload)
+        key = payload.get("fact_key") or ""
         return [("profile_fact", "neg", key, True)] if key else []
     if t in ("GOAL_CREATED", "GOAL_UPDATED", "GOAL_COMPLETED", "GOAL_CANCELLED"):
         goal_id = payload.get("goal_id") or ""
         return [("goal", "neutral", goal_id, True)] if goal_id else []
+    # 教学理解检查：知识证据（medium），能力/误解由 semantic_classifier 处理
+    if t == "CHECK_UNDERSTANDING_RESPONSE":
+        out = [("knowledge", "pos", kc, True)] if kc else []
+        return out
+    if t == "SELF_EXPLANATION_SUBMITTED":
+        return [("knowledge", "neutral", kc, True)] if kc else []
+    # 反馈：按 delivery_mode 调整偏好有效性（不能直接改 mastery）
+    if t == "FEEDBACK_GIVEN":
+        direction = payload.get("direction", "positive")
+        mode = payload.get("delivery_mode") or ""
+        pref_key = _feedback_pref_key(mode)
+        if pref_key:
+            return [("preference", "pos" if direction == "positive" else "neg", pref_key, True)]
+        return []
     return []
+
+
+def _feedback_pref_key(delivery_mode: str) -> str:
+    """FEEDBACK_GIVEN 的 delivery_mode → 对应偏好键。"""
+    return {
+        "worked_example": "worked_example",
+        "analogy": "analogy",
+        "code": "code_example",
+        "diagram": "diagram",
+        "step_by_step": "step_by_step",
+        "concept_first": "concept_first",
+    }.get(delivery_mode, "")
 
 
 def event_meta(event_type: str) -> Tuple[EvidenceStrength, SourceReliability, bool]:

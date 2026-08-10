@@ -1,7 +1,8 @@
-"""EvidenceExtractor：LearningEvent → List[StructuredEvidence]。
+"""EvidenceExtractor：LearningEvent → StructuredEvidence（规则）+ Semantic Classifier（语义候选）。
 
-规则为主（rules.py），复杂语义判断可挂 LLM（可选，默认关闭）。
-LLM 只输出 Evidence Candidate；是否落库由 Updater 决定，禁止 LLM 直接改画像。
+- 规则证据：确定、低误判（曝光/偏好/事实/目标）。
+- 语义候选：只对高信息量事件调用 semantic_classifier，产出能力/误解候选。
+- 产出的是 Evidence Candidate；是否落库由 Updater 决定。
 """
 
 from __future__ import annotations
@@ -14,6 +15,16 @@ from edu_agent.learner_model.evidence.schemas import (
     LearningEvent,
     StructuredEvidence,
 )
+
+# 语义分类器处理的高信息量事件（避免对每个事件都做语义推断）
+_HIGH_INFO_EVENTS = {
+    "CHECK_UNDERSTANDING_RESPONSE",
+    "SELF_EXPLANATION_SUBMITTED",
+    "CONCEPT_COMPARISON_RESPONSE",
+    "SELF_REPORTED_CONFUSION",
+    "RE_EXPLAIN_REQUESTED",
+    "FEEDBACK_GIVEN",
+}
 
 
 def build_event(
@@ -45,8 +56,13 @@ def build_event(
     )
 
 
-def extract_evidence(event: LearningEvent) -> List[StructuredEvidence]:
-    """把事件转成结构化证据列表（可能为空）。"""
+def extract_evidence(event: LearningEvent, use_semantic: bool = False) -> List[StructuredEvidence]:
+    """提取证据 = 规则证据 + （高信息量事件的）语义候选。
+
+    - 教学理解检查类事件（CHECK_UNDERSTANDING_RESPONSE 等）**总是**跑高确定规则
+      语义分类（不依赖 LLM，也不依赖开关），否则 Ability/Misconception 永远没有证据来源。
+    - use_semantic 控制的是额外 LLM 语义推断。
+    """
     evidences: List[StructuredEvidence] = []
     for entity_type, direction, entity_key, meaningful in rules_for(event):
         if not entity_key:
@@ -60,41 +76,16 @@ def extract_evidence(event: LearningEvent) -> List[StructuredEvidence]:
                 meaningful=meaningful,
             )
         )
+
+    # 高信息量事件总是跑规则版语义分类（Ability/Misconception 的证据来源）
+    if event.event_type in _HIGH_INFO_EVENTS:
+        from edu_agent.learner_model.evidence.semantic_classifier import classify
+
+        evidences += classify(event, use_llm=False)
+
+    if use_semantic and event.event_type in _HIGH_INFO_EVENTS:
+        from edu_agent.learner_model.evidence.semantic_classifier import classify
+
+        evidences += classify(event, use_llm=True)
+
     return evidences
-
-
-def llm_inference_hint(
-    event: LearningEvent,
-    use_llm: bool = False,
-) -> List[StructuredEvidence]:
-    """（可选）LLM 语义推断：从自由文本抽取 misconception / preference 候选。
-
-    默认关闭（use_llm=False 返回空）。开启时返回的仍是「Evidence Candidate」，
-    由 Updater 按置信度规则决定是否落库，不直接改画像。
-    """
-    if not use_llm:
-        return []
-    return _llm_rule_inference(event)
-
-
-def _llm_rule_inference(event: LearningEvent) -> List[StructuredEvidence]:
-    """V1 用规则近似 LLM 推断（避免每次调模型）：识别误解关键词。"""
-    text = " ".join(
-        str(v) for v in (event.payload or {}).values() if isinstance(v, str)
-    )
-    kc = event.kc_id
-    if not kc or not text:
-        return []
-    confusion_kw = ["不明白", "为什么", "搞不懂", "混乱", "区别", "混淆", "没懂"]
-    if any(kw in text for kw in confusion_kw):
-        return [
-            StructuredEvidence.from_event(
-                event,
-                entity_type="misconception",
-                entity_key=kc,
-                direction="pos",
-                meaningful=True,
-                extra_payload={"description_hint": text[:120]},
-            )
-        ]
-    return []

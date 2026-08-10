@@ -106,13 +106,13 @@ class GlobalLearnerState(BaseModel):
 class KnowledgeItem(BaseModel):
     """单个 KC 的掌握状态。Mastery 与 Confidence 分离。
 
-    未知字段（confidence/trend/evidence_count/last_evidence_at）允许为 None，
-    表示合作伙伴尚未提供（禁止编造）。
+    mastery=None 表示 UNKNOWN（从未有证据），不是 0。
+    mastery=0 + confidence 高表示 KNOWN ZERO（确认不会）。
     """
 
     kc_id: str = Field(default="", description="知识组件 ID")
     name: str = Field(default="", description="名称")
-    mastery: float = Field(default=0.0, ge=0.0, le=1.0, description="掌握度 0-1")
+    mastery: Optional[float] = Field(default=None, ge=0.0, le=1.0, description="掌握度 0-1，None=未知")
     confidence: Optional[float] = Field(default=None, description="置信度 0-1（未知为 None）")
     status: KnowledgeStatus = Field(default="unknown", description="状态")
     trend: Optional[Trend] = Field(default=None, description="趋势（未知为 None）")
@@ -122,19 +122,20 @@ class KnowledgeItem(BaseModel):
 
 
 class AbilityItem(BaseModel):
-    """六维能力之一：understanding/application/reasoning/expression/reflection/transfer。"""
+    """六维能力之一。score=None 表示暂无可靠证据，不是 0。"""
 
-    score: float = Field(default=0.0, ge=0.0, le=1.0)
+    score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     confidence: Optional[float] = Field(default=None, description="置信度（未知为 None）")
     trend: Optional[Trend] = Field(default=None)
     evidence_count: Optional[int] = Field(default=None)
 
 
 class Misconception(BaseModel):
-    """结构化错因（替代 mixed×7 式标签）。"""
+    """结构化错因。同一 KC 可同时存在多个 misconception（按 misconception_key 区分）。"""
 
     misconception_id: str = Field(default="")
     kc_id: str = Field(default="")
+    misconception_key: str = Field(default="", description="误解标识（同一 KC 内唯一）")
     type: MisconceptionType = Field(default="conceptual_confusion")
     description: str = Field(default="")
     severity: float = Field(default=0.5, ge=0.0, le=1.0)
@@ -146,17 +147,17 @@ class Misconception(BaseModel):
 
 
 class BehaviorState(BaseModel):
-    """课程相关近期行为聚合。"""
+    """课程相关近期行为聚合（30 天窗口，基于真实事件）。"""
 
     activity_count_30d: int = Field(default=0)
     streak_days: int = Field(default=0)
-    average_session_minutes: float = Field(default=0.0)
+    average_session_minutes: Optional[float] = Field(default=None, description="无 session 数据时为 None")
     recent_topics: List[str] = Field(default_factory=list)
     frequent_revisited_topics: List[str] = Field(default_factory=list)
 
 
 class CourseLearnerState(BaseModel):
-    """一门课程的学习者状态（EduAgents 最重要的外部输入）。"""
+    """一门课程的学习者状态（课程级 Learner State）。"""
 
     schema_version: int = Field(default=1)
     user_id: str = Field(default="")
@@ -172,10 +173,10 @@ class CourseLearnerState(BaseModel):
     behavior: BehaviorState = Field(default_factory=BehaviorState)
     metadata: Dict[str, object] = Field(default_factory=dict)
 
-    # 版本与新鲜度（由 Provider 填充，非合作伙伴字段）
-    state_version: Optional[int] = Field(default=None, description="画像版本号")
+    # 课程版本
+    state_version: Optional[int] = Field(default=None, description="课程画像版本号")
     updated_at: Optional[str] = Field(default=None, description="画像更新时间")
-    freshness: StateFreshness = Field(default="fresh", description="fresh/stale/mock/missing")
+    freshness: StateFreshness = Field(default="fresh", description="本地模型恒为 fresh")
 
     def knowledge_map(self) -> Dict[str, KnowledgeItem]:
         return {item.kc_id: item for item in self.knowledge}
@@ -192,3 +193,24 @@ class LearnerStateBundle(BaseModel):
     global_state: GlobalLearnerState = Field(default_factory=GlobalLearnerState)
     course_state: CourseLearnerState = Field(default_factory=CourseLearnerState)
     active_goal: Optional[Goal] = Field(default=None, description="当前目标")
+
+    # 双版本：global（偏好/事实/全局记忆）与 course（KC/能力/误解/课程偏好/进度）
+    global_state_version: Optional[int] = Field(default=None)
+    course_state_version: Optional[int] = Field(default=None)
+
+    @property
+    def bundle_version(self) -> dict:
+        """结构化版本标识，如 {"global": 3, "course": 12}。"""
+        return {
+            "global": self.global_state_version,
+            "course": self.course_state_version,
+        }
+
+
+class LearningContext(BaseModel):
+    """统一学习上下文：所有业务（Adaptive/Event/Workflow）必须使用它，禁止到处用默认 course_id。"""
+
+    user_id: str = Field(default="")
+    course_id: str = Field(default="")
+    goal_id: str = Field(default="")
+    session_id: str = Field(default="")

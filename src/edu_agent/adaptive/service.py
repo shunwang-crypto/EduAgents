@@ -13,6 +13,7 @@ from edu_agent.adaptive.context_selector import select_context
 from edu_agent.adaptive.policy import make_decision
 from edu_agent.adaptive.prompt_builder import build_prompt_context, decision_instructions
 from edu_agent.adaptive.schemas import AdaptiveDecision, SelectedLearnerContext, TaskType
+from edu_agent.domain.learning.course_builder import load_course_from_repo
 from edu_agent.domain.learning.kc_graph import Course, get_course
 from edu_agent.learner_model.schemas import LearnerStateBundle
 from edu_agent.learner_model.service import (
@@ -20,6 +21,18 @@ from edu_agent.learner_model.service import (
     DEFAULT_USER_ID,
     LearnerModelService,
 )
+
+
+def resolve_course_for(course_id: str) -> Optional[Course]:
+    """获取领域课程：先内置注册表，再本地持久化（自定义课程跨重启恢复）。"""
+    course = get_course(course_id)
+    if course is not None:
+        return course
+    try:
+        service = LearnerModelService()
+        return load_course_from_repo(service.repo, course_id)
+    except Exception:  # noqa: BLE001 - 画像不可用时返回 None
+        return None
 
 
 def load_bundle(
@@ -55,7 +68,7 @@ def prepare_adaptive_context(
     if bundle is None:
         bundle = load_bundle(user_id=user_id, course_id=course_id)
 
-    course: Optional[Course] = get_course(bundle.course_id)
+    course: Optional[Course] = resolve_course_for(bundle.course_id)
 
     context = select_context(
         bundle=bundle,

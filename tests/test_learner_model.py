@@ -81,10 +81,10 @@ def test_repo_events_append_only(tmp_path):
 def test_weak_evidence_does_not_jump_mastery(tmp_path):
     service = _service(tmp_path)
     service.ensure_course(USER, COURSE)
-    # 用户说"懂了"：弱证据，mastery 必须保持 0
+    # 用户说"懂了"：弱证据，mastery 必须保持 UNKNOWN（None），不能凭空产生
     service.apply_event(_event("SELF_REPORTED_UNDERSTANDING", kc="POLYMORPHISM"))
     kc = service.repo.get_kc(USER, COURSE, "POLYMORPHISM")
-    assert kc["mastery"] == 0.0
+    assert kc["mastery"] is None
     assert kc["evidence_count"] >= 1
     assert kc["last_evidence_at"] is not None
 
@@ -94,7 +94,7 @@ def test_explanation_delivered_only_updates_recency(tmp_path):
     service.ensure_course(USER, COURSE)
     service.apply_event(_event("EXPLANATION_DELIVERED", kc="POLYMORPHISM"))
     kc = service.repo.get_kc(USER, COURSE, "POLYMORPHISM")
-    assert kc["mastery"] == 0.0
+    assert kc["mastery"] is None  # UNKNOWN
     assert kc["confidence"] is None  # 曝光不编造置信度
 
 
@@ -103,7 +103,7 @@ def test_confusion_signal_keeps_mastery(tmp_path):
     service.ensure_course(USER, COURSE)
     service.apply_event(_event("SELF_REPORTED_CONFUSION", kc="POLYMORPHISM"))
     kc = service.repo.get_kc(USER, COURSE, "POLYMORPHISM")
-    assert kc["mastery"] == 0.0  # 不粗暴 -0.2
+    assert kc["mastery"] is None  # 不粗暴 -0.2，也不凭空产生
 
 
 # ----------------------------------------------------------------------
@@ -283,8 +283,8 @@ def test_goal_lifecycle(tmp_path):
     service = _service(tmp_path)
     service.ensure_course(USER, COURSE)
     service.upsert_goal(USER, "GOAL-1", COURSE, name="Java OOP 实训")
-    service.update_goal_progress("GOAL-1", 1.0)
-    goal = service.repo.get_goal("GOAL-1")
+    service.update_goal_progress(USER, "GOAL-1", 1.0)
+    goal = service.repo.get_goal(USER, "GOAL-1")
     assert goal["status"] == "completed"
     assert goal["progress"] == 1.0
 

@@ -47,7 +47,7 @@ def _run_step(step_name: str, func: Callable[..., Any], fallback: Callable[[Exce
 def _fallback_analysis(student_input: StudentInput, exc: Exception) -> AnalysisResult:
     return AnalysisResult(
         topic=student_input.topic,
-        level_summary=f"需求分析 Agent 暂时不可用，已保留学生原始基础描述：{student_input.level}",
+        level_summary=f"需求分析 Agent 暂时不可用，已保留学生原始基础描述：{student_input.level or '（未提供，按首次学习处理）'}",
         goal_summary=student_input.goal,
         prerequisites=["根据学习主题补充必要基础知识", "准备可运行的学习环境"],
         need_web_search=False,

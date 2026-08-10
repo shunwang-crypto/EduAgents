@@ -52,7 +52,8 @@
 数据表（12 张）：`learners` / `learner_profile_facts` / `learning_goals` /
 `learner_course_states` / `learner_kc_states` / `learner_abilities` /
 `learner_preferences` / `learner_misconceptions` / `learner_semantic_memories` /
-`learning_events` / `profile_change_log` / `learner_state_snapshots`
+`learning_events` / `learner_evidences` / `profile_change_log` / `learner_state_snapshots` /
+`adaptive_decisions` / `domain_courses` / `domain_kcs` / `domain_kc_relations`
 
 ### B. Adaptive Engine（`src/edu_agent/adaptive/`）
 
@@ -65,9 +66,16 @@
 
 - **不维护第二套画像**：SQLite Learner Model 是唯一真值，无 student_profile / 旧 mastery ±delta
 - **无 Quiz / Practice / Mistake 业务**：只做教学讲解与检查理解，不做练习系统
-- **弱证据保守**：`EXPLANATION_DELIVERED` 只更新曝光时间，`SELF_REPORTED_UNDERSTANDING` 只微调 confidence，绝不跳 mastery
+- **UNKNOWN ≠ 0**：从未观察的 mastery/ability 是 NULL（未知），与「确认不会」严格区分；
+  Adaptive Policy 对 UNKNOWN 走中性首次教学（`UNKNOWN_KNOWLEDGE_STATE`），不武断说"你不会"
+- **弱证据保守**：`EXPLANATION_DELIVERED` 只更新曝光时间，`SELF_REPORTED_UNDERSTANDING` 只微调
+  confidence，绝不跳 mastery；只有强证据（理解检查语义分类）才允许小幅初始化/更新 mastery（≤0.3/≤0.1 每次）
 - **用户显式声明 > 模型推断**：`USER_EXPLICIT_*` 事件优先于行为推断
-- **多课程隔离**：Java 的掌握度绝不作为 Transformer 的画像
+- **多课程隔离**：所有状态 `(user_id, course_id)` 隔离；全局/课程双版本；`LearningContext + CourseResolver`
+  保证任意学习主题建立独立 course_id（不是全落 JAVA-OOP）；自定义课程 Domain Model 持久化跨重启
+- **事件/证据/状态三层**：`learning_events`（append-only）→ `learner_evidences`（幂等 provenance）→
+  画像状态；`profile_change_log` 保存真实 before/after；用户删除敏感数据只留最小审计
+- **事务与幂等**：事件→证据→状态→版本→快照单事务；同一 event_id 重放不重复应用
 - **不依赖任何外部画像服务**：无 Partner API / Remote Provider / 事件回传网关
 
 ## 快速开始

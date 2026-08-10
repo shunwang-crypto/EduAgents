@@ -1,10 +1,7 @@
-"""SQLite 连接管理 + Learner Model 表结构（DDL）。
+"""SQLite 连接管理 + V1 初始表结构。
 
-原则：
-- ``data/learner_model.db`` 是本地 Dynamic Learner Model 的唯一 Source of Truth。
-- 业务代码禁止直接执行 SQL，必须通过 Repository（sqlite_repository.py）。
-- 所有课程状态以 (user_id, course_id) 隔离。
-- Events 表 append-only；Learner State 表允许增删改。
+Schema 升级走 `migrations.py`（PRAGMA user_version 驱动），
+本文件只负责建 V1 表；后续版本在 migrations 中 ALTER/重建/新增。
 """
 
 from __future__ import annotations
@@ -13,12 +10,12 @@ import sqlite3
 from pathlib import Path
 from typing import Optional
 
-# 默认库路径（可用 LEARNER_MODEL_DB_PATH 覆盖）
 DEFAULT_DB_PATH = Path(__file__).resolve().parents[3] / "data" / "learner_model.db"
 
+# 与 migrations.CURRENT_SCHEMA_VERSION 保持一致（V1 初始）
 SCHEMA_VERSION = 1
 
-_DDL = """
+_V1_DDL = """
 CREATE TABLE IF NOT EXISTS learners (
     user_id TEXT PRIMARY KEY,
     display_name TEXT DEFAULT '',
@@ -76,7 +73,7 @@ CREATE TABLE IF NOT EXISTS learner_kc_states (
     course_id TEXT NOT NULL,
     kc_id TEXT NOT NULL,
     kc_name TEXT DEFAULT '',
-    mastery REAL DEFAULT 0.0,
+    mastery REAL,
     confidence REAL,
     status TEXT DEFAULT 'unknown',
     trend TEXT,
@@ -93,7 +90,7 @@ CREATE TABLE IF NOT EXISTS learner_abilities (
     user_id TEXT NOT NULL,
     course_id TEXT NOT NULL,
     ability_type TEXT NOT NULL,
-    score REAL DEFAULT 0.0,
+    score REAL,
     confidence REAL,
     trend TEXT,
     evidence_count INTEGER DEFAULT 0,
@@ -123,6 +120,7 @@ CREATE TABLE IF NOT EXISTS learner_misconceptions (
     user_id TEXT NOT NULL,
     course_id TEXT NOT NULL,
     kc_id TEXT NOT NULL,
+    misconception_key TEXT DEFAULT '',
     type TEXT DEFAULT 'conceptual_confusion',
     description TEXT DEFAULT '',
     severity REAL DEFAULT 0.5,
@@ -196,24 +194,27 @@ CREATE TABLE IF NOT EXISTS learner_state_snapshots (
 
 
 def connect(db_path: Optional[str | Path] = None) -> sqlite3.Connection:
-    """打开（并初始化）Learner Model 数据库。"""
+    """打开数据库连接（不初始化 schema，由 migrate 负责）。"""
     path = Path(db_path) if db_path else DEFAULT_DB_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path))
+    conn = sqlite3.connect(str(path), timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
 
-def init_db(conn: sqlite3.Connection) -> None:
-    """建表（幂等）。"""
-    conn.executescript(_DDL)
+def init_v1(conn: sqlite3.Connection) -> None:
+    """只建 V1 初始表（幂等）。"""
+    conn.executescript(_V1_DDL)
     conn.commit()
 
 
 def get_connection(db_path: Optional[str | Path] = None) -> sqlite3.Connection:
-    """便捷入口：连接 + 初始化。"""
+    """便捷入口：连接 + 迁移到最新版本。"""
+    from edu_agent.learner_model.migrations import migrate
+
     conn = connect(db_path)
-    init_db(conn)
+    migrate(conn)
     return conn
