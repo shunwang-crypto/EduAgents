@@ -1,0 +1,30 @@
+{
+  "schema_version": "1.0",
+  "preferred_mode": "example_driven",
+  "learning_style_distribution": {
+    "visual": 0.3,
+    "auditory": null,
+    "kinesthetic": null,
+    "reading": 0.35
+  },
+  "pace_factor": null,
+  "scaffold_preference": null,
+  "mode_effectiveness": {
+    "worked_example": {
+      "score": null,
+      "confidence": null,
+      "sample_size": null
+    },
+    "step_by_step": {
+      "score": null,
+      "confidence": null,
+      "sample_size": null
+    },
+    "concept_first": {
+      "score": null,
+      "confidence": null,
+      "sample_size": null
+    }
+  },
+  "updated_at": null
+}

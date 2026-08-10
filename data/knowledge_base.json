@@ -1,0 +1,722 @@
+[
+  {
+    "doc_title": "README.md",
+    "heading_path": "build nanoGPT",
+    "text": "This repo holds the from-scratch reproduction of [nanoGPT](https://github.com/karpathy/nanoGPT/tree/master). The git commits were specifically kept step by step and clean so that one can easily walk through the git commit history to see it built slowly. Additionally, there is an accompanying [video lecture on YouTube](https://youtu.be/l8pRSuU81PU) where you can see me introduce each commit and explain the pieces along the way.\nWe basically start from an empty file and work our way to a reproduction of the [GPT-2](https://d4mucfpksywv.cloudfront.net/better-language-models/language_models_are_unsupervised_multitask_learners.pdf) (124M) model. If you have more patience or money, the code can also reproduce the [GPT-3](https://arxiv.org/pdf/2005.14165) models. While the GPT-2 (124M) model probably trained for quite some time back in the day (2019, ~5 years ago), today, reproducing it is a matter of ~1hr and ~$10. You'll need a cloud GPU box if you don't have enough, for that I recommend [Lambda](https://lambdalabs.com).\nNote that GPT-2 and GPT-3 and both simple language models, trained on internet documents, and all they do is \"dream\" internet documents. So this repo/video this does not cover Chat finetuning, and you can't talk to it like you can talk to ChatGPT. The finetuning process (while quite simple conceptually - SFT is just about swapping out the dataset and continuing the training) comes after this part and will be covered at a later time. For now this is the kind of stuff that the 124M model says if you prompt it with \"Hello, I'm a language model,\" after 10B tokens of training:\n```\nHello, I'm a language model, and my goal is to make English as easy and fun as possible for everyone, and to find out the different grammar rules\nHello, I'm a language model, so the next time I go, I'll just say, I like this stuff.\nHello, I'm a language model, and the question is, what should I do if I want to be a teacher?\nHello, I'm a language model, and I'm an English person. In languages, \"speak\" is really speaking. Because for most people, there's\n```\nAnd after 40B tokens of training:\n```\nHello, I'm a language model, a model of computer science, and it's a way (in mathematics) to program computer programs to do things like write\nHello, I'm a language model, not a human. This means that I believe in my language model, as I have no experience with it yet.\nHello, I'm a language model, but I'm talking about data. You've got to create an array of data: you've got to create that.\nHello, I'm a language model, and all of this is about modeling and learning Python. I'm very good in syntax, however I struggle with Python due\n```\nLol. Anyway, once the video comes out, this will also be a place for FAQ, and a place for fixes and errata, of which I am sure there will be a number :)\nFor discussions and questions, please use [Discussions tab](https://github.com/karpathy/build-nanogpt/discussions), and for faster communication, have a look at my [Zero To Hero Discord](https://discord.gg/3zy8kqD9Cp), channel **#nanoGPT**:\n[![](https://dcbadge.vercel.app/api/server/3zy8kqD9Cp?compact=true&style=flat)](https://discord.gg/3zy8kqD9Cp)",
+    "score": 0.0
+  },
+  {
+    "doc_title": "README.md",
+    "heading_path": "build nanoGPT > Video",
+    "text": "[Let's reproduce GPT-2 (124M) YouTube lecture](https://youtu.be/l8pRSuU81PU)",
+    "score": 0.0
+  },
+  {
+    "doc_title": "README.md",
+    "heading_path": "build nanoGPT > Errata",
+    "text": "Minor cleanup, we forgot to delete `register_buffer` of the bias once we switched to flash attention, fixed with a recent PR.\nEarlier version of PyTorch may have difficulty converting from uint16 to long. Inside `load_tokens`, we added `npt = npt.astype(np.int32)` to use numpy to convert uint16 to int32 before converting to torch tensor and then converting to long.\nThe `torch.autocast` function takes an arg `device_type`, to which I tried to stubbornly just pass `device` hoping it works ok, but PyTorch actually really wants just the type and creates errors in some version of PyTorch. So we want e.g. the device `cuda:3` to get stripped to `cuda`. Currently, device `mps` (Apple Silicon) would become `device_type` CPU, I'm not 100% sure this is the intended PyTorch way.\nConfusingly, `model.require_backward_grad_sync` is actually used by both the forward and backward pass. Moved up the line so that it also gets applied to the forward pass.",
+    "score": 0.0
+  },
+  {
+    "doc_title": "README.md",
+    "heading_path": "build nanoGPT > Prod",
+    "text": "For more production-grade runs that are very similar to nanoGPT, I recommend looking at the following repos:\n- [litGPT](https://github.com/Lightning-AI/litgpt)\n- [TinyLlama](https://github.com/jzhang38/TinyLlama)",
+    "score": 0.0
+  },
+  {
+    "doc_title": "README.md",
+    "heading_path": "build nanoGPT > License",
+    "text": "MIT",
+    "score": 0.0
+  },
+  {
+    "doc_title": "play.ipynb",
+    "heading_path": "play.ipynb",
+    "text": "{\n \"cells\": [\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"from transformers import GPT2LMHeadModel\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"model_hf = GPT2LMHeadModel.from_pretrained(\\\"gpt2\\\") # 124M\\n\",\n    \"sd_hf = model_hf.state_dict()\\n\",\n    \"\\n\",\n    \"for k, v in sd_hf.items():\\n\",\n    \"    print(k, v.shape)\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"sd_hf[\\\"transformer.wpe.weight\\\"].view(-1)[:20]\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"import matplotlib.pyplot as plt\\n\",\n    \"%matplotlib inline\\n\",\n    \"\\n\",\n    \"plt.imshow(sd_hf[\\\"transformer.wpe.weight\\\"], cmap=\\\"gray\\\")\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"plt.plot(sd_hf[\\\"transformer.wpe.weight\\\"][:, 150])\\n\",\n    \"plt.plot(sd_hf[\\\"transformer.wpe.weight\\\"][:, 200])\\n\",\n    \"plt.plot(sd_hf[\\\"transformer.wpe.weight\\\"][:, 250])\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"plt.imshow(sd_hf[\\\"transformer.h.1.attn.c_attn.weight\\\"][:300,:300], cmap=\\\"gray\\\")\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"from transformers import pipeline, set_seed\\n\",\n    \"generator = pipeline('text-generation', model='gpt2')\\n\",\n    \"set_seed(42)\\n\",\n    \"generator(\\\"Hello, I'm a language model,\\\", max_length=30, num_return_sequences=5)\\n\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"# let's instead sample manually\\n\",\n    \"import torch\\n\",\n    \"from torch.nn import functional as F\\n\",\n    \"\\n\",\n    \"model = GPT2LMHeadModel.from_pretrained(\\\"gpt2\\\") # 124M\\n\",\n    \"model.eval()\\n\",\n    \"model.to('cuda')\\n\",\n    \"torch.manual_seed(42)\\n\",\n    \"torch.cuda.manual_seed(42)\\n\",\n    \"tokens = [15496, 11, 314, 1101, 257, 3303, 2746, 11] # \\\"Hello, I'm a language model,\\\"\\n\",\n    \"tokens = torch.tensor(tokens, dtype=torch.long) # (8,)\\n\",\n    \"tokens = tokens.unsqueeze(0).repeat(5, 1) # (5, 8)\\n\",\n    \"x = tokens.to('cuda')\\n\",\n    \"\\n\",\n    \"# generate!\\n\",\n    \"while x.size(1) < 30: # max_length=30\\n\",\n    \"    # forward the model to get the logits\\n\",\n    \"    with torch.no_grad():\\n\",\n    \"        logits = model(x)[0] # (B, T, vocab_size)\\n\",\n    \"        # take the logits at the last position\\n\",\n    \"        logits = logits[:, -1, :] # (B, vocab_size)\\n\",\n    \"        # get the probabilities\\n\",\n    \"        probs = F.softmax(logits, dim=-1)\\n\",\n    \"        # do top-k sampling of 50 (huggingface pipeline default)\\n\",\n    \"        # topk_probs here becomes (5, 50), topk_indices is (5, 50)\\n\",\n    \"        topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)\\n\",\n    \"        # select a token from the top-k probabilities\\n\",\n    \"        # note: multinomial does not demand the input to sum to 1\\n\",\n    \"        ix = torch.multinomial(topk_probs, 1) # (B, 1)\\n\",\n    \"        # gather the corresponding indices\\n\",\n    \"        xcol = torch.gather(topk_indices, -1, ix) # (B, 1)\\n\",\n    \"        # append to the sequence\\n\",\n    \"        x = torch.cat((x, xcol), dim=1)\\n\",\n    \"\\n\",\n    \"# print the generated text\\n\",\n    \"import tiktoken\\n\",\n    \"enc = tiktoken.get_encoding('gpt2')\\n\",\n    \"for i in range(5):\\n\",\n    \"    tokens = x[i, :30].tolist()\\n\",\n    \"    decoded = enc.decode(tokens)\\n\",\n    \"    print(\\\">\\\", decoded)\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"# tiny shakespeare dataset\\n\",\n    \"# !wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt\\n\",\n    \"with open('input.txt', 'r') as f:\\n\",\n    \"    text = f.read()\\n\",\n    \"data = text[:1000] # first 1,000 characters\\n\",\n    \"print(data[:100])\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"import tiktoken\\n\",\n    \"enc = tiktoken.get_encoding('gpt2')\\n\",\n    \"tokens = enc.encode(data)\\n\",\n    \"print(tokens[:24])\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"import torch\\n\",\n    \"buf = torch.tensor(tokens[:24 + 1])\\n\",\n    \"x = buf[:-1].view(4, 6)\\n\",\n    \"y = buf[1:].view(4, 6)\\n\",\n    \"print(x)\\n\",\n    \"print(y)\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"print(sd_hf[\\\"lm_head.weight\\\"].shape)\\n\",\n    \"print(sd_hf[\\\"transformer.wte.weight\\\"].shape)\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"(sd_hf[\\\"lm_head.weight\\\"] == sd_hf[\\\"transformer.wte.weight\\\"]).all()\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"print(sd_hf[\\\"lm_head.weight\\\"].data_ptr())\\n\",\n    \"print(sd_hf[\\\"transformer.wte.weight\\\"].data_ptr())\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"\\n\",\n    \"# standard deviation grows inside the residual stream\\n\",\n    \"x = torch.zeros(768)\\n\",\n    \"n = 100 # e.g. 100 layers\\n\",\n    \"for i in range(n):\\n\",\n    \"    x += n**-0.5 * torch.randn(768)\\n\",\n    \"\\n\",\n    \"print(x.std())\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"import torch\\n\",\n    \"\\n\",\n    \"# super simple little MLP\\n\",\n    \"net = torch.nn.Sequential(\\n\",\n    \"    torch.nn.Linear(16, 32),\\n\",\n    \"    torch.nn.GELU(),\\n\",\n    \"    torch.nn.Linear(32, 1)\\n\",\n    \")\\n\",\n    \"torch.random.manual_seed(42)\\n\",\n    \"x = torch.randn(4, 16)\\n\",\n    \"y = torch.randn(4, 1)\\n\",\n    \"net.zero_grad()\\n\",\n    \"yhat = net(x)\\n\",\n    \"loss = torch.nn.functional.mse_loss(yhat, y)\\n\",\n    \"loss.backward()\\n\",\n    \"print(net[0].weight.grad.view(-1)[:10])\\n\",\n    \"\\n\",\n    \"# the loss objective here is (due to readuction='mean')\\n\",\n    \"# L = 1/4 * [\\n\",\n    \"#            (y[0] - yhat[0])**2 +\\n\",\n    \"#            (y[1] - yhat[1])**2 +\\n\",\n    \"#            (y[2] - yhat[2])**2 +\\n\",\n    \"#            (y[3] - yhat[3])**2\\n\",\n    \"#           ]\\n\",\n    \"# NOTE: 1/4!\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"# now let's do it with grad_accum_steps of 4, and B=1\\n\",\n    \"# the loss objective here is different because\\n\",\n    \"# accumulation in gradient <---> SUM in loss\\n\",\n    \"# i.e. we instead get:\\n\",\n    \"# L0 = 1/4(y[0] - yhat[0])**2\\n\",\n    \"# L1 = 1/4(y[1] - yhat[1])**2\\n\",\n    \"# L2 = 1/4(y[2] - yhat[2])**2\\n\",\n    \"# L3 = 1/4(y[3] - yhat[3])**2\\n\",\n    \"# L = L0 + L1 + L2 + L3\\n\",\n    \"# NOTE: the \\\"normalizer\\\" of 1/4 is lost\\n\",\n    \"net.zero_grad()\\n\",\n    \"for i in range(4):\\n\",\n    \"    yhat = net(x[i])\\n\",\n    \"    loss = torch.nn.functional.mse_loss(yhat, y[i])\\n\",\n    \"    loss = loss / 4 # <-- have to add back the \\\"normalizer\\\"!\\n\",\n    \"    loss.backward()\\n\",\n    \"print(net[0].weight.grad.view(-1)[:10])\\n\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"# parse and visualize the logfile\\n\",\n    \"import numpy as np\\n\",\n    \"import matplotlib.pyplot as plt\\n\",\n    \"%matplotlib inline\\n\",\n    \"\\n\",\n    \"sz = \\\"124M\\\"\\n\",\n    \"\\n\",\n    \"loss_baseline = {\\n\",\n    \"    \\\"124M\\\": 3.2924,\\n\",\n    \"}[sz]\\n\",\n    \"hella2_baseline = { # HellaSwag for GPT-2\\n\",\n    \"    \\\"124M\\\": 0.294463,\\n\",\n    \"    \\\"350M\\\": 0.375224,\\n\",\n    \"    \\\"774M\\\": 0.431986,\\n\",\n    \"    \\\"1558M\\\": 0.488946,\\n\",\n    \"}[sz]\\n\",\n    \"hella3_baseline = { # HellaSwag for GPT-3\\n\",\n    \"    \\\"124M\\\": 0.337,\\n\",\n    \"    \\\"350M\\\": 0.436,\\n\",\n    \"    \\\"774M\\\": 0.510,\\n\",\n    \"    \\\"1558M\\\": 0.547,\\n\",\n    \"}[sz]\\n\",\n    \"\\n\",\n    \"# load the log file\\n\",\n    \"with open(\\\"log124M_40B/log.txt\\\", \\\"r\\\") as f:\\n\",\n    \"    lines = f.readlines()\\n\",\n    \"\\n\",\n    \"# parse the individual lines, group by stream (train,val,hella)\\n\",\n    \"streams = {}\\n\",\n    \"for line in lines:\\n\",\n    \"    step, stream, val = line.strip().split()\\n\",\n    \"    if stream not in streams:\\n\",\n    \"        streams[stream] = {}\\n\",\n    \"    streams[stream][int(step)] = float(val)\\n\",\n    \"\\n\",\n    \"# convert each stream from {step: val} to (steps[], vals[])\\n\",\n    \"# so it's easier for plotting\\n\",\n    \"streams_xy = {}\\n\",\n    \"for k, v in streams.items():\\n\",\n    \"    # get all (step, val) items, sort them\\n\",\n    \"    xy = sorted(list(v.items()))\\n\",\n    \"    # unpack the list of tuples to tuple of lists\\n\",\n    \"    streams_xy[k] = list(zip(*xy))\\n\",\n    \"\\n\",\n    \"# create figure\\n\",\n    \"plt.figure(figsize=(16, 6))\\n\",\n    \"\\n\",\n    \"# Panel 1: losses: both train and val\\n\",\n    \"plt.subplot(121)\\n\",\n    \"xs, ys = streams_xy[\\\"train\\\"] # training loss\\n\",\n    \"ys = np.array(ys)\\n\",\n    \"plt.plot(xs, ys, label=f'nanogpt ({sz}) train loss')\\n\",\n    \"print(\\\"Min Train Loss:\\\", min(ys))\\n\",\n    \"xs, ys = streams_xy[\\\"val\\\"] # validation loss\\n\",\n    \"plt.plot(xs, ys, label=f'nanogpt ({sz}) val loss')\\n\",\n    \"# horizontal line at GPT-2 baseline\\n\",\n    \"if loss_baseline is not None:\\n\",\n    \"    plt.axhline(y=loss_baseline, color='r', linestyle='--', label=f\\\"OpenAI GPT-2 ({sz}) checkpoint val loss\\\")\\n\",\n    \"plt.xlabel(\\\"steps\\\")\\n\",\n    \"plt.ylabel(\\\"loss\\\")\\n\",\n    \"plt.yscale('log')\\n\",\n    \"plt.ylim(top=4.0)\\n\",\n    \"plt.legend()\\n\",\n    \"plt.title(\\\"Loss\\\")\\n\",\n    \"print(\\\"Min Validation Loss:\\\", min(ys))\\n\",\n    \"\\n\",\n    \"# Panel 2: HellaSwag eval\\n\",\n    \"plt.subplot(122)\\n\",\n    \"xs, ys = streams_xy[\\\"hella\\\"] # HellaSwag eval\\n\",\n    \"ys = np.array(ys)\\n\",\n    \"plt.plot(xs, ys, label=f\\\"nanogpt ({sz})\\\")\\n\",\n    \"# horizontal line at GPT-2 baseline\\n\",\n    \"if hella2_baseline:\\n\",\n    \"    plt.axhline(y=hella2_baseline, color='r', linestyle='--', label=f\\\"OpenAI GPT-2 ({sz}) checkpoint\\\")\\n\",\n    \"if hella3_baseline:\\n\",\n    \"    plt.axhline(y=hella3_baseline, color='g', linestyle='--', label=f\\\"OpenAI GPT-3 ({sz}) checkpoint\\\")\\n\",\n    \"plt.xlabel(\\\"steps\\\")\\n\",\n    \"plt.ylabel(\\\"accuracy\\\")\\n\",\n    \"plt.legend()\\n\",\n    \"plt.title(\\\"HellaSwag eval\\\")\\n\",\n    \"print(\\\"Max Hellaswag eval:\\\", max(ys))\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": []\n  }\n ],\n \"metadata\": {\n  \"kernelspec\": {\n   \"display_name\": \"base\",\n   \"language\": \"python\",\n   \"name\": \"python3\"\n  },\n  \"language_info\": {\n   \"codemirror_mode\": {\n    \"name\": \"ipython\",\n    \"version\": 3\n   },\n   \"file_extension\": \".py\",\n   \"mimetype\": \"text/x-python\",\n   \"name\": \"python\",\n   \"nbconvert_exporter\": \"python\",\n   \"pygments_lexer\": \"ipython3\",\n   \"version\": \"3.10.14\"\n  }\n },\n \"nbformat\": 4,\n \"nbformat_minor\": 2\n}",
+    "score": 0.0
+  },
+  {
+    "doc_title": "README.md",
+    "heading_path": "build nanoGPT",
+    "text": "This repo holds the from-scratch reproduction of [nanoGPT](https://github.com/karpathy/nanoGPT/tree/master). The git commits were specifically kept step by step and clean so that one can easily walk through the git commit history to see it built slowly. Additionally, there is an accompanying [video lecture on YouTube](https://youtu.be/l8pRSuU81PU) where you can see me introduce each commit and explain the pieces along the way.\nWe basically start from an empty file and work our way to a reproduction of the [GPT-2](https://d4mucfpksywv.cloudfront.net/better-language-models/language_models_are_unsupervised_multitask_learners.pdf) (124M) model. If you have more patience or money, the code can also reproduce the [GPT-3](https://arxiv.org/pdf/2005.14165) models. While the GPT-2 (124M) model probably trained for quite some time back in the day (2019, ~5 years ago), today, reproducing it is a matter of ~1hr and ~$10. You'll need a cloud GPU box if you don't have enough, for that I recommend [Lambda](https://lambdalabs.com).\nNote that GPT-2 and GPT-3 and both simple language models, trained on internet documents, and all they do is \"dream\" internet documents. So this repo/video this does not cover Chat finetuning, and you can't talk to it like you can talk to ChatGPT. The finetuning process (while quite simple conceptually - SFT is just about swapping out the dataset and continuing the training) comes after this part and will be covered at a later time. For now this is the kind of stuff that the 124M model says if you prompt it with \"Hello, I'm a language model,\" after 10B tokens of training:\n```\nHello, I'm a language model, and my goal is to make English as easy and fun as possible for everyone, and to find out the different grammar rules\nHello, I'm a language model, so the next time I go, I'll just say, I like this stuff.\nHello, I'm a language model, and the question is, what should I do if I want to be a teacher?\nHello, I'm a language model, and I'm an English person. In languages, \"speak\" is really speaking. Because for most people, there's\n```\nAnd after 40B tokens of training:\n```\nHello, I'm a language model, a model of computer science, and it's a way (in mathematics) to program computer programs to do things like write\nHello, I'm a language model, not a human. This means that I believe in my language model, as I have no experience with it yet.\nHello, I'm a language model, but I'm talking about data. You've got to create an array of data: you've got to create that.\nHello, I'm a language model, and all of this is about modeling and learning Python. I'm very good in syntax, however I struggle with Python due\n```\nLol. Anyway, once the video comes out, this will also be a place for FAQ, and a place for fixes and errata, of which I am sure there will be a number :)\nFor discussions and questions, please use [Discussions tab](https://github.com/karpathy/build-nanogpt/discussions), and for faster communication, have a look at my [Zero To Hero Discord](https://discord.gg/3zy8kqD9Cp), channel **#nanoGPT**:\n[![](https://dcbadge.vercel.app/api/server/3zy8kqD9Cp?compact=true&style=flat)](https://discord.gg/3zy8kqD9Cp)",
+    "score": 0.0
+  },
+  {
+    "doc_title": "README.md",
+    "heading_path": "build nanoGPT > Video",
+    "text": "[Let's reproduce GPT-2 (124M) YouTube lecture](https://youtu.be/l8pRSuU81PU)",
+    "score": 0.0
+  },
+  {
+    "doc_title": "README.md",
+    "heading_path": "build nanoGPT > Errata",
+    "text": "Minor cleanup, we forgot to delete `register_buffer` of the bias once we switched to flash attention, fixed with a recent PR.\nEarlier version of PyTorch may have difficulty converting from uint16 to long. Inside `load_tokens`, we added `npt = npt.astype(np.int32)` to use numpy to convert uint16 to int32 before converting to torch tensor and then converting to long.\nThe `torch.autocast` function takes an arg `device_type`, to which I tried to stubbornly just pass `device` hoping it works ok, but PyTorch actually really wants just the type and creates errors in some version of PyTorch. So we want e.g. the device `cuda:3` to get stripped to `cuda`. Currently, device `mps` (Apple Silicon) would become `device_type` CPU, I'm not 100% sure this is the intended PyTorch way.\nConfusingly, `model.require_backward_grad_sync` is actually used by both the forward and backward pass. Moved up the line so that it also gets applied to the forward pass.",
+    "score": 0.0
+  },
+  {
+    "doc_title": "README.md",
+    "heading_path": "build nanoGPT > Prod",
+    "text": "For more production-grade runs that are very similar to nanoGPT, I recommend looking at the following repos:\n- [litGPT](https://github.com/Lightning-AI/litgpt)\n- [TinyLlama](https://github.com/jzhang38/TinyLlama)",
+    "score": 0.0
+  },
+  {
+    "doc_title": "README.md",
+    "heading_path": "build nanoGPT > License",
+    "text": "MIT",
+    "score": 0.0
+  },
+  {
+    "doc_title": "play.ipynb",
+    "heading_path": "play.ipynb",
+    "text": "{\n \"cells\": [\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"from transformers import GPT2LMHeadModel\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"model_hf = GPT2LMHeadModel.from_pretrained(\\\"gpt2\\\") # 124M\\n\",\n    \"sd_hf = model_hf.state_dict()\\n\",\n    \"\\n\",\n    \"for k, v in sd_hf.items():\\n\",\n    \"    print(k, v.shape)\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"sd_hf[\\\"transformer.wpe.weight\\\"].view(-1)[:20]\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"import matplotlib.pyplot as plt\\n\",\n    \"%matplotlib inline\\n\",\n    \"\\n\",\n    \"plt.imshow(sd_hf[\\\"transformer.wpe.weight\\\"], cmap=\\\"gray\\\")\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"plt.plot(sd_hf[\\\"transformer.wpe.weight\\\"][:, 150])\\n\",\n    \"plt.plot(sd_hf[\\\"transformer.wpe.weight\\\"][:, 200])\\n\",\n    \"plt.plot(sd_hf[\\\"transformer.wpe.weight\\\"][:, 250])\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"plt.imshow(sd_hf[\\\"transformer.h.1.attn.c_attn.weight\\\"][:300,:300], cmap=\\\"gray\\\")\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"from transformers import pipeline, set_seed\\n\",\n    \"generator = pipeline('text-generation', model='gpt2')\\n\",\n    \"set_seed(42)\\n\",\n    \"generator(\\\"Hello, I'm a language model,\\\", max_length=30, num_return_sequences=5)\\n\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"# let's instead sample manually\\n\",\n    \"import torch\\n\",\n    \"from torch.nn import functional as F\\n\",\n    \"\\n\",\n    \"model = GPT2LMHeadModel.from_pretrained(\\\"gpt2\\\") # 124M\\n\",\n    \"model.eval()\\n\",\n    \"model.to('cuda')\\n\",\n    \"torch.manual_seed(42)\\n\",\n    \"torch.cuda.manual_seed(42)\\n\",\n    \"tokens = [15496, 11, 314, 1101, 257, 3303, 2746, 11] # \\\"Hello, I'm a language model,\\\"\\n\",\n    \"tokens = torch.tensor(tokens, dtype=torch.long) # (8,)\\n\",\n    \"tokens = tokens.unsqueeze(0).repeat(5, 1) # (5, 8)\\n\",\n    \"x = tokens.to('cuda')\\n\",\n    \"\\n\",\n    \"# generate!\\n\",\n    \"while x.size(1) < 30: # max_length=30\\n\",\n    \"    # forward the model to get the logits\\n\",\n    \"    with torch.no_grad():\\n\",\n    \"        logits = model(x)[0] # (B, T, vocab_size)\\n\",\n    \"        # take the logits at the last position\\n\",\n    \"        logits = logits[:, -1, :] # (B, vocab_size)\\n\",\n    \"        # get the probabilities\\n\",\n    \"        probs = F.softmax(logits, dim=-1)\\n\",\n    \"        # do top-k sampling of 50 (huggingface pipeline default)\\n\",\n    \"        # topk_probs here becomes (5, 50), topk_indices is (5, 50)\\n\",\n    \"        topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)\\n\",\n    \"        # select a token from the top-k probabilities\\n\",\n    \"        # note: multinomial does not demand the input to sum to 1\\n\",\n    \"        ix = torch.multinomial(topk_probs, 1) # (B, 1)\\n\",\n    \"        # gather the corresponding indices\\n\",\n    \"        xcol = torch.gather(topk_indices, -1, ix) # (B, 1)\\n\",\n    \"        # append to the sequence\\n\",\n    \"        x = torch.cat((x, xcol), dim=1)\\n\",\n    \"\\n\",\n    \"# print the generated text\\n\",\n    \"import tiktoken\\n\",\n    \"enc = tiktoken.get_encoding('gpt2')\\n\",\n    \"for i in range(5):\\n\",\n    \"    tokens = x[i, :30].tolist()\\n\",\n    \"    decoded = enc.decode(tokens)\\n\",\n    \"    print(\\\">\\\", decoded)\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"# tiny shakespeare dataset\\n\",\n    \"# !wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt\\n\",\n    \"with open('input.txt', 'r') as f:\\n\",\n    \"    text = f.read()\\n\",\n    \"data = text[:1000] # first 1,000 characters\\n\",\n    \"print(data[:100])\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"import tiktoken\\n\",\n    \"enc = tiktoken.get_encoding('gpt2')\\n\",\n    \"tokens = enc.encode(data)\\n\",\n    \"print(tokens[:24])\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"import torch\\n\",\n    \"buf = torch.tensor(tokens[:24 + 1])\\n\",\n    \"x = buf[:-1].view(4, 6)\\n\",\n    \"y = buf[1:].view(4, 6)\\n\",\n    \"print(x)\\n\",\n    \"print(y)\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"print(sd_hf[\\\"lm_head.weight\\\"].shape)\\n\",\n    \"print(sd_hf[\\\"transformer.wte.weight\\\"].shape)\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"(sd_hf[\\\"lm_head.weight\\\"] == sd_hf[\\\"transformer.wte.weight\\\"]).all()\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"print(sd_hf[\\\"lm_head.weight\\\"].data_ptr())\\n\",\n    \"print(sd_hf[\\\"transformer.wte.weight\\\"].data_ptr())\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"\\n\",\n    \"# standard deviation grows inside the residual stream\\n\",\n    \"x = torch.zeros(768)\\n\",\n    \"n = 100 # e.g. 100 layers\\n\",\n    \"for i in range(n):\\n\",\n    \"    x += n**-0.5 * torch.randn(768)\\n\",\n    \"\\n\",\n    \"print(x.std())\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"import torch\\n\",\n    \"\\n\",\n    \"# super simple little MLP\\n\",\n    \"net = torch.nn.Sequential(\\n\",\n    \"    torch.nn.Linear(16, 32),\\n\",\n    \"    torch.nn.GELU(),\\n\",\n    \"    torch.nn.Linear(32, 1)\\n\",\n    \")\\n\",\n    \"torch.random.manual_seed(42)\\n\",\n    \"x = torch.randn(4, 16)\\n\",\n    \"y = torch.randn(4, 1)\\n\",\n    \"net.zero_grad()\\n\",\n    \"yhat = net(x)\\n\",\n    \"loss = torch.nn.functional.mse_loss(yhat, y)\\n\",\n    \"loss.backward()\\n\",\n    \"print(net[0].weight.grad.view(-1)[:10])\\n\",\n    \"\\n\",\n    \"# the loss objective here is (due to readuction='mean')\\n\",\n    \"# L = 1/4 * [\\n\",\n    \"#            (y[0] - yhat[0])**2 +\\n\",\n    \"#            (y[1] - yhat[1])**2 +\\n\",\n    \"#            (y[2] - yhat[2])**2 +\\n\",\n    \"#            (y[3] - yhat[3])**2\\n\",\n    \"#           ]\\n\",\n    \"# NOTE: 1/4!\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"# now let's do it with grad_accum_steps of 4, and B=1\\n\",\n    \"# the loss objective here is different because\\n\",\n    \"# accumulation in gradient <---> SUM in loss\\n\",\n    \"# i.e. we instead get:\\n\",\n    \"# L0 = 1/4(y[0] - yhat[0])**2\\n\",\n    \"# L1 = 1/4(y[1] - yhat[1])**2\\n\",\n    \"# L2 = 1/4(y[2] - yhat[2])**2\\n\",\n    \"# L3 = 1/4(y[3] - yhat[3])**2\\n\",\n    \"# L = L0 + L1 + L2 + L3\\n\",\n    \"# NOTE: the \\\"normalizer\\\" of 1/4 is lost\\n\",\n    \"net.zero_grad()\\n\",\n    \"for i in range(4):\\n\",\n    \"    yhat = net(x[i])\\n\",\n    \"    loss = torch.nn.functional.mse_loss(yhat, y[i])\\n\",\n    \"    loss = loss / 4 # <-- have to add back the \\\"normalizer\\\"!\\n\",\n    \"    loss.backward()\\n\",\n    \"print(net[0].weight.grad.view(-1)[:10])\\n\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"# parse and visualize the logfile\\n\",\n    \"import numpy as np\\n\",\n    \"import matplotlib.pyplot as plt\\n\",\n    \"%matplotlib inline\\n\",\n    \"\\n\",\n    \"sz = \\\"124M\\\"\\n\",\n    \"\\n\",\n    \"loss_baseline = {\\n\",\n    \"    \\\"124M\\\": 3.2924,\\n\",\n    \"}[sz]\\n\",\n    \"hella2_baseline = { # HellaSwag for GPT-2\\n\",\n    \"    \\\"124M\\\": 0.294463,\\n\",\n    \"    \\\"350M\\\": 0.375224,\\n\",\n    \"    \\\"774M\\\": 0.431986,\\n\",\n    \"    \\\"1558M\\\": 0.488946,\\n\",\n    \"}[sz]\\n\",\n    \"hella3_baseline = { # HellaSwag for GPT-3\\n\",\n    \"    \\\"124M\\\": 0.337,\\n\",\n    \"    \\\"350M\\\": 0.436,\\n\",\n    \"    \\\"774M\\\": 0.510,\\n\",\n    \"    \\\"1558M\\\": 0.547,\\n\",\n    \"}[sz]\\n\",\n    \"\\n\",\n    \"# load the log file\\n\",\n    \"with open(\\\"log124M_40B/log.txt\\\", \\\"r\\\") as f:\\n\",\n    \"    lines = f.readlines()\\n\",\n    \"\\n\",\n    \"# parse the individual lines, group by stream (train,val,hella)\\n\",\n    \"streams = {}\\n\",\n    \"for line in lines:\\n\",\n    \"    step, stream, val = line.strip().split()\\n\",\n    \"    if stream not in streams:\\n\",\n    \"        streams[stream] = {}\\n\",\n    \"    streams[stream][int(step)] = float(val)\\n\",\n    \"\\n\",\n    \"# convert each stream from {step: val} to (steps[], vals[])\\n\",\n    \"# so it's easier for plotting\\n\",\n    \"streams_xy = {}\\n\",\n    \"for k, v in streams.items():\\n\",\n    \"    # get all (step, val) items, sort them\\n\",\n    \"    xy = sorted(list(v.items()))\\n\",\n    \"    # unpack the list of tuples to tuple of lists\\n\",\n    \"    streams_xy[k] = list(zip(*xy))\\n\",\n    \"\\n\",\n    \"# create figure\\n\",\n    \"plt.figure(figsize=(16, 6))\\n\",\n    \"\\n\",\n    \"# Panel 1: losses: both train and val\\n\",\n    \"plt.subplot(121)\\n\",\n    \"xs, ys = streams_xy[\\\"train\\\"] # training loss\\n\",\n    \"ys = np.array(ys)\\n\",\n    \"plt.plot(xs, ys, label=f'nanogpt ({sz}) train loss')\\n\",\n    \"print(\\\"Min Train Loss:\\\", min(ys))\\n\",\n    \"xs, ys = streams_xy[\\\"val\\\"] # validation loss\\n\",\n    \"plt.plot(xs, ys, label=f'nanogpt ({sz}) val loss')\\n\",\n    \"# horizontal line at GPT-2 baseline\\n\",\n    \"if loss_baseline is not None:\\n\",\n    \"    plt.axhline(y=loss_baseline, color='r', linestyle='--', label=f\\\"OpenAI GPT-2 ({sz}) checkpoint val loss\\\")\\n\",\n    \"plt.xlabel(\\\"steps\\\")\\n\",\n    \"plt.ylabel(\\\"loss\\\")\\n\",\n    \"plt.yscale('log')\\n\",\n    \"plt.ylim(top=4.0)\\n\",\n    \"plt.legend()\\n\",\n    \"plt.title(\\\"Loss\\\")\\n\",\n    \"print(\\\"Min Validation Loss:\\\", min(ys))\\n\",\n    \"\\n\",\n    \"# Panel 2: HellaSwag eval\\n\",\n    \"plt.subplot(122)\\n\",\n    \"xs, ys = streams_xy[\\\"hella\\\"] # HellaSwag eval\\n\",\n    \"ys = np.array(ys)\\n\",\n    \"plt.plot(xs, ys, label=f\\\"nanogpt ({sz})\\\")\\n\",\n    \"# horizontal line at GPT-2 baseline\\n\",\n    \"if hella2_baseline:\\n\",\n    \"    plt.axhline(y=hella2_baseline, color='r', linestyle='--', label=f\\\"OpenAI GPT-2 ({sz}) checkpoint\\\")\\n\",\n    \"if hella3_baseline:\\n\",\n    \"    plt.axhline(y=hella3_baseline, color='g', linestyle='--', label=f\\\"OpenAI GPT-3 ({sz}) checkpoint\\\")\\n\",\n    \"plt.xlabel(\\\"steps\\\")\\n\",\n    \"plt.ylabel(\\\"accuracy\\\")\\n\",\n    \"plt.legend()\\n\",\n    \"plt.title(\\\"HellaSwag eval\\\")\\n\",\n    \"print(\\\"Max Hellaswag eval:\\\", max(ys))\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": []\n  }\n ],\n \"metadata\": {\n  \"kernelspec\": {\n   \"display_name\": \"base\",\n   \"language\": \"python\",\n   \"name\": \"python3\"\n  },\n  \"language_info\": {\n   \"codemirror_mode\": {\n    \"name\": \"ipython\",\n    \"version\": 3\n   },\n   \"file_extension\": \".py\",\n   \"mimetype\": \"text/x-python\",\n   \"name\": \"python\",\n   \"nbconvert_exporter\": \"python\",\n   \"pygments_lexer\": \"ipython3\",\n   \"version\": \"3.10.14\"\n  }\n },\n \"nbformat\": 4,\n \"nbformat_minor\": 2\n}",
+    "score": 0.0
+  },
+  {
+    "doc_title": "README.md",
+    "heading_path": "build nanoGPT",
+    "text": "This repo holds the from-scratch reproduction of [nanoGPT](https://github.com/karpathy/nanoGPT/tree/master). The git commits were specifically kept step by step and clean so that one can easily walk through the git commit history to see it built slowly. Additionally, there is an accompanying [video lecture on YouTube](https://youtu.be/l8pRSuU81PU) where you can see me introduce each commit and explain the pieces along the way.\nWe basically start from an empty file and work our way to a reproduction of the [GPT-2](https://d4mucfpksywv.cloudfront.net/better-language-models/language_models_are_unsupervised_multitask_learners.pdf) (124M) model. If you have more patience or money, the code can also reproduce the [GPT-3](https://arxiv.org/pdf/2005.14165) models. While the GPT-2 (124M) model probably trained for quite some time back in the day (2019, ~5 years ago), today, reproducing it is a matter of ~1hr and ~$10. You'll need a cloud GPU box if you don't have enough, for that I recommend [Lambda](https://lambdalabs.com).\nNote that GPT-2 and GPT-3 and both simple language models, trained on internet documents, and all they do is \"dream\" internet documents. So this repo/video this does not cover Chat finetuning, and you can't talk to it like you can talk to ChatGPT. The finetuning process (while quite simple conceptually - SFT is just about swapping out the dataset and continuing the training) comes after this part and will be covered at a later time. For now this is the kind of stuff that the 124M model says if you prompt it with \"Hello, I'm a language model,\" after 10B tokens of training:\n```\nHello, I'm a language model, and my goal is to make English as easy and fun as possible for everyone, and to find out the different grammar rules\nHello, I'm a language model, so the next time I go, I'll just say, I like this stuff.\nHello, I'm a language model, and the question is, what should I do if I want to be a teacher?\nHello, I'm a language model, and I'm an English person. In languages, \"speak\" is really speaking. Because for most people, there's\n```\nAnd after 40B tokens of training:\n```\nHello, I'm a language model, a model of computer science, and it's a way (in mathematics) to program computer programs to do things like write\nHello, I'm a language model, not a human. This means that I believe in my language model, as I have no experience with it yet.\nHello, I'm a language model, but I'm talking about data. You've got to create an array of data: you've got to create that.\nHello, I'm a language model, and all of this is about modeling and learning Python. I'm very good in syntax, however I struggle with Python due\n```\nLol. Anyway, once the video comes out, this will also be a place for FAQ, and a place for fixes and errata, of which I am sure there will be a number :)\nFor discussions and questions, please use [Discussions tab](https://github.com/karpathy/build-nanogpt/discussions), and for faster communication, have a look at my [Zero To Hero Discord](https://discord.gg/3zy8kqD9Cp), channel **#nanoGPT**:\n[![](https://dcbadge.vercel.app/api/server/3zy8kqD9Cp?compact=true&style=flat)](https://discord.gg/3zy8kqD9Cp)",
+    "score": 0.0
+  },
+  {
+    "doc_title": "README.md",
+    "heading_path": "build nanoGPT > Video",
+    "text": "[Let's reproduce GPT-2 (124M) YouTube lecture](https://youtu.be/l8pRSuU81PU)",
+    "score": 0.0
+  },
+  {
+    "doc_title": "README.md",
+    "heading_path": "build nanoGPT > Errata",
+    "text": "Minor cleanup, we forgot to delete `register_buffer` of the bias once we switched to flash attention, fixed with a recent PR.\nEarlier version of PyTorch may have difficulty converting from uint16 to long. Inside `load_tokens`, we added `npt = npt.astype(np.int32)` to use numpy to convert uint16 to int32 before converting to torch tensor and then converting to long.\nThe `torch.autocast` function takes an arg `device_type`, to which I tried to stubbornly just pass `device` hoping it works ok, but PyTorch actually really wants just the type and creates errors in some version of PyTorch. So we want e.g. the device `cuda:3` to get stripped to `cuda`. Currently, device `mps` (Apple Silicon) would become `device_type` CPU, I'm not 100% sure this is the intended PyTorch way.\nConfusingly, `model.require_backward_grad_sync` is actually used by both the forward and backward pass. Moved up the line so that it also gets applied to the forward pass.",
+    "score": 0.0
+  },
+  {
+    "doc_title": "README.md",
+    "heading_path": "build nanoGPT > Prod",
+    "text": "For more production-grade runs that are very similar to nanoGPT, I recommend looking at the following repos:\n- [litGPT](https://github.com/Lightning-AI/litgpt)\n- [TinyLlama](https://github.com/jzhang38/TinyLlama)",
+    "score": 0.0
+  },
+  {
+    "doc_title": "README.md",
+    "heading_path": "build nanoGPT > License",
+    "text": "MIT",
+    "score": 0.0
+  },
+  {
+    "doc_title": "play.ipynb",
+    "heading_path": "play.ipynb",
+    "text": "{\n \"cells\": [\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"from transformers import GPT2LMHeadModel\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"model_hf = GPT2LMHeadModel.from_pretrained(\\\"gpt2\\\") # 124M\\n\",\n    \"sd_hf = model_hf.state_dict()\\n\",\n    \"\\n\",\n    \"for k, v in sd_hf.items():\\n\",\n    \"    print(k, v.shape)\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"sd_hf[\\\"transformer.wpe.weight\\\"].view(-1)[:20]\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"import matplotlib.pyplot as plt\\n\",\n    \"%matplotlib inline\\n\",\n    \"\\n\",\n    \"plt.imshow(sd_hf[\\\"transformer.wpe.weight\\\"], cmap=\\\"gray\\\")\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"plt.plot(sd_hf[\\\"transformer.wpe.weight\\\"][:, 150])\\n\",\n    \"plt.plot(sd_hf[\\\"transformer.wpe.weight\\\"][:, 200])\\n\",\n    \"plt.plot(sd_hf[\\\"transformer.wpe.weight\\\"][:, 250])\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"plt.imshow(sd_hf[\\\"transformer.h.1.attn.c_attn.weight\\\"][:300,:300], cmap=\\\"gray\\\")\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"from transformers import pipeline, set_seed\\n\",\n    \"generator = pipeline('text-generation', model='gpt2')\\n\",\n    \"set_seed(42)\\n\",\n    \"generator(\\\"Hello, I'm a language model,\\\", max_length=30, num_return_sequences=5)\\n\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"# let's instead sample manually\\n\",\n    \"import torch\\n\",\n    \"from torch.nn import functional as F\\n\",\n    \"\\n\",\n    \"model = GPT2LMHeadModel.from_pretrained(\\\"gpt2\\\") # 124M\\n\",\n    \"model.eval()\\n\",\n    \"model.to('cuda')\\n\",\n    \"torch.manual_seed(42)\\n\",\n    \"torch.cuda.manual_seed(42)\\n\",\n    \"tokens = [15496, 11, 314, 1101, 257, 3303, 2746, 11] # \\\"Hello, I'm a language model,\\\"\\n\",\n    \"tokens = torch.tensor(tokens, dtype=torch.long) # (8,)\\n\",\n    \"tokens = tokens.unsqueeze(0).repeat(5, 1) # (5, 8)\\n\",\n    \"x = tokens.to('cuda')\\n\",\n    \"\\n\",\n    \"# generate!\\n\",\n    \"while x.size(1) < 30: # max_length=30\\n\",\n    \"    # forward the model to get the logits\\n\",\n    \"    with torch.no_grad():\\n\",\n    \"        logits = model(x)[0] # (B, T, vocab_size)\\n\",\n    \"        # take the logits at the last position\\n\",\n    \"        logits = logits[:, -1, :] # (B, vocab_size)\\n\",\n    \"        # get the probabilities\\n\",\n    \"        probs = F.softmax(logits, dim=-1)\\n\",\n    \"        # do top-k sampling of 50 (huggingface pipeline default)\\n\",\n    \"        # topk_probs here becomes (5, 50), topk_indices is (5, 50)\\n\",\n    \"        topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)\\n\",\n    \"        # select a token from the top-k probabilities\\n\",\n    \"        # note: multinomial does not demand the input to sum to 1\\n\",\n    \"        ix = torch.multinomial(topk_probs, 1) # (B, 1)\\n\",\n    \"        # gather the corresponding indices\\n\",\n    \"        xcol = torch.gather(topk_indices, -1, ix) # (B, 1)\\n\",\n    \"        # append to the sequence\\n\",\n    \"        x = torch.cat((x, xcol), dim=1)\\n\",\n    \"\\n\",\n    \"# print the generated text\\n\",\n    \"import tiktoken\\n\",\n    \"enc = tiktoken.get_encoding('gpt2')\\n\",\n    \"for i in range(5):\\n\",\n    \"    tokens = x[i, :30].tolist()\\n\",\n    \"    decoded = enc.decode(tokens)\\n\",\n    \"    print(\\\">\\\", decoded)\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"# tiny shakespeare dataset\\n\",\n    \"# !wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt\\n\",\n    \"with open('input.txt', 'r') as f:\\n\",\n    \"    text = f.read()\\n\",\n    \"data = text[:1000] # first 1,000 characters\\n\",\n    \"print(data[:100])\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"import tiktoken\\n\",\n    \"enc = tiktoken.get_encoding('gpt2')\\n\",\n    \"tokens = enc.encode(data)\\n\",\n    \"print(tokens[:24])\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"import torch\\n\",\n    \"buf = torch.tensor(tokens[:24 + 1])\\n\",\n    \"x = buf[:-1].view(4, 6)\\n\",\n    \"y = buf[1:].view(4, 6)\\n\",\n    \"print(x)\\n\",\n    \"print(y)\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"print(sd_hf[\\\"lm_head.weight\\\"].shape)\\n\",\n    \"print(sd_hf[\\\"transformer.wte.weight\\\"].shape)\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"(sd_hf[\\\"lm_head.weight\\\"] == sd_hf[\\\"transformer.wte.weight\\\"]).all()\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"print(sd_hf[\\\"lm_head.weight\\\"].data_ptr())\\n\",\n    \"print(sd_hf[\\\"transformer.wte.weight\\\"].data_ptr())\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"\\n\",\n    \"# standard deviation grows inside the residual stream\\n\",\n    \"x = torch.zeros(768)\\n\",\n    \"n = 100 # e.g. 100 layers\\n\",\n    \"for i in range(n):\\n\",\n    \"    x += n**-0.5 * torch.randn(768)\\n\",\n    \"\\n\",\n    \"print(x.std())\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"import torch\\n\",\n    \"\\n\",\n    \"# super simple little MLP\\n\",\n    \"net = torch.nn.Sequential(\\n\",\n    \"    torch.nn.Linear(16, 32),\\n\",\n    \"    torch.nn.GELU(),\\n\",\n    \"    torch.nn.Linear(32, 1)\\n\",\n    \")\\n\",\n    \"torch.random.manual_seed(42)\\n\",\n    \"x = torch.randn(4, 16)\\n\",\n    \"y = torch.randn(4, 1)\\n\",\n    \"net.zero_grad()\\n\",\n    \"yhat = net(x)\\n\",\n    \"loss = torch.nn.functional.mse_loss(yhat, y)\\n\",\n    \"loss.backward()\\n\",\n    \"print(net[0].weight.grad.view(-1)[:10])\\n\",\n    \"\\n\",\n    \"# the loss objective here is (due to readuction='mean')\\n\",\n    \"# L = 1/4 * [\\n\",\n    \"#            (y[0] - yhat[0])**2 +\\n\",\n    \"#            (y[1] - yhat[1])**2 +\\n\",\n    \"#            (y[2] - yhat[2])**2 +\\n\",\n    \"#            (y[3] - yhat[3])**2\\n\",\n    \"#           ]\\n\",\n    \"# NOTE: 1/4!\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"# now let's do it with grad_accum_steps of 4, and B=1\\n\",\n    \"# the loss objective here is different because\\n\",\n    \"# accumulation in gradient <---> SUM in loss\\n\",\n    \"# i.e. we instead get:\\n\",\n    \"# L0 = 1/4(y[0] - yhat[0])**2\\n\",\n    \"# L1 = 1/4(y[1] - yhat[1])**2\\n\",\n    \"# L2 = 1/4(y[2] - yhat[2])**2\\n\",\n    \"# L3 = 1/4(y[3] - yhat[3])**2\\n\",\n    \"# L = L0 + L1 + L2 + L3\\n\",\n    \"# NOTE: the \\\"normalizer\\\" of 1/4 is lost\\n\",\n    \"net.zero_grad()\\n\",\n    \"for i in range(4):\\n\",\n    \"    yhat = net(x[i])\\n\",\n    \"    loss = torch.nn.functional.mse_loss(yhat, y[i])\\n\",\n    \"    loss = loss / 4 # <-- have to add back the \\\"normalizer\\\"!\\n\",\n    \"    loss.backward()\\n\",\n    \"print(net[0].weight.grad.view(-1)[:10])\\n\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"# parse and visualize the logfile\\n\",\n    \"import numpy as np\\n\",\n    \"import matplotlib.pyplot as plt\\n\",\n    \"%matplotlib inline\\n\",\n    \"\\n\",\n    \"sz = \\\"124M\\\"\\n\",\n    \"\\n\",\n    \"loss_baseline = {\\n\",\n    \"    \\\"124M\\\": 3.2924,\\n\",\n    \"}[sz]\\n\",\n    \"hella2_baseline = { # HellaSwag for GPT-2\\n\",\n    \"    \\\"124M\\\": 0.294463,\\n\",\n    \"    \\\"350M\\\": 0.375224,\\n\",\n    \"    \\\"774M\\\": 0.431986,\\n\",\n    \"    \\\"1558M\\\": 0.488946,\\n\",\n    \"}[sz]\\n\",\n    \"hella3_baseline = { # HellaSwag for GPT-3\\n\",\n    \"    \\\"124M\\\": 0.337,\\n\",\n    \"    \\\"350M\\\": 0.436,\\n\",\n    \"    \\\"774M\\\": 0.510,\\n\",\n    \"    \\\"1558M\\\": 0.547,\\n\",\n    \"}[sz]\\n\",\n    \"\\n\",\n    \"# load the log file\\n\",\n    \"with open(\\\"log124M_40B/log.txt\\\", \\\"r\\\") as f:\\n\",\n    \"    lines = f.readlines()\\n\",\n    \"\\n\",\n    \"# parse the individual lines, group by stream (train,val,hella)\\n\",\n    \"streams = {}\\n\",\n    \"for line in lines:\\n\",\n    \"    step, stream, val = line.strip().split()\\n\",\n    \"    if stream not in streams:\\n\",\n    \"        streams[stream] = {}\\n\",\n    \"    streams[stream][int(step)] = float(val)\\n\",\n    \"\\n\",\n    \"# convert each stream from {step: val} to (steps[], vals[])\\n\",\n    \"# so it's easier for plotting\\n\",\n    \"streams_xy = {}\\n\",\n    \"for k, v in streams.items():\\n\",\n    \"    # get all (step, val) items, sort them\\n\",\n    \"    xy = sorted(list(v.items()))\\n\",\n    \"    # unpack the list of tuples to tuple of lists\\n\",\n    \"    streams_xy[k] = list(zip(*xy))\\n\",\n    \"\\n\",\n    \"# create figure\\n\",\n    \"plt.figure(figsize=(16, 6))\\n\",\n    \"\\n\",\n    \"# Panel 1: losses: both train and val\\n\",\n    \"plt.subplot(121)\\n\",\n    \"xs, ys = streams_xy[\\\"train\\\"] # training loss\\n\",\n    \"ys = np.array(ys)\\n\",\n    \"plt.plot(xs, ys, label=f'nanogpt ({sz}) train loss')\\n\",\n    \"print(\\\"Min Train Loss:\\\", min(ys))\\n\",\n    \"xs, ys = streams_xy[\\\"val\\\"] # validation loss\\n\",\n    \"plt.plot(xs, ys, label=f'nanogpt ({sz}) val loss')\\n\",\n    \"# horizontal line at GPT-2 baseline\\n\",\n    \"if loss_baseline is not None:\\n\",\n    \"    plt.axhline(y=loss_baseline, color='r', linestyle='--', label=f\\\"OpenAI GPT-2 ({sz}) checkpoint val loss\\\")\\n\",\n    \"plt.xlabel(\\\"steps\\\")\\n\",\n    \"plt.ylabel(\\\"loss\\\")\\n\",\n    \"plt.yscale('log')\\n\",\n    \"plt.ylim(top=4.0)\\n\",\n    \"plt.legend()\\n\",\n    \"plt.title(\\\"Loss\\\")\\n\",\n    \"print(\\\"Min Validation Loss:\\\", min(ys))\\n\",\n    \"\\n\",\n    \"# Panel 2: HellaSwag eval\\n\",\n    \"plt.subplot(122)\\n\",\n    \"xs, ys = streams_xy[\\\"hella\\\"] # HellaSwag eval\\n\",\n    \"ys = np.array(ys)\\n\",\n    \"plt.plot(xs, ys, label=f\\\"nanogpt ({sz})\\\")\\n\",\n    \"# horizontal line at GPT-2 baseline\\n\",\n    \"if hella2_baseline:\\n\",\n    \"    plt.axhline(y=hella2_baseline, color='r', linestyle='--', label=f\\\"OpenAI GPT-2 ({sz}) checkpoint\\\")\\n\",\n    \"if hella3_baseline:\\n\",\n    \"    plt.axhline(y=hella3_baseline, color='g', linestyle='--', label=f\\\"OpenAI GPT-3 ({sz}) checkpoint\\\")\\n\",\n    \"plt.xlabel(\\\"steps\\\")\\n\",\n    \"plt.ylabel(\\\"accuracy\\\")\\n\",\n    \"plt.legend()\\n\",\n    \"plt.title(\\\"HellaSwag eval\\\")\\n\",\n    \"print(\\\"Max Hellaswag eval:\\\", max(ys))\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": []\n  }\n ],\n \"metadata\": {\n  \"kernelspec\": {\n   \"display_name\": \"base\",\n   \"language\": \"python\",\n   \"name\": \"python3\"\n  },\n  \"language_info\": {\n   \"codemirror_mode\": {\n    \"name\": \"ipython\",\n    \"version\": 3\n   },\n   \"file_extension\": \".py\",\n   \"mimetype\": \"text/x-python\",\n   \"name\": \"python\",\n   \"nbconvert_exporter\": \"python\",\n   \"pygments_lexer\": \"ipython3\",\n   \"version\": \"3.10.14\"\n  }\n },\n \"nbformat\": 4,\n \"nbformat_minor\": 2\n}",
+    "score": 0.0
+  },
+  {
+    "doc_title": "README.md",
+    "heading_path": "build nanoGPT",
+    "text": "This repo holds the from-scratch reproduction of [nanoGPT](https://github.com/karpathy/nanoGPT/tree/master). The git commits were specifically kept step by step and clean so that one can easily walk through the git commit history to see it built slowly. Additionally, there is an accompanying [video lecture on YouTube](https://youtu.be/l8pRSuU81PU) where you can see me introduce each commit and explain the pieces along the way.\nWe basically start from an empty file and work our way to a reproduction of the [GPT-2](https://d4mucfpksywv.cloudfront.net/better-language-models/language_models_are_unsupervised_multitask_learners.pdf) (124M) model. If you have more patience or money, the code can also reproduce the [GPT-3](https://arxiv.org/pdf/2005.14165) models. While the GPT-2 (124M) model probably trained for quite some time back in the day (2019, ~5 years ago), today, reproducing it is a matter of ~1hr and ~$10. You'll need a cloud GPU box if you don't have enough, for that I recommend [Lambda](https://lambdalabs.com).\nNote that GPT-2 and GPT-3 and both simple language models, trained on internet documents, and all they do is \"dream\" internet documents. So this repo/video this does not cover Chat finetuning, and you can't talk to it like you can talk to ChatGPT. The finetuning process (while quite simple conceptually - SFT is just about swapping out the dataset and continuing the training) comes after this part and will be covered at a later time. For now this is the kind of stuff that the 124M model says if you prompt it with \"Hello, I'm a language model,\" after 10B tokens of training:\n```\nHello, I'm a language model, and my goal is to make English as easy and fun as possible for everyone, and to find out the different grammar rules\nHello, I'm a language model, so the next time I go, I'll just say, I like this stuff.\nHello, I'm a language model, and the question is, what should I do if I want to be a teacher?\nHello, I'm a language model, and I'm an English person. In languages, \"speak\" is really speaking. Because for most people, there's\n```\nAnd after 40B tokens of training:\n```\nHello, I'm a language model, a model of computer science, and it's a way (in mathematics) to program computer programs to do things like write\nHello, I'm a language model, not a human. This means that I believe in my language model, as I have no experience with it yet.\nHello, I'm a language model, but I'm talking about data. You've got to create an array of data: you've got to create that.\nHello, I'm a language model, and all of this is about modeling and learning Python. I'm very good in syntax, however I struggle with Python due\n```\nLol. Anyway, once the video comes out, this will also be a place for FAQ, and a place for fixes and errata, of which I am sure there will be a number :)\nFor discussions and questions, please use [Discussions tab](https://github.com/karpathy/build-nanogpt/discussions), and for faster communication, have a look at my [Zero To Hero Discord](https://discord.gg/3zy8kqD9Cp), channel **#nanoGPT**:\n[![](https://dcbadge.vercel.app/api/server/3zy8kqD9Cp?compact=true&style=flat)](https://discord.gg/3zy8kqD9Cp)",
+    "score": 0.0
+  },
+  {
+    "doc_title": "README.md",
+    "heading_path": "build nanoGPT > Video",
+    "text": "[Let's reproduce GPT-2 (124M) YouTube lecture](https://youtu.be/l8pRSuU81PU)",
+    "score": 0.0
+  },
+  {
+    "doc_title": "README.md",
+    "heading_path": "build nanoGPT > Errata",
+    "text": "Minor cleanup, we forgot to delete `register_buffer` of the bias once we switched to flash attention, fixed with a recent PR.\nEarlier version of PyTorch may have difficulty converting from uint16 to long. Inside `load_tokens`, we added `npt = npt.astype(np.int32)` to use numpy to convert uint16 to int32 before converting to torch tensor and then converting to long.\nThe `torch.autocast` function takes an arg `device_type`, to which I tried to stubbornly just pass `device` hoping it works ok, but PyTorch actually really wants just the type and creates errors in some version of PyTorch. So we want e.g. the device `cuda:3` to get stripped to `cuda`. Currently, device `mps` (Apple Silicon) would become `device_type` CPU, I'm not 100% sure this is the intended PyTorch way.\nConfusingly, `model.require_backward_grad_sync` is actually used by both the forward and backward pass. Moved up the line so that it also gets applied to the forward pass.",
+    "score": 0.0
+  },
+  {
+    "doc_title": "README.md",
+    "heading_path": "build nanoGPT > Prod",
+    "text": "For more production-grade runs that are very similar to nanoGPT, I recommend looking at the following repos:\n- [litGPT](https://github.com/Lightning-AI/litgpt)\n- [TinyLlama](https://github.com/jzhang38/TinyLlama)",
+    "score": 0.0
+  },
+  {
+    "doc_title": "README.md",
+    "heading_path": "build nanoGPT > License",
+    "text": "MIT",
+    "score": 0.0
+  },
+  {
+    "doc_title": "play.ipynb",
+    "heading_path": "play.ipynb",
+    "text": "{\n \"cells\": [\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"from transformers import GPT2LMHeadModel\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"model_hf = GPT2LMHeadModel.from_pretrained(\\\"gpt2\\\") # 124M\\n\",\n    \"sd_hf = model_hf.state_dict()\\n\",\n    \"\\n\",\n    \"for k, v in sd_hf.items():\\n\",\n    \"    print(k, v.shape)\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"sd_hf[\\\"transformer.wpe.weight\\\"].view(-1)[:20]\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"import matplotlib.pyplot as plt\\n\",\n    \"%matplotlib inline\\n\",\n    \"\\n\",\n    \"plt.imshow(sd_hf[\\\"transformer.wpe.weight\\\"], cmap=\\\"gray\\\")\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"plt.plot(sd_hf[\\\"transformer.wpe.weight\\\"][:, 150])\\n\",\n    \"plt.plot(sd_hf[\\\"transformer.wpe.weight\\\"][:, 200])\\n\",\n    \"plt.plot(sd_hf[\\\"transformer.wpe.weight\\\"][:, 250])\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"plt.imshow(sd_hf[\\\"transformer.h.1.attn.c_attn.weight\\\"][:300,:300], cmap=\\\"gray\\\")\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"from transformers import pipeline, set_seed\\n\",\n    \"generator = pipeline('text-generation', model='gpt2')\\n\",\n    \"set_seed(42)\\n\",\n    \"generator(\\\"Hello, I'm a language model,\\\", max_length=30, num_return_sequences=5)\\n\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"# let's instead sample manually\\n\",\n    \"import torch\\n\",\n    \"from torch.nn import functional as F\\n\",\n    \"\\n\",\n    \"model = GPT2LMHeadModel.from_pretrained(\\\"gpt2\\\") # 124M\\n\",\n    \"model.eval()\\n\",\n    \"model.to('cuda')\\n\",\n    \"torch.manual_seed(42)\\n\",\n    \"torch.cuda.manual_seed(42)\\n\",\n    \"tokens = [15496, 11, 314, 1101, 257, 3303, 2746, 11] # \\\"Hello, I'm a language model,\\\"\\n\",\n    \"tokens = torch.tensor(tokens, dtype=torch.long) # (8,)\\n\",\n    \"tokens = tokens.unsqueeze(0).repeat(5, 1) # (5, 8)\\n\",\n    \"x = tokens.to('cuda')\\n\",\n    \"\\n\",\n    \"# generate!\\n\",\n    \"while x.size(1) < 30: # max_length=30\\n\",\n    \"    # forward the model to get the logits\\n\",\n    \"    with torch.no_grad():\\n\",\n    \"        logits = model(x)[0] # (B, T, vocab_size)\\n\",\n    \"        # take the logits at the last position\\n\",\n    \"        logits = logits[:, -1, :] # (B, vocab_size)\\n\",\n    \"        # get the probabilities\\n\",\n    \"        probs = F.softmax(logits, dim=-1)\\n\",\n    \"        # do top-k sampling of 50 (huggingface pipeline default)\\n\",\n    \"        # topk_probs here becomes (5, 50), topk_indices is (5, 50)\\n\",\n    \"        topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)\\n\",\n    \"        # select a token from the top-k probabilities\\n\",\n    \"        # note: multinomial does not demand the input to sum to 1\\n\",\n    \"        ix = torch.multinomial(topk_probs, 1) # (B, 1)\\n\",\n    \"        # gather the corresponding indices\\n\",\n    \"        xcol = torch.gather(topk_indices, -1, ix) # (B, 1)\\n\",\n    \"        # append to the sequence\\n\",\n    \"        x = torch.cat((x, xcol), dim=1)\\n\",\n    \"\\n\",\n    \"# print the generated text\\n\",\n    \"import tiktoken\\n\",\n    \"enc = tiktoken.get_encoding('gpt2')\\n\",\n    \"for i in range(5):\\n\",\n    \"    tokens = x[i, :30].tolist()\\n\",\n    \"    decoded = enc.decode(tokens)\\n\",\n    \"    print(\\\">\\\", decoded)\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"# tiny shakespeare dataset\\n\",\n    \"# !wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt\\n\",\n    \"with open('input.txt', 'r') as f:\\n\",\n    \"    text = f.read()\\n\",\n    \"data = text[:1000] # first 1,000 characters\\n\",\n    \"print(data[:100])\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"import tiktoken\\n\",\n    \"enc = tiktoken.get_encoding('gpt2')\\n\",\n    \"tokens = enc.encode(data)\\n\",\n    \"print(tokens[:24])\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"import torch\\n\",\n    \"buf = torch.tensor(tokens[:24 + 1])\\n\",\n    \"x = buf[:-1].view(4, 6)\\n\",\n    \"y = buf[1:].view(4, 6)\\n\",\n    \"print(x)\\n\",\n    \"print(y)\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"print(sd_hf[\\\"lm_head.weight\\\"].shape)\\n\",\n    \"print(sd_hf[\\\"transformer.wte.weight\\\"].shape)\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"(sd_hf[\\\"lm_head.weight\\\"] == sd_hf[\\\"transformer.wte.weight\\\"]).all()\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"print(sd_hf[\\\"lm_head.weight\\\"].data_ptr())\\n\",\n    \"print(sd_hf[\\\"transformer.wte.weight\\\"].data_ptr())\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"\\n\",\n    \"# standard deviation grows inside the residual stream\\n\",\n    \"x = torch.zeros(768)\\n\",\n    \"n = 100 # e.g. 100 layers\\n\",\n    \"for i in range(n):\\n\",\n    \"    x += n**-0.5 * torch.randn(768)\\n\",\n    \"\\n\",\n    \"print(x.std())\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"import torch\\n\",\n    \"\\n\",\n    \"# super simple little MLP\\n\",\n    \"net = torch.nn.Sequential(\\n\",\n    \"    torch.nn.Linear(16, 32),\\n\",\n    \"    torch.nn.GELU(),\\n\",\n    \"    torch.nn.Linear(32, 1)\\n\",\n    \")\\n\",\n    \"torch.random.manual_seed(42)\\n\",\n    \"x = torch.randn(4, 16)\\n\",\n    \"y = torch.randn(4, 1)\\n\",\n    \"net.zero_grad()\\n\",\n    \"yhat = net(x)\\n\",\n    \"loss = torch.nn.functional.mse_loss(yhat, y)\\n\",\n    \"loss.backward()\\n\",\n    \"print(net[0].weight.grad.view(-1)[:10])\\n\",\n    \"\\n\",\n    \"# the loss objective here is (due to readuction='mean')\\n\",\n    \"# L = 1/4 * [\\n\",\n    \"#            (y[0] - yhat[0])**2 +\\n\",\n    \"#            (y[1] - yhat[1])**2 +\\n\",\n    \"#            (y[2] - yhat[2])**2 +\\n\",\n    \"#            (y[3] - yhat[3])**2\\n\",\n    \"#           ]\\n\",\n    \"# NOTE: 1/4!\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"# now let's do it with grad_accum_steps of 4, and B=1\\n\",\n    \"# the loss objective here is different because\\n\",\n    \"# accumulation in gradient <---> SUM in loss\\n\",\n    \"# i.e. we instead get:\\n\",\n    \"# L0 = 1/4(y[0] - yhat[0])**2\\n\",\n    \"# L1 = 1/4(y[1] - yhat[1])**2\\n\",\n    \"# L2 = 1/4(y[2] - yhat[2])**2\\n\",\n    \"# L3 = 1/4(y[3] - yhat[3])**2\\n\",\n    \"# L = L0 + L1 + L2 + L3\\n\",\n    \"# NOTE: the \\\"normalizer\\\" of 1/4 is lost\\n\",\n    \"net.zero_grad()\\n\",\n    \"for i in range(4):\\n\",\n    \"    yhat = net(x[i])\\n\",\n    \"    loss = torch.nn.functional.mse_loss(yhat, y[i])\\n\",\n    \"    loss = loss / 4 # <-- have to add back the \\\"normalizer\\\"!\\n\",\n    \"    loss.backward()\\n\",\n    \"print(net[0].weight.grad.view(-1)[:10])\\n\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": [\n    \"# parse and visualize the logfile\\n\",\n    \"import numpy as np\\n\",\n    \"import matplotlib.pyplot as plt\\n\",\n    \"%matplotlib inline\\n\",\n    \"\\n\",\n    \"sz = \\\"124M\\\"\\n\",\n    \"\\n\",\n    \"loss_baseline = {\\n\",\n    \"    \\\"124M\\\": 3.2924,\\n\",\n    \"}[sz]\\n\",\n    \"hella2_baseline = { # HellaSwag for GPT-2\\n\",\n    \"    \\\"124M\\\": 0.294463,\\n\",\n    \"    \\\"350M\\\": 0.375224,\\n\",\n    \"    \\\"774M\\\": 0.431986,\\n\",\n    \"    \\\"1558M\\\": 0.488946,\\n\",\n    \"}[sz]\\n\",\n    \"hella3_baseline = { # HellaSwag for GPT-3\\n\",\n    \"    \\\"124M\\\": 0.337,\\n\",\n    \"    \\\"350M\\\": 0.436,\\n\",\n    \"    \\\"774M\\\": 0.510,\\n\",\n    \"    \\\"1558M\\\": 0.547,\\n\",\n    \"}[sz]\\n\",\n    \"\\n\",\n    \"# load the log file\\n\",\n    \"with open(\\\"log124M_40B/log.txt\\\", \\\"r\\\") as f:\\n\",\n    \"    lines = f.readlines()\\n\",\n    \"\\n\",\n    \"# parse the individual lines, group by stream (train,val,hella)\\n\",\n    \"streams = {}\\n\",\n    \"for line in lines:\\n\",\n    \"    step, stream, val = line.strip().split()\\n\",\n    \"    if stream not in streams:\\n\",\n    \"        streams[stream] = {}\\n\",\n    \"    streams[stream][int(step)] = float(val)\\n\",\n    \"\\n\",\n    \"# convert each stream from {step: val} to (steps[], vals[])\\n\",\n    \"# so it's easier for plotting\\n\",\n    \"streams_xy = {}\\n\",\n    \"for k, v in streams.items():\\n\",\n    \"    # get all (step, val) items, sort them\\n\",\n    \"    xy = sorted(list(v.items()))\\n\",\n    \"    # unpack the list of tuples to tuple of lists\\n\",\n    \"    streams_xy[k] = list(zip(*xy))\\n\",\n    \"\\n\",\n    \"# create figure\\n\",\n    \"plt.figure(figsize=(16, 6))\\n\",\n    \"\\n\",\n    \"# Panel 1: losses: both train and val\\n\",\n    \"plt.subplot(121)\\n\",\n    \"xs, ys = streams_xy[\\\"train\\\"] # training loss\\n\",\n    \"ys = np.array(ys)\\n\",\n    \"plt.plot(xs, ys, label=f'nanogpt ({sz}) train loss')\\n\",\n    \"print(\\\"Min Train Loss:\\\", min(ys))\\n\",\n    \"xs, ys = streams_xy[\\\"val\\\"] # validation loss\\n\",\n    \"plt.plot(xs, ys, label=f'nanogpt ({sz}) val loss')\\n\",\n    \"# horizontal line at GPT-2 baseline\\n\",\n    \"if loss_baseline is not None:\\n\",\n    \"    plt.axhline(y=loss_baseline, color='r', linestyle='--', label=f\\\"OpenAI GPT-2 ({sz}) checkpoint val loss\\\")\\n\",\n    \"plt.xlabel(\\\"steps\\\")\\n\",\n    \"plt.ylabel(\\\"loss\\\")\\n\",\n    \"plt.yscale('log')\\n\",\n    \"plt.ylim(top=4.0)\\n\",\n    \"plt.legend()\\n\",\n    \"plt.title(\\\"Loss\\\")\\n\",\n    \"print(\\\"Min Validation Loss:\\\", min(ys))\\n\",\n    \"\\n\",\n    \"# Panel 2: HellaSwag eval\\n\",\n    \"plt.subplot(122)\\n\",\n    \"xs, ys = streams_xy[\\\"hella\\\"] # HellaSwag eval\\n\",\n    \"ys = np.array(ys)\\n\",\n    \"plt.plot(xs, ys, label=f\\\"nanogpt ({sz})\\\")\\n\",\n    \"# horizontal line at GPT-2 baseline\\n\",\n    \"if hella2_baseline:\\n\",\n    \"    plt.axhline(y=hella2_baseline, color='r', linestyle='--', label=f\\\"OpenAI GPT-2 ({sz}) checkpoint\\\")\\n\",\n    \"if hella3_baseline:\\n\",\n    \"    plt.axhline(y=hella3_baseline, color='g', linestyle='--', label=f\\\"OpenAI GPT-3 ({sz}) checkpoint\\\")\\n\",\n    \"plt.xlabel(\\\"steps\\\")\\n\",\n    \"plt.ylabel(\\\"accuracy\\\")\\n\",\n    \"plt.legend()\\n\",\n    \"plt.title(\\\"HellaSwag eval\\\")\\n\",\n    \"print(\\\"Max Hellaswag eval:\\\", max(ys))\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"execution_count\": null,\n   \"metadata\": {},\n   \"outputs\": [],\n   \"source\": []\n  }\n ],\n \"metadata\": {\n  \"kernelspec\": {\n   \"display_name\": \"base\",\n   \"language\": \"python\",\n   \"name\": \"python3\"\n  },\n  \"language_info\": {\n   \"codemirror_mode\": {\n    \"name\": \"ipython\",\n    \"version\": 3\n   },\n   \"file_extension\": \".py\",\n   \"mimetype\": \"text/x-python\",\n   \"name\": \"python\",\n   \"nbconvert_exporter\": \"python\",\n   \"pygments_lexer\": \"ipython3\",\n   \"version\": \"3.10.14\"\n  }\n },\n \"nbformat\": 4,\n \"nbformat_minor\": 2\n}",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析",
+    "text": "> 本文系统讲解 GPT-2 所用到的 Transformer 架构，重点覆盖多头注意力机制、Q/K/V 向量、自注意力、位置编码、层归一化、BPE 分词等概念，适合从零理解 GPT-2 的实现方式。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 1 章 引言：GPT-2 与 Transformer 的关系",
+    "text": "GPT-2（Generative Pre-trained Transformer 2）是 OpenAI 于 2019 年发布的**自回归语言模型**。它的核心架构来自 2017 年的论文《Attention Is All You Need》提出的 Transformer，并且只使用了其中的 **Decoder（解码器）部分**，因此 GPT-2 也被称为 **Decoder-only** 架构。\n与 BERT 等编码器模型不同，GPT-2 只能从左到右单向生成文本：每生成一个 token，它只能看到之前的所有 token（使用掩码自注意力实现），因此天然适合文本生成任务。\n理解 GPT-2 的关键在于理解 Transformer 的四个核心组件：\n1. **多头注意力（Multi-Head Attention）**：模型的核心，负责捕捉 token 之间的依赖关系；\n2. **位置编码（Positional Encoding）**：给每个 token 标记位置信息；\n3. **层归一化（LayerNorm）与残差连接**：稳定训练，让深层网络可以收敛；\n4. **前馈网络（FFN）**：对每个位置独立做非线性变换。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 2 章 Transformer 总体架构",
+    "text": "标准的 Transformer 由两部分组成：**编码器（Encoder）** 和 **解码器（Decoder）**。\n编码器用于理解输入（如 BERT），解码器用于生成输出（如 GPT 系列）。每个编码器/解码器层内部都包含：\n- 一个**多头注意力子层**；\n- 一个**前馈网络子层**；\n- 每个子层外面都包裹**残差连接 + 层归一化**。\nGPT-2 只保留了解码器部分，并且在注意力中使用**因果掩码（Causal Mask）**，保证每个位置只能看到当前位置及之前的位置，不能\"偷看\"未来。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 3 章 多头注意力机制（核心） > 3.1 自注意力（Self-Attention）",
+    "text": "自注意力让序列中的**每个 token 都能关注序列中的其他所有 token**，并根据相关程度加权聚合信息。\n给定输入序列，每个 token 的位置都会计算一个输出向量，该向量是其他所有位置值的加权求和，权重由 token 之间的\"相关程度\"决定。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 3 章 多头注意力机制（核心） > 3.2 Q、K、V 三个向量",
+    "text": "自注意力的核心是三个向量：**查询（Query）、键（Key）、值（Value）**。\n- **Q（Query，查询）**：当前 token 想要\"找什么\"；\n- **K（Key，键）**：每个 token 的\"身份标签\"，用于被匹配；\n- **V（Value，值）**：每个 token 携带的\"实际信息内容\"。\n计算时，用当前 token 的 Q 与所有 token 的 K 做点积，得到注意力分数（谁跟谁相关）；分数经 Softmax 归一化成权重，再对 V 做加权求和，得到输出。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 3 章 多头注意力机制（核心） > 3.3 缩放点积注意力公式",
+    "text": "自注意力的计算可写成：\n```\nAttention(Q, K, V) = softmax(Q · K^T / sqrt(d_k)) · V\n```\n其中：\n- Q、K、V 由输入乘三个可学习的权重矩阵 W_Q、W_K、W_V 得到；\n- `Q · K^T` 计算所有位置对之间的点积相似度；\n- `除以 sqrt(d_k)`（d_k 是键的维度）是为了防止点积过大导致 Softmax 梯度消失，称为**缩放（Scale）**；\n- Softmax 把分数变成概率分布；\n- 最后与 V 加权求和。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 3 章 多头注意力机制（核心） > 3.4 为什么需要\"多头\"注意力",
+    "text": "单个注意力头只能学习**一种**依赖模式。但自然语言中的依赖关系是多种多样的：有的词需要关注句法主语，有的需要关注指代对象，有的需要关注远处的修饰成分。\n**多头注意力（Multi-Head Attention）**把 Q、K、V 分别拆成 h 个头（例如 GPT-2 使用 12 个头），每个头在**不同的子空间**中独立做注意力，最后把各头的结果拼接起来再线性投影。\n这样做的好处：\n1. **每个头可以学到不同类型的依赖关系**——有的头关注局部相邻词，有的头关注远程指代；\n2. **表达能力更强**——不同子空间捕捉不同特征，综合起来更全面；\n3. 是 Transformer 相对 RNN/LSTM 的关键优势之一，能并行计算所有位置。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 3 章 多头注意力机制（核心） > 3.5 多头注意力的实现方式（代码级）",
+    "text": "多头注意力在实现上通常按以下步骤：\n1. **线性投影**：输入 X 分别乘 W_Q、W_K、W_V，得到 Q、K、V；\n2. **拆头（Reshape）**：把 Q、K、V 的最后一维按头数拆开，例如形状从 `(batch, seq_len, d_model)` 变成 `(batch, num_heads, seq_len, head_dim)`，每个头独立计算；\n3. **缩放点积注意力**：对每个头并行执行 `softmax(Q·K^T/sqrt(d_k))·V`；\n4. **拼接（Concat）**：把所有头的输出拼接回 `(batch, seq_len, d_model)`；\n5. **输出投影**：乘 W_O 做一次线性变换得到最终输出。\n以 PyTorch 为例，核心代码片段：\n```python\nimport torch\nimport torch.nn as nn\nclass MultiHeadAttention(nn.Module):\n    def __init__(self, d_model, num_heads):\n        super().__init__()\n        assert d_model % num_heads == 0\n        self.d_model = d_model\n        self.num_heads = num_heads\n        self.head_dim = d_model // num_heads\n        self.wq = nn.Linear(d_model, d_model)\n        self.wk = nn.Linear(d_model, d_model)\n        self.wv = nn.Linear(d_model, d_model)\n        self.wo = nn.Linear(d_model, d_model)\n    def forward(self, x, mask=None):\n        batch, seq_len, _ = x.shape\n        # 1. 线性投影\n        q = self.wq(x)\n        k = self.wk(x)\n        v = self.wv(x)\n        # 2. 拆头：变成 (batch, num_heads, seq_len, head_dim)\n        q = q.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)\n        k = k.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)\n        v = v.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)\n        # 3. 缩放点积注意力\n        scores = q @ k.transpose(-2, -1) / (self.head_dim ** 0.5)\n        if mask is not None:\n            scores = scores.masked_fill(mask == 0, float(\"-inf\"))\n        attn = torch.softmax(scores, dim=-1)\n        out = attn @ v\n        # 4. 拼接：还原成 (batch, seq_len, d_model)\n        out = out.transpose(1, 2).contiguous().view(batch, seq_len, self.d_model)\n        # 5. 输出投影\n        return self.wo(out)\n```\nGPT-2 中的实现与上述一致，关键差异是**因果掩码**：mask 为下三角矩阵，保证位置 i 只能 attend 到位置 <= i 的 token。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 4 章 GPT-2 中的 Transformer 细节 > 4.1 Decoder-only 与因果掩码",
+    "text": "GPT-2 只使用解码器，并使用**因果掩码（Causal Mask）**：在计算注意力分数时，把未来位置的分数设为负无穷，Softmax 后权重为 0，保证生成时不会泄漏未来信息。这是 GPT-2 与 BERT 最核心的区别之一。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 4 章 GPT-2 中的 Transformer 细节 > 4.2 位置编码（Positional Embedding）",
+    "text": "注意力机制本身**不包含任何位置信息**——如果把 token 顺序打乱，自注意力的计算结果不变。因此必须显式加入位置信息。\nGPT-2 使用**可学习的绝对位置编码**：为每个位置维护一个可训练向量，加到 token 的嵌入向量上。与原始 Transformer 使用的正弦/余弦固定编码不同，GPT-2 的位置编码是训练出来的。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 4 章 GPT-2 中的 Transformer 细节 > 4.3 层归一化与残差连接",
+    "text": "GPT-2 在**每个注意力/前馈子层之前**先做 LayerNorm（Pre-Norm），再进入子层，最后加残差连接。这种 Pre-Norm + 残差的设计：\n- 让梯度在深层网络中更容易传播，避免梯度消失；\n- 层归一化对每个 token 的特征维度做归一化，稳定训练；\n- GPT-2 在最终输出前还会再做一次 LayerNorm。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 4 章 GPT-2 中的 Transformer 细节 > 4.4 前馈网络（FFN）",
+    "text": "每个 Transformer 层包含一个**逐位置的前馈网络**：对序列中每个位置独立执行两次线性变换，中间夹一个 GELU 激活函数：\n```\nFFN(x) = Linear2(GELU(Linear1(x)))\n```\n其中 Linear1 把维度从 d_model 放大到 4 倍（如 768 -> 3072），Linear2 再缩回。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 5 章 训练与推理 > 5.1 BPE 分词",
+    "text": "GPT-2 使用 **BPE（Byte Pair Encoding）** 分词：先把文本切到字节/字符级别，然后反复合并**出现频率最高**的相邻字符对，生成一个子词词表。这样：\n- 罕见词可以被拆成常见子词，避免 OOV（未登录词）问题；\n- 词表大小可控（GPT-2 约 50257 个 token）；\n- 任何文本都能被编码，包括没见过的词。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 5 章 训练与推理 > 5.2 自回归生成",
+    "text": "GPT-2 生成文本是**自回归**的：输入前 n 个 token，预测第 n+1 个 token 的概率分布；把预测出的 token 拼到末尾，再继续预测下一个，循环往复。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 5 章 训练与推理 > 5.3 损失函数与预训练",
+    "text": "GPT-2 的预训练目标是**语言建模**：最大化给定前文、预测下一个 token 的对数似然，损失函数为交叉熵损失。预训练数据来自大规模网页文本（WebText）。预训练完成后，GPT-2 可以通过**零样本（zero-shot）**或少量提示（prompt）直接完成下游任务，无需任务特定的微调数据。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 6 章 常见问题解答（FAQ）",
+    "text": "**问：多头注意力和单头注意力的区别？**\n单头注意力只能捕捉一种依赖模式；多头把注意力拆到多个子空间并行计算，每个头可学习不同的依赖关系，最后拼接融合，表达能力更强。\n**问：为什么 GPT-2 没有编码器？**\nGPT-2 是生成模型，只需从左到右生成，Decoder 的因果掩码正好满足单向依赖；不需要像 BERT 那样双向理解上下文，所以省略了编码器。\n**问：什么是因果掩码（Causal Mask）？**\n一个下三角矩阵，保证注意力只能关注当前位置及之前的位置，防止生成时\"偷看\"未来 token。\n**问：上下文窗口是什么？**\nGPT-2 能处理的最大 token 数（如 1024）。因为位置编码是有限的，超过窗口的文本无法处理，这也是大模型的关键限制之一。\n**问：注意力分数为什么要除以 sqrt(d_k)？**\nd_k 较大时点积数值会偏大，Softmax 会进入饱和区导致梯度极小；除以 sqrt(d_k) 让分数尺度稳定，训练更顺利。\n**问：多头注意力的参数量如何计算？**\n每个头有独立的 W_Q、W_K、W_V（每个形状 d_model × head_dim），所有头共享 W_O（d_model × d_model）。多头相比单头的总参数量基本不变，只是权重被拆分使用。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析",
+    "text": "> 本文系统讲解 GPT-2 所用到的 Transformer 架构，重点覆盖多头注意力机制、Q/K/V 向量、自注意力、位置编码、层归一化、BPE 分词等概念，适合从零理解 GPT-2 的实现方式。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 1 章 引言：GPT-2 与 Transformer 的关系",
+    "text": "GPT-2（Generative Pre-trained Transformer 2）是 OpenAI 于 2019 年发布的**自回归语言模型**。它的核心架构来自 2017 年的论文《Attention Is All You Need》提出的 Transformer，并且只使用了其中的 **Decoder（解码器）部分**，因此 GPT-2 也被称为 **Decoder-only** 架构。\n与 BERT 等编码器模型不同，GPT-2 只能从左到右单向生成文本：每生成一个 token，它只能看到之前的所有 token（使用掩码自注意力实现），因此天然适合文本生成任务。\n理解 GPT-2 的关键在于理解 Transformer 的四个核心组件：\n1. **多头注意力（Multi-Head Attention）**：模型的核心，负责捕捉 token 之间的依赖关系；\n2. **位置编码（Positional Encoding）**：给每个 token 标记位置信息；\n3. **层归一化（LayerNorm）与残差连接**：稳定训练，让深层网络可以收敛；\n4. **前馈网络（FFN）**：对每个位置独立做非线性变换。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 2 章 Transformer 总体架构",
+    "text": "标准的 Transformer 由两部分组成：**编码器（Encoder）** 和 **解码器（Decoder）**。\n编码器用于理解输入（如 BERT），解码器用于生成输出（如 GPT 系列）。每个编码器/解码器层内部都包含：\n- 一个**多头注意力子层**；\n- 一个**前馈网络子层**；\n- 每个子层外面都包裹**残差连接 + 层归一化**。\nGPT-2 只保留了解码器部分，并且在注意力中使用**因果掩码（Causal Mask）**，保证每个位置只能看到当前位置及之前的位置，不能\"偷看\"未来。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 3 章 多头注意力机制（核心） > 3.1 自注意力（Self-Attention）",
+    "text": "自注意力让序列中的**每个 token 都能关注序列中的其他所有 token**，并根据相关程度加权聚合信息。\n给定输入序列，每个 token 的位置都会计算一个输出向量，该向量是其他所有位置值的加权求和，权重由 token 之间的\"相关程度\"决定。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 3 章 多头注意力机制（核心） > 3.2 Q、K、V 三个向量",
+    "text": "自注意力的核心是三个向量：**查询（Query）、键（Key）、值（Value）**。\n- **Q（Query，查询）**：当前 token 想要\"找什么\"；\n- **K（Key，键）**：每个 token 的\"身份标签\"，用于被匹配；\n- **V（Value，值）**：每个 token 携带的\"实际信息内容\"。\n计算时，用当前 token 的 Q 与所有 token 的 K 做点积，得到注意力分数（谁跟谁相关）；分数经 Softmax 归一化成权重，再对 V 做加权求和，得到输出。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 3 章 多头注意力机制（核心） > 3.3 缩放点积注意力公式",
+    "text": "自注意力的计算可写成：\n```\nAttention(Q, K, V) = softmax(Q · K^T / sqrt(d_k)) · V\n```\n其中：\n- Q、K、V 由输入乘三个可学习的权重矩阵 W_Q、W_K、W_V 得到；\n- `Q · K^T` 计算所有位置对之间的点积相似度；\n- `除以 sqrt(d_k)`（d_k 是键的维度）是为了防止点积过大导致 Softmax 梯度消失，称为**缩放（Scale）**；\n- Softmax 把分数变成概率分布；\n- 最后与 V 加权求和。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 3 章 多头注意力机制（核心） > 3.4 为什么需要\"多头\"注意力",
+    "text": "单个注意力头只能学习**一种**依赖模式。但自然语言中的依赖关系是多种多样的：有的词需要关注句法主语，有的需要关注指代对象，有的需要关注远处的修饰成分。\n**多头注意力（Multi-Head Attention）**把 Q、K、V 分别拆成 h 个头（例如 GPT-2 使用 12 个头），每个头在**不同的子空间**中独立做注意力，最后把各头的结果拼接起来再线性投影。\n这样做的好处：\n1. **每个头可以学到不同类型的依赖关系**——有的头关注局部相邻词，有的头关注远程指代；\n2. **表达能力更强**——不同子空间捕捉不同特征，综合起来更全面；\n3. 是 Transformer 相对 RNN/LSTM 的关键优势之一，能并行计算所有位置。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 3 章 多头注意力机制（核心） > 3.5 多头注意力的实现方式（代码级）",
+    "text": "多头注意力在实现上通常按以下步骤：\n1. **线性投影**：输入 X 分别乘 W_Q、W_K、W_V，得到 Q、K、V；\n2. **拆头（Reshape）**：把 Q、K、V 的最后一维按头数拆开，例如形状从 `(batch, seq_len, d_model)` 变成 `(batch, num_heads, seq_len, head_dim)`，每个头独立计算；\n3. **缩放点积注意力**：对每个头并行执行 `softmax(Q·K^T/sqrt(d_k))·V`；\n4. **拼接（Concat）**：把所有头的输出拼接回 `(batch, seq_len, d_model)`；\n5. **输出投影**：乘 W_O 做一次线性变换得到最终输出。\n以 PyTorch 为例，核心代码片段：\n```python\nimport torch\nimport torch.nn as nn\nclass MultiHeadAttention(nn.Module):\n    def __init__(self, d_model, num_heads):\n        super().__init__()\n        assert d_model % num_heads == 0\n        self.d_model = d_model\n        self.num_heads = num_heads\n        self.head_dim = d_model // num_heads\n        self.wq = nn.Linear(d_model, d_model)\n        self.wk = nn.Linear(d_model, d_model)\n        self.wv = nn.Linear(d_model, d_model)\n        self.wo = nn.Linear(d_model, d_model)\n    def forward(self, x, mask=None):\n        batch, seq_len, _ = x.shape\n        # 1. 线性投影\n        q = self.wq(x)\n        k = self.wk(x)\n        v = self.wv(x)\n        # 2. 拆头：变成 (batch, num_heads, seq_len, head_dim)\n        q = q.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)\n        k = k.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)\n        v = v.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)\n        # 3. 缩放点积注意力\n        scores = q @ k.transpose(-2, -1) / (self.head_dim ** 0.5)\n        if mask is not None:\n            scores = scores.masked_fill(mask == 0, float(\"-inf\"))\n        attn = torch.softmax(scores, dim=-1)\n        out = attn @ v\n        # 4. 拼接：还原成 (batch, seq_len, d_model)\n        out = out.transpose(1, 2).contiguous().view(batch, seq_len, self.d_model)\n        # 5. 输出投影\n        return self.wo(out)\n```\nGPT-2 中的实现与上述一致，关键差异是**因果掩码**：mask 为下三角矩阵，保证位置 i 只能 attend 到位置 <= i 的 token。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 4 章 GPT-2 中的 Transformer 细节 > 4.1 Decoder-only 与因果掩码",
+    "text": "GPT-2 只使用解码器，并使用**因果掩码（Causal Mask）**：在计算注意力分数时，把未来位置的分数设为负无穷，Softmax 后权重为 0，保证生成时不会泄漏未来信息。这是 GPT-2 与 BERT 最核心的区别之一。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 4 章 GPT-2 中的 Transformer 细节 > 4.2 位置编码（Positional Embedding）",
+    "text": "注意力机制本身**不包含任何位置信息**——如果把 token 顺序打乱，自注意力的计算结果不变。因此必须显式加入位置信息。\nGPT-2 使用**可学习的绝对位置编码**：为每个位置维护一个可训练向量，加到 token 的嵌入向量上。与原始 Transformer 使用的正弦/余弦固定编码不同，GPT-2 的位置编码是训练出来的。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 4 章 GPT-2 中的 Transformer 细节 > 4.3 层归一化与残差连接",
+    "text": "GPT-2 在**每个注意力/前馈子层之前**先做 LayerNorm（Pre-Norm），再进入子层，最后加残差连接。这种 Pre-Norm + 残差的设计：\n- 让梯度在深层网络中更容易传播，避免梯度消失；\n- 层归一化对每个 token 的特征维度做归一化，稳定训练；\n- GPT-2 在最终输出前还会再做一次 LayerNorm。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 4 章 GPT-2 中的 Transformer 细节 > 4.4 前馈网络（FFN）",
+    "text": "每个 Transformer 层包含一个**逐位置的前馈网络**：对序列中每个位置独立执行两次线性变换，中间夹一个 GELU 激活函数：\n```\nFFN(x) = Linear2(GELU(Linear1(x)))\n```\n其中 Linear1 把维度从 d_model 放大到 4 倍（如 768 -> 3072），Linear2 再缩回。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 5 章 训练与推理 > 5.1 BPE 分词",
+    "text": "GPT-2 使用 **BPE（Byte Pair Encoding）** 分词：先把文本切到字节/字符级别，然后反复合并**出现频率最高**的相邻字符对，生成一个子词词表。这样：\n- 罕见词可以被拆成常见子词，避免 OOV（未登录词）问题；\n- 词表大小可控（GPT-2 约 50257 个 token）；\n- 任何文本都能被编码，包括没见过的词。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 5 章 训练与推理 > 5.2 自回归生成",
+    "text": "GPT-2 生成文本是**自回归**的：输入前 n 个 token，预测第 n+1 个 token 的概率分布；把预测出的 token 拼到末尾，再继续预测下一个，循环往复。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 5 章 训练与推理 > 5.3 损失函数与预训练",
+    "text": "GPT-2 的预训练目标是**语言建模**：最大化给定前文、预测下一个 token 的对数似然，损失函数为交叉熵损失。预训练数据来自大规模网页文本（WebText）。预训练完成后，GPT-2 可以通过**零样本（zero-shot）**或少量提示（prompt）直接完成下游任务，无需任务特定的微调数据。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 6 章 常见问题解答（FAQ）",
+    "text": "**问：多头注意力和单头注意力的区别？**\n单头注意力只能捕捉一种依赖模式；多头把注意力拆到多个子空间并行计算，每个头可学习不同的依赖关系，最后拼接融合，表达能力更强。\n**问：为什么 GPT-2 没有编码器？**\nGPT-2 是生成模型，只需从左到右生成，Decoder 的因果掩码正好满足单向依赖；不需要像 BERT 那样双向理解上下文，所以省略了编码器。\n**问：什么是因果掩码（Causal Mask）？**\n一个下三角矩阵，保证注意力只能关注当前位置及之前的位置，防止生成时\"偷看\"未来 token。\n**问：上下文窗口是什么？**\nGPT-2 能处理的最大 token 数（如 1024）。因为位置编码是有限的，超过窗口的文本无法处理，这也是大模型的关键限制之一。\n**问：注意力分数为什么要除以 sqrt(d_k)？**\nd_k 较大时点积数值会偏大，Softmax 会进入饱和区导致梯度极小；除以 sqrt(d_k) 让分数尺度稳定，训练更顺利。\n**问：多头注意力的参数量如何计算？**\n每个头有独立的 W_Q、W_K、W_V（每个形状 d_model × head_dim），所有头共享 W_O（d_model × d_model）。多头相比单头的总参数量基本不变，只是权重被拆分使用。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析",
+    "text": "> 本文系统讲解 GPT-2 所用到的 Transformer 架构，重点覆盖多头注意力机制、Q/K/V 向量、自注意力、位置编码、层归一化、BPE 分词等概念，适合从零理解 GPT-2 的实现方式。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 1 章 引言：GPT-2 与 Transformer 的关系",
+    "text": "GPT-2（Generative Pre-trained Transformer 2）是 OpenAI 于 2019 年发布的**自回归语言模型**。它的核心架构来自 2017 年的论文《Attention Is All You Need》提出的 Transformer，并且只使用了其中的 **Decoder（解码器）部分**，因此 GPT-2 也被称为 **Decoder-only** 架构。\n与 BERT 等编码器模型不同，GPT-2 只能从左到右单向生成文本：每生成一个 token，它只能看到之前的所有 token（使用掩码自注意力实现），因此天然适合文本生成任务。\n理解 GPT-2 的关键在于理解 Transformer 的四个核心组件：\n1. **多头注意力（Multi-Head Attention）**：模型的核心，负责捕捉 token 之间的依赖关系；\n2. **位置编码（Positional Encoding）**：给每个 token 标记位置信息；\n3. **层归一化（LayerNorm）与残差连接**：稳定训练，让深层网络可以收敛；\n4. **前馈网络（FFN）**：对每个位置独立做非线性变换。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 2 章 Transformer 总体架构",
+    "text": "标准的 Transformer 由两部分组成：**编码器（Encoder）** 和 **解码器（Decoder）**。\n编码器用于理解输入（如 BERT），解码器用于生成输出（如 GPT 系列）。每个编码器/解码器层内部都包含：\n- 一个**多头注意力子层**；\n- 一个**前馈网络子层**；\n- 每个子层外面都包裹**残差连接 + 层归一化**。\nGPT-2 只保留了解码器部分，并且在注意力中使用**因果掩码（Causal Mask）**，保证每个位置只能看到当前位置及之前的位置，不能\"偷看\"未来。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 3 章 多头注意力机制（核心） > 3.1 自注意力（Self-Attention）",
+    "text": "自注意力让序列中的**每个 token 都能关注序列中的其他所有 token**，并根据相关程度加权聚合信息。\n给定输入序列，每个 token 的位置都会计算一个输出向量，该向量是其他所有位置值的加权求和，权重由 token 之间的\"相关程度\"决定。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 3 章 多头注意力机制（核心） > 3.2 Q、K、V 三个向量",
+    "text": "自注意力的核心是三个向量：**查询（Query）、键（Key）、值（Value）**。\n- **Q（Query，查询）**：当前 token 想要\"找什么\"；\n- **K（Key，键）**：每个 token 的\"身份标签\"，用于被匹配；\n- **V（Value，值）**：每个 token 携带的\"实际信息内容\"。\n计算时，用当前 token 的 Q 与所有 token 的 K 做点积，得到注意力分数（谁跟谁相关）；分数经 Softmax 归一化成权重，再对 V 做加权求和，得到输出。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 3 章 多头注意力机制（核心） > 3.3 缩放点积注意力公式",
+    "text": "自注意力的计算可写成：\n```\nAttention(Q, K, V) = softmax(Q · K^T / sqrt(d_k)) · V\n```\n其中：\n- Q、K、V 由输入乘三个可学习的权重矩阵 W_Q、W_K、W_V 得到；\n- `Q · K^T` 计算所有位置对之间的点积相似度；\n- `除以 sqrt(d_k)`（d_k 是键的维度）是为了防止点积过大导致 Softmax 梯度消失，称为**缩放（Scale）**；\n- Softmax 把分数变成概率分布；\n- 最后与 V 加权求和。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 3 章 多头注意力机制（核心） > 3.4 为什么需要\"多头\"注意力",
+    "text": "单个注意力头只能学习**一种**依赖模式。但自然语言中的依赖关系是多种多样的：有的词需要关注句法主语，有的需要关注指代对象，有的需要关注远处的修饰成分。\n**多头注意力（Multi-Head Attention）**把 Q、K、V 分别拆成 h 个头（例如 GPT-2 使用 12 个头），每个头在**不同的子空间**中独立做注意力，最后把各头的结果拼接起来再线性投影。\n这样做的好处：\n1. **每个头可以学到不同类型的依赖关系**——有的头关注局部相邻词，有的头关注远程指代；\n2. **表达能力更强**——不同子空间捕捉不同特征，综合起来更全面；\n3. 是 Transformer 相对 RNN/LSTM 的关键优势之一，能并行计算所有位置。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 3 章 多头注意力机制（核心） > 3.5 多头注意力的实现方式（代码级）",
+    "text": "多头注意力在实现上通常按以下步骤：\n1. **线性投影**：输入 X 分别乘 W_Q、W_K、W_V，得到 Q、K、V；\n2. **拆头（Reshape）**：把 Q、K、V 的最后一维按头数拆开，例如形状从 `(batch, seq_len, d_model)` 变成 `(batch, num_heads, seq_len, head_dim)`，每个头独立计算；\n3. **缩放点积注意力**：对每个头并行执行 `softmax(Q·K^T/sqrt(d_k))·V`；\n4. **拼接（Concat）**：把所有头的输出拼接回 `(batch, seq_len, d_model)`；\n5. **输出投影**：乘 W_O 做一次线性变换得到最终输出。\n以 PyTorch 为例，核心代码片段：\n```python\nimport torch\nimport torch.nn as nn\nclass MultiHeadAttention(nn.Module):\n    def __init__(self, d_model, num_heads):\n        super().__init__()\n        assert d_model % num_heads == 0\n        self.d_model = d_model\n        self.num_heads = num_heads\n        self.head_dim = d_model // num_heads\n        self.wq = nn.Linear(d_model, d_model)\n        self.wk = nn.Linear(d_model, d_model)\n        self.wv = nn.Linear(d_model, d_model)\n        self.wo = nn.Linear(d_model, d_model)\n    def forward(self, x, mask=None):\n        batch, seq_len, _ = x.shape\n        # 1. 线性投影\n        q = self.wq(x)\n        k = self.wk(x)\n        v = self.wv(x)\n        # 2. 拆头：变成 (batch, num_heads, seq_len, head_dim)\n        q = q.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)\n        k = k.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)\n        v = v.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)\n        # 3. 缩放点积注意力\n        scores = q @ k.transpose(-2, -1) / (self.head_dim ** 0.5)\n        if mask is not None:\n            scores = scores.masked_fill(mask == 0, float(\"-inf\"))\n        attn = torch.softmax(scores, dim=-1)\n        out = attn @ v\n        # 4. 拼接：还原成 (batch, seq_len, d_model)\n        out = out.transpose(1, 2).contiguous().view(batch, seq_len, self.d_model)\n        # 5. 输出投影\n        return self.wo(out)\n```\nGPT-2 中的实现与上述一致，关键差异是**因果掩码**：mask 为下三角矩阵，保证位置 i 只能 attend 到位置 <= i 的 token。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 4 章 GPT-2 中的 Transformer 细节 > 4.1 Decoder-only 与因果掩码",
+    "text": "GPT-2 只使用解码器，并使用**因果掩码（Causal Mask）**：在计算注意力分数时，把未来位置的分数设为负无穷，Softmax 后权重为 0，保证生成时不会泄漏未来信息。这是 GPT-2 与 BERT 最核心的区别之一。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 4 章 GPT-2 中的 Transformer 细节 > 4.2 位置编码（Positional Embedding）",
+    "text": "注意力机制本身**不包含任何位置信息**——如果把 token 顺序打乱，自注意力的计算结果不变。因此必须显式加入位置信息。\nGPT-2 使用**可学习的绝对位置编码**：为每个位置维护一个可训练向量，加到 token 的嵌入向量上。与原始 Transformer 使用的正弦/余弦固定编码不同，GPT-2 的位置编码是训练出来的。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 4 章 GPT-2 中的 Transformer 细节 > 4.3 层归一化与残差连接",
+    "text": "GPT-2 在**每个注意力/前馈子层之前**先做 LayerNorm（Pre-Norm），再进入子层，最后加残差连接。这种 Pre-Norm + 残差的设计：\n- 让梯度在深层网络中更容易传播，避免梯度消失；\n- 层归一化对每个 token 的特征维度做归一化，稳定训练；\n- GPT-2 在最终输出前还会再做一次 LayerNorm。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 4 章 GPT-2 中的 Transformer 细节 > 4.4 前馈网络（FFN）",
+    "text": "每个 Transformer 层包含一个**逐位置的前馈网络**：对序列中每个位置独立执行两次线性变换，中间夹一个 GELU 激活函数：\n```\nFFN(x) = Linear2(GELU(Linear1(x)))\n```\n其中 Linear1 把维度从 d_model 放大到 4 倍（如 768 -> 3072），Linear2 再缩回。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 5 章 训练与推理 > 5.1 BPE 分词",
+    "text": "GPT-2 使用 **BPE（Byte Pair Encoding）** 分词：先把文本切到字节/字符级别，然后反复合并**出现频率最高**的相邻字符对，生成一个子词词表。这样：\n- 罕见词可以被拆成常见子词，避免 OOV（未登录词）问题；\n- 词表大小可控（GPT-2 约 50257 个 token）；\n- 任何文本都能被编码，包括没见过的词。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 5 章 训练与推理 > 5.2 自回归生成",
+    "text": "GPT-2 生成文本是**自回归**的：输入前 n 个 token，预测第 n+1 个 token 的概率分布；把预测出的 token 拼到末尾，再继续预测下一个，循环往复。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 5 章 训练与推理 > 5.3 损失函数与预训练",
+    "text": "GPT-2 的预训练目标是**语言建模**：最大化给定前文、预测下一个 token 的对数似然，损失函数为交叉熵损失。预训练数据来自大规模网页文本（WebText）。预训练完成后，GPT-2 可以通过**零样本（zero-shot）**或少量提示（prompt）直接完成下游任务，无需任务特定的微调数据。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 6 章 常见问题解答（FAQ）",
+    "text": "**问：多头注意力和单头注意力的区别？**\n单头注意力只能捕捉一种依赖模式；多头把注意力拆到多个子空间并行计算，每个头可学习不同的依赖关系，最后拼接融合，表达能力更强。\n**问：为什么 GPT-2 没有编码器？**\nGPT-2 是生成模型，只需从左到右生成，Decoder 的因果掩码正好满足单向依赖；不需要像 BERT 那样双向理解上下文，所以省略了编码器。\n**问：什么是因果掩码（Causal Mask）？**\n一个下三角矩阵，保证注意力只能关注当前位置及之前的位置，防止生成时\"偷看\"未来 token。\n**问：上下文窗口是什么？**\nGPT-2 能处理的最大 token 数（如 1024）。因为位置编码是有限的，超过窗口的文本无法处理，这也是大模型的关键限制之一。\n**问：注意力分数为什么要除以 sqrt(d_k)？**\nd_k 较大时点积数值会偏大，Softmax 会进入饱和区导致梯度极小；除以 sqrt(d_k) 让分数尺度稳定，训练更顺利。\n**问：多头注意力的参数量如何计算？**\n每个头有独立的 W_Q、W_K、W_V（每个形状 d_model × head_dim），所有头共享 W_O（d_model × d_model）。多头相比单头的总参数量基本不变，只是权重被拆分使用。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析",
+    "text": "> 本文系统讲解 GPT-2 所用到的 Transformer 架构，重点覆盖多头注意力机制、Q/K/V 向量、自注意力、位置编码、层归一化、BPE 分词等概念，适合从零理解 GPT-2 的实现方式。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 1 章 引言：GPT-2 与 Transformer 的关系",
+    "text": "GPT-2（Generative Pre-trained Transformer 2）是 OpenAI 于 2019 年发布的**自回归语言模型**。它的核心架构来自 2017 年的论文《Attention Is All You Need》提出的 Transformer，并且只使用了其中的 **Decoder（解码器）部分**，因此 GPT-2 也被称为 **Decoder-only** 架构。\n与 BERT 等编码器模型不同，GPT-2 只能从左到右单向生成文本：每生成一个 token，它只能看到之前的所有 token（使用掩码自注意力实现），因此天然适合文本生成任务。\n理解 GPT-2 的关键在于理解 Transformer 的四个核心组件：\n1. **多头注意力（Multi-Head Attention）**：模型的核心，负责捕捉 token 之间的依赖关系；\n2. **位置编码（Positional Encoding）**：给每个 token 标记位置信息；\n3. **层归一化（LayerNorm）与残差连接**：稳定训练，让深层网络可以收敛；\n4. **前馈网络（FFN）**：对每个位置独立做非线性变换。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 2 章 Transformer 总体架构",
+    "text": "标准的 Transformer 由两部分组成：**编码器（Encoder）** 和 **解码器（Decoder）**。\n编码器用于理解输入（如 BERT），解码器用于生成输出（如 GPT 系列）。每个编码器/解码器层内部都包含：\n- 一个**多头注意力子层**；\n- 一个**前馈网络子层**；\n- 每个子层外面都包裹**残差连接 + 层归一化**。\nGPT-2 只保留了解码器部分，并且在注意力中使用**因果掩码（Causal Mask）**，保证每个位置只能看到当前位置及之前的位置，不能\"偷看\"未来。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 3 章 多头注意力机制（核心） > 3.1 自注意力（Self-Attention）",
+    "text": "自注意力让序列中的**每个 token 都能关注序列中的其他所有 token**，并根据相关程度加权聚合信息。\n给定输入序列，每个 token 的位置都会计算一个输出向量，该向量是其他所有位置值的加权求和，权重由 token 之间的\"相关程度\"决定。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 3 章 多头注意力机制（核心） > 3.2 Q、K、V 三个向量",
+    "text": "自注意力的核心是三个向量：**查询（Query）、键（Key）、值（Value）**。\n- **Q（Query，查询）**：当前 token 想要\"找什么\"；\n- **K（Key，键）**：每个 token 的\"身份标签\"，用于被匹配；\n- **V（Value，值）**：每个 token 携带的\"实际信息内容\"。\n计算时，用当前 token 的 Q 与所有 token 的 K 做点积，得到注意力分数（谁跟谁相关）；分数经 Softmax 归一化成权重，再对 V 做加权求和，得到输出。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 3 章 多头注意力机制（核心） > 3.3 缩放点积注意力公式",
+    "text": "自注意力的计算可写成：\n```\nAttention(Q, K, V) = softmax(Q · K^T / sqrt(d_k)) · V\n```\n其中：\n- Q、K、V 由输入乘三个可学习的权重矩阵 W_Q、W_K、W_V 得到；\n- `Q · K^T` 计算所有位置对之间的点积相似度；\n- `除以 sqrt(d_k)`（d_k 是键的维度）是为了防止点积过大导致 Softmax 梯度消失，称为**缩放（Scale）**；\n- Softmax 把分数变成概率分布；\n- 最后与 V 加权求和。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 3 章 多头注意力机制（核心） > 3.4 为什么需要\"多头\"注意力",
+    "text": "单个注意力头只能学习**一种**依赖模式。但自然语言中的依赖关系是多种多样的：有的词需要关注句法主语，有的需要关注指代对象，有的需要关注远处的修饰成分。\n**多头注意力（Multi-Head Attention）**把 Q、K、V 分别拆成 h 个头（例如 GPT-2 使用 12 个头），每个头在**不同的子空间**中独立做注意力，最后把各头的结果拼接起来再线性投影。\n这样做的好处：\n1. **每个头可以学到不同类型的依赖关系**——有的头关注局部相邻词，有的头关注远程指代；\n2. **表达能力更强**——不同子空间捕捉不同特征，综合起来更全面；\n3. 是 Transformer 相对 RNN/LSTM 的关键优势之一，能并行计算所有位置。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 3 章 多头注意力机制（核心） > 3.5 多头注意力的实现方式（代码级）",
+    "text": "多头注意力在实现上通常按以下步骤：\n1. **线性投影**：输入 X 分别乘 W_Q、W_K、W_V，得到 Q、K、V；\n2. **拆头（Reshape）**：把 Q、K、V 的最后一维按头数拆开，例如形状从 `(batch, seq_len, d_model)` 变成 `(batch, num_heads, seq_len, head_dim)`，每个头独立计算；\n3. **缩放点积注意力**：对每个头并行执行 `softmax(Q·K^T/sqrt(d_k))·V`；\n4. **拼接（Concat）**：把所有头的输出拼接回 `(batch, seq_len, d_model)`；\n5. **输出投影**：乘 W_O 做一次线性变换得到最终输出。\n以 PyTorch 为例，核心代码片段：\n```python\nimport torch\nimport torch.nn as nn\nclass MultiHeadAttention(nn.Module):\n    def __init__(self, d_model, num_heads):\n        super().__init__()\n        assert d_model % num_heads == 0\n        self.d_model = d_model\n        self.num_heads = num_heads\n        self.head_dim = d_model // num_heads\n        self.wq = nn.Linear(d_model, d_model)\n        self.wk = nn.Linear(d_model, d_model)\n        self.wv = nn.Linear(d_model, d_model)\n        self.wo = nn.Linear(d_model, d_model)\n    def forward(self, x, mask=None):\n        batch, seq_len, _ = x.shape\n        # 1. 线性投影\n        q = self.wq(x)\n        k = self.wk(x)\n        v = self.wv(x)\n        # 2. 拆头：变成 (batch, num_heads, seq_len, head_dim)\n        q = q.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)\n        k = k.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)\n        v = v.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)\n        # 3. 缩放点积注意力\n        scores = q @ k.transpose(-2, -1) / (self.head_dim ** 0.5)\n        if mask is not None:\n            scores = scores.masked_fill(mask == 0, float(\"-inf\"))\n        attn = torch.softmax(scores, dim=-1)\n        out = attn @ v\n        # 4. 拼接：还原成 (batch, seq_len, d_model)\n        out = out.transpose(1, 2).contiguous().view(batch, seq_len, self.d_model)\n        # 5. 输出投影\n        return self.wo(out)\n```\nGPT-2 中的实现与上述一致，关键差异是**因果掩码**：mask 为下三角矩阵，保证位置 i 只能 attend 到位置 <= i 的 token。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 4 章 GPT-2 中的 Transformer 细节 > 4.1 Decoder-only 与因果掩码",
+    "text": "GPT-2 只使用解码器，并使用**因果掩码（Causal Mask）**：在计算注意力分数时，把未来位置的分数设为负无穷，Softmax 后权重为 0，保证生成时不会泄漏未来信息。这是 GPT-2 与 BERT 最核心的区别之一。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 4 章 GPT-2 中的 Transformer 细节 > 4.2 位置编码（Positional Embedding）",
+    "text": "注意力机制本身**不包含任何位置信息**——如果把 token 顺序打乱，自注意力的计算结果不变。因此必须显式加入位置信息。\nGPT-2 使用**可学习的绝对位置编码**：为每个位置维护一个可训练向量，加到 token 的嵌入向量上。与原始 Transformer 使用的正弦/余弦固定编码不同，GPT-2 的位置编码是训练出来的。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 4 章 GPT-2 中的 Transformer 细节 > 4.3 层归一化与残差连接",
+    "text": "GPT-2 在**每个注意力/前馈子层之前**先做 LayerNorm（Pre-Norm），再进入子层，最后加残差连接。这种 Pre-Norm + 残差的设计：\n- 让梯度在深层网络中更容易传播，避免梯度消失；\n- 层归一化对每个 token 的特征维度做归一化，稳定训练；\n- GPT-2 在最终输出前还会再做一次 LayerNorm。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 4 章 GPT-2 中的 Transformer 细节 > 4.4 前馈网络（FFN）",
+    "text": "每个 Transformer 层包含一个**逐位置的前馈网络**：对序列中每个位置独立执行两次线性变换，中间夹一个 GELU 激活函数：\n```\nFFN(x) = Linear2(GELU(Linear1(x)))\n```\n其中 Linear1 把维度从 d_model 放大到 4 倍（如 768 -> 3072），Linear2 再缩回。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 5 章 训练与推理 > 5.1 BPE 分词",
+    "text": "GPT-2 使用 **BPE（Byte Pair Encoding）** 分词：先把文本切到字节/字符级别，然后反复合并**出现频率最高**的相邻字符对，生成一个子词词表。这样：\n- 罕见词可以被拆成常见子词，避免 OOV（未登录词）问题；\n- 词表大小可控（GPT-2 约 50257 个 token）；\n- 任何文本都能被编码，包括没见过的词。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 5 章 训练与推理 > 5.2 自回归生成",
+    "text": "GPT-2 生成文本是**自回归**的：输入前 n 个 token，预测第 n+1 个 token 的概率分布；把预测出的 token 拼到末尾，再继续预测下一个，循环往复。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 5 章 训练与推理 > 5.3 损失函数与预训练",
+    "text": "GPT-2 的预训练目标是**语言建模**：最大化给定前文、预测下一个 token 的对数似然，损失函数为交叉熵损失。预训练数据来自大规模网页文本（WebText）。预训练完成后，GPT-2 可以通过**零样本（zero-shot）**或少量提示（prompt）直接完成下游任务，无需任务特定的微调数据。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 6 章 常见问题解答（FAQ）",
+    "text": "**问：多头注意力和单头注意力的区别？**\n单头注意力只能捕捉一种依赖模式；多头把注意力拆到多个子空间并行计算，每个头可学习不同的依赖关系，最后拼接融合，表达能力更强。\n**问：为什么 GPT-2 没有编码器？**\nGPT-2 是生成模型，只需从左到右生成，Decoder 的因果掩码正好满足单向依赖；不需要像 BERT 那样双向理解上下文，所以省略了编码器。\n**问：什么是因果掩码（Causal Mask）？**\n一个下三角矩阵，保证注意力只能关注当前位置及之前的位置，防止生成时\"偷看\"未来 token。\n**问：上下文窗口是什么？**\nGPT-2 能处理的最大 token 数（如 1024）。因为位置编码是有限的，超过窗口的文本无法处理，这也是大模型的关键限制之一。\n**问：注意力分数为什么要除以 sqrt(d_k)？**\nd_k 较大时点积数值会偏大，Softmax 会进入饱和区导致梯度极小；除以 sqrt(d_k) 让分数尺度稳定，训练更顺利。\n**问：多头注意力的参数量如何计算？**\n每个头有独立的 W_Q、W_K、W_V（每个形状 d_model × head_dim），所有头共享 W_O（d_model × d_model）。多头相比单头的总参数量基本不变，只是权重被拆分使用。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析",
+    "text": "> 本文系统讲解 GPT-2 所用到的 Transformer 架构，重点覆盖多头注意力机制、Q/K/V 向量、自注意力、位置编码、层归一化、BPE 分词等概念，适合从零理解 GPT-2 的实现方式。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 1 章 引言：GPT-2 与 Transformer 的关系",
+    "text": "GPT-2（Generative Pre-trained Transformer 2）是 OpenAI 于 2019 年发布的**自回归语言模型**。它的核心架构来自 2017 年的论文《Attention Is All You Need》提出的 Transformer，并且只使用了其中的 **Decoder（解码器）部分**，因此 GPT-2 也被称为 **Decoder-only** 架构。\n与 BERT 等编码器模型不同，GPT-2 只能从左到右单向生成文本：每生成一个 token，它只能看到之前的所有 token（使用掩码自注意力实现），因此天然适合文本生成任务。\n理解 GPT-2 的关键在于理解 Transformer 的四个核心组件：\n1. **多头注意力（Multi-Head Attention）**：模型的核心，负责捕捉 token 之间的依赖关系；\n2. **位置编码（Positional Encoding）**：给每个 token 标记位置信息；\n3. **层归一化（LayerNorm）与残差连接**：稳定训练，让深层网络可以收敛；\n4. **前馈网络（FFN）**：对每个位置独立做非线性变换。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 2 章 Transformer 总体架构",
+    "text": "标准的 Transformer 由两部分组成：**编码器（Encoder）** 和 **解码器（Decoder）**。\n编码器用于理解输入（如 BERT），解码器用于生成输出（如 GPT 系列）。每个编码器/解码器层内部都包含：\n- 一个**多头注意力子层**；\n- 一个**前馈网络子层**；\n- 每个子层外面都包裹**残差连接 + 层归一化**。\nGPT-2 只保留了解码器部分，并且在注意力中使用**因果掩码（Causal Mask）**，保证每个位置只能看到当前位置及之前的位置，不能\"偷看\"未来。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 3 章 多头注意力机制（核心） > 3.1 自注意力（Self-Attention）",
+    "text": "自注意力让序列中的**每个 token 都能关注序列中的其他所有 token**，并根据相关程度加权聚合信息。\n给定输入序列，每个 token 的位置都会计算一个输出向量，该向量是其他所有位置值的加权求和，权重由 token 之间的\"相关程度\"决定。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 3 章 多头注意力机制（核心） > 3.2 Q、K、V 三个向量",
+    "text": "自注意力的核心是三个向量：**查询（Query）、键（Key）、值（Value）**。\n- **Q（Query，查询）**：当前 token 想要\"找什么\"；\n- **K（Key，键）**：每个 token 的\"身份标签\"，用于被匹配；\n- **V（Value，值）**：每个 token 携带的\"实际信息内容\"。\n计算时，用当前 token 的 Q 与所有 token 的 K 做点积，得到注意力分数（谁跟谁相关）；分数经 Softmax 归一化成权重，再对 V 做加权求和，得到输出。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 3 章 多头注意力机制（核心） > 3.3 缩放点积注意力公式",
+    "text": "自注意力的计算可写成：\n```\nAttention(Q, K, V) = softmax(Q · K^T / sqrt(d_k)) · V\n```\n其中：\n- Q、K、V 由输入乘三个可学习的权重矩阵 W_Q、W_K、W_V 得到；\n- `Q · K^T` 计算所有位置对之间的点积相似度；\n- `除以 sqrt(d_k)`（d_k 是键的维度）是为了防止点积过大导致 Softmax 梯度消失，称为**缩放（Scale）**；\n- Softmax 把分数变成概率分布；\n- 最后与 V 加权求和。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 3 章 多头注意力机制（核心） > 3.4 为什么需要\"多头\"注意力",
+    "text": "单个注意力头只能学习**一种**依赖模式。但自然语言中的依赖关系是多种多样的：有的词需要关注句法主语，有的需要关注指代对象，有的需要关注远处的修饰成分。\n**多头注意力（Multi-Head Attention）**把 Q、K、V 分别拆成 h 个头（例如 GPT-2 使用 12 个头），每个头在**不同的子空间**中独立做注意力，最后把各头的结果拼接起来再线性投影。\n这样做的好处：\n1. **每个头可以学到不同类型的依赖关系**——有的头关注局部相邻词，有的头关注远程指代；\n2. **表达能力更强**——不同子空间捕捉不同特征，综合起来更全面；\n3. 是 Transformer 相对 RNN/LSTM 的关键优势之一，能并行计算所有位置。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 3 章 多头注意力机制（核心） > 3.5 多头注意力的实现方式（代码级）",
+    "text": "多头注意力在实现上通常按以下步骤：\n1. **线性投影**：输入 X 分别乘 W_Q、W_K、W_V，得到 Q、K、V；\n2. **拆头（Reshape）**：把 Q、K、V 的最后一维按头数拆开，例如形状从 `(batch, seq_len, d_model)` 变成 `(batch, num_heads, seq_len, head_dim)`，每个头独立计算；\n3. **缩放点积注意力**：对每个头并行执行 `softmax(Q·K^T/sqrt(d_k))·V`；\n4. **拼接（Concat）**：把所有头的输出拼接回 `(batch, seq_len, d_model)`；\n5. **输出投影**：乘 W_O 做一次线性变换得到最终输出。\n以 PyTorch 为例，核心代码片段：\n```python\nimport torch\nimport torch.nn as nn\nclass MultiHeadAttention(nn.Module):\n    def __init__(self, d_model, num_heads):\n        super().__init__()\n        assert d_model % num_heads == 0\n        self.d_model = d_model\n        self.num_heads = num_heads\n        self.head_dim = d_model // num_heads\n        self.wq = nn.Linear(d_model, d_model)\n        self.wk = nn.Linear(d_model, d_model)\n        self.wv = nn.Linear(d_model, d_model)\n        self.wo = nn.Linear(d_model, d_model)\n    def forward(self, x, mask=None):\n        batch, seq_len, _ = x.shape\n        # 1. 线性投影\n        q = self.wq(x)\n        k = self.wk(x)\n        v = self.wv(x)\n        # 2. 拆头：变成 (batch, num_heads, seq_len, head_dim)\n        q = q.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)\n        k = k.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)\n        v = v.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)\n        # 3. 缩放点积注意力\n        scores = q @ k.transpose(-2, -1) / (self.head_dim ** 0.5)\n        if mask is not None:\n            scores = scores.masked_fill(mask == 0, float(\"-inf\"))\n        attn = torch.softmax(scores, dim=-1)\n        out = attn @ v\n        # 4. 拼接：还原成 (batch, seq_len, d_model)\n        out = out.transpose(1, 2).contiguous().view(batch, seq_len, self.d_model)\n        # 5. 输出投影\n        return self.wo(out)\n```\nGPT-2 中的实现与上述一致，关键差异是**因果掩码**：mask 为下三角矩阵，保证位置 i 只能 attend 到位置 <= i 的 token。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 4 章 GPT-2 中的 Transformer 细节 > 4.1 Decoder-only 与因果掩码",
+    "text": "GPT-2 只使用解码器，并使用**因果掩码（Causal Mask）**：在计算注意力分数时，把未来位置的分数设为负无穷，Softmax 后权重为 0，保证生成时不会泄漏未来信息。这是 GPT-2 与 BERT 最核心的区别之一。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 4 章 GPT-2 中的 Transformer 细节 > 4.2 位置编码（Positional Embedding）",
+    "text": "注意力机制本身**不包含任何位置信息**——如果把 token 顺序打乱，自注意力的计算结果不变。因此必须显式加入位置信息。\nGPT-2 使用**可学习的绝对位置编码**：为每个位置维护一个可训练向量，加到 token 的嵌入向量上。与原始 Transformer 使用的正弦/余弦固定编码不同，GPT-2 的位置编码是训练出来的。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 4 章 GPT-2 中的 Transformer 细节 > 4.3 层归一化与残差连接",
+    "text": "GPT-2 在**每个注意力/前馈子层之前**先做 LayerNorm（Pre-Norm），再进入子层，最后加残差连接。这种 Pre-Norm + 残差的设计：\n- 让梯度在深层网络中更容易传播，避免梯度消失；\n- 层归一化对每个 token 的特征维度做归一化，稳定训练；\n- GPT-2 在最终输出前还会再做一次 LayerNorm。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 4 章 GPT-2 中的 Transformer 细节 > 4.4 前馈网络（FFN）",
+    "text": "每个 Transformer 层包含一个**逐位置的前馈网络**：对序列中每个位置独立执行两次线性变换，中间夹一个 GELU 激活函数：\n```\nFFN(x) = Linear2(GELU(Linear1(x)))\n```\n其中 Linear1 把维度从 d_model 放大到 4 倍（如 768 -> 3072），Linear2 再缩回。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 5 章 训练与推理 > 5.1 BPE 分词",
+    "text": "GPT-2 使用 **BPE（Byte Pair Encoding）** 分词：先把文本切到字节/字符级别，然后反复合并**出现频率最高**的相邻字符对，生成一个子词词表。这样：\n- 罕见词可以被拆成常见子词，避免 OOV（未登录词）问题；\n- 词表大小可控（GPT-2 约 50257 个 token）；\n- 任何文本都能被编码，包括没见过的词。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 5 章 训练与推理 > 5.2 自回归生成",
+    "text": "GPT-2 生成文本是**自回归**的：输入前 n 个 token，预测第 n+1 个 token 的概率分布；把预测出的 token 拼到末尾，再继续预测下一个，循环往复。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 5 章 训练与推理 > 5.3 损失函数与预训练",
+    "text": "GPT-2 的预训练目标是**语言建模**：最大化给定前文、预测下一个 token 的对数似然，损失函数为交叉熵损失。预训练数据来自大规模网页文本（WebText）。预训练完成后，GPT-2 可以通过**零样本（zero-shot）**或少量提示（prompt）直接完成下游任务，无需任务特定的微调数据。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 6 章 常见问题解答（FAQ）",
+    "text": "**问：多头注意力和单头注意力的区别？**\n单头注意力只能捕捉一种依赖模式；多头把注意力拆到多个子空间并行计算，每个头可学习不同的依赖关系，最后拼接融合，表达能力更强。\n**问：为什么 GPT-2 没有编码器？**\nGPT-2 是生成模型，只需从左到右生成，Decoder 的因果掩码正好满足单向依赖；不需要像 BERT 那样双向理解上下文，所以省略了编码器。\n**问：什么是因果掩码（Causal Mask）？**\n一个下三角矩阵，保证注意力只能关注当前位置及之前的位置，防止生成时\"偷看\"未来 token。\n**问：上下文窗口是什么？**\nGPT-2 能处理的最大 token 数（如 1024）。因为位置编码是有限的，超过窗口的文本无法处理，这也是大模型的关键限制之一。\n**问：注意力分数为什么要除以 sqrt(d_k)？**\nd_k 较大时点积数值会偏大，Softmax 会进入饱和区导致梯度极小；除以 sqrt(d_k) 让分数尺度稳定，训练更顺利。\n**问：多头注意力的参数量如何计算？**\n每个头有独立的 W_Q、W_K、W_V（每个形状 d_model × head_dim），所有头共享 W_O（d_model × d_model）。多头相比单头的总参数量基本不变，只是权重被拆分使用。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析",
+    "text": "> 本文系统讲解 GPT-2 所用到的 Transformer 架构，重点覆盖多头注意力机制、Q/K/V 向量、自注意力、位置编码、层归一化、BPE 分词等概念，适合从零理解 GPT-2 的实现方式。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 1 章 引言：GPT-2 与 Transformer 的关系",
+    "text": "GPT-2（Generative Pre-trained Transformer 2）是 OpenAI 于 2019 年发布的**自回归语言模型**。它的核心架构来自 2017 年的论文《Attention Is All You Need》提出的 Transformer，并且只使用了其中的 **Decoder（解码器）部分**，因此 GPT-2 也被称为 **Decoder-only** 架构。\n与 BERT 等编码器模型不同，GPT-2 只能从左到右单向生成文本：每生成一个 token，它只能看到之前的所有 token（使用掩码自注意力实现），因此天然适合文本生成任务。\n理解 GPT-2 的关键在于理解 Transformer 的四个核心组件：\n1. **多头注意力（Multi-Head Attention）**：模型的核心，负责捕捉 token 之间的依赖关系；\n2. **位置编码（Positional Encoding）**：给每个 token 标记位置信息；\n3. **层归一化（LayerNorm）与残差连接**：稳定训练，让深层网络可以收敛；\n4. **前馈网络（FFN）**：对每个位置独立做非线性变换。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 2 章 Transformer 总体架构",
+    "text": "标准的 Transformer 由两部分组成：**编码器（Encoder）** 和 **解码器（Decoder）**。\n编码器用于理解输入（如 BERT），解码器用于生成输出（如 GPT 系列）。每个编码器/解码器层内部都包含：\n- 一个**多头注意力子层**；\n- 一个**前馈网络子层**；\n- 每个子层外面都包裹**残差连接 + 层归一化**。\nGPT-2 只保留了解码器部分，并且在注意力中使用**因果掩码（Causal Mask）**，保证每个位置只能看到当前位置及之前的位置，不能\"偷看\"未来。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 3 章 多头注意力机制（核心） > 3.1 自注意力（Self-Attention）",
+    "text": "自注意力让序列中的**每个 token 都能关注序列中的其他所有 token**，并根据相关程度加权聚合信息。\n给定输入序列，每个 token 的位置都会计算一个输出向量，该向量是其他所有位置值的加权求和，权重由 token 之间的\"相关程度\"决定。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 3 章 多头注意力机制（核心） > 3.2 Q、K、V 三个向量",
+    "text": "自注意力的核心是三个向量：**查询（Query）、键（Key）、值（Value）**。\n- **Q（Query，查询）**：当前 token 想要\"找什么\"；\n- **K（Key，键）**：每个 token 的\"身份标签\"，用于被匹配；\n- **V（Value，值）**：每个 token 携带的\"实际信息内容\"。\n计算时，用当前 token 的 Q 与所有 token 的 K 做点积，得到注意力分数（谁跟谁相关）；分数经 Softmax 归一化成权重，再对 V 做加权求和，得到输出。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 3 章 多头注意力机制（核心） > 3.3 缩放点积注意力公式",
+    "text": "自注意力的计算可写成：\n```\nAttention(Q, K, V) = softmax(Q · K^T / sqrt(d_k)) · V\n```\n其中：\n- Q、K、V 由输入乘三个可学习的权重矩阵 W_Q、W_K、W_V 得到；\n- `Q · K^T` 计算所有位置对之间的点积相似度；\n- `除以 sqrt(d_k)`（d_k 是键的维度）是为了防止点积过大导致 Softmax 梯度消失，称为**缩放（Scale）**；\n- Softmax 把分数变成概率分布；\n- 最后与 V 加权求和。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 3 章 多头注意力机制（核心） > 3.4 为什么需要\"多头\"注意力",
+    "text": "单个注意力头只能学习**一种**依赖模式。但自然语言中的依赖关系是多种多样的：有的词需要关注句法主语，有的需要关注指代对象，有的需要关注远处的修饰成分。\n**多头注意力（Multi-Head Attention）**把 Q、K、V 分别拆成 h 个头（例如 GPT-2 使用 12 个头），每个头在**不同的子空间**中独立做注意力，最后把各头的结果拼接起来再线性投影。\n这样做的好处：\n1. **每个头可以学到不同类型的依赖关系**——有的头关注局部相邻词，有的头关注远程指代；\n2. **表达能力更强**——不同子空间捕捉不同特征，综合起来更全面；\n3. 是 Transformer 相对 RNN/LSTM 的关键优势之一，能并行计算所有位置。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 3 章 多头注意力机制（核心） > 3.5 多头注意力的实现方式（代码级）",
+    "text": "多头注意力在实现上通常按以下步骤：\n1. **线性投影**：输入 X 分别乘 W_Q、W_K、W_V，得到 Q、K、V；\n2. **拆头（Reshape）**：把 Q、K、V 的最后一维按头数拆开，例如形状从 `(batch, seq_len, d_model)` 变成 `(batch, num_heads, seq_len, head_dim)`，每个头独立计算；\n3. **缩放点积注意力**：对每个头并行执行 `softmax(Q·K^T/sqrt(d_k))·V`；\n4. **拼接（Concat）**：把所有头的输出拼接回 `(batch, seq_len, d_model)`；\n5. **输出投影**：乘 W_O 做一次线性变换得到最终输出。\n以 PyTorch 为例，核心代码片段：\n```python\nimport torch\nimport torch.nn as nn\nclass MultiHeadAttention(nn.Module):\n    def __init__(self, d_model, num_heads):\n        super().__init__()\n        assert d_model % num_heads == 0\n        self.d_model = d_model\n        self.num_heads = num_heads\n        self.head_dim = d_model // num_heads\n        self.wq = nn.Linear(d_model, d_model)\n        self.wk = nn.Linear(d_model, d_model)\n        self.wv = nn.Linear(d_model, d_model)\n        self.wo = nn.Linear(d_model, d_model)\n    def forward(self, x, mask=None):\n        batch, seq_len, _ = x.shape\n        # 1. 线性投影\n        q = self.wq(x)\n        k = self.wk(x)\n        v = self.wv(x)\n        # 2. 拆头：变成 (batch, num_heads, seq_len, head_dim)\n        q = q.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)\n        k = k.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)\n        v = v.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)\n        # 3. 缩放点积注意力\n        scores = q @ k.transpose(-2, -1) / (self.head_dim ** 0.5)\n        if mask is not None:\n            scores = scores.masked_fill(mask == 0, float(\"-inf\"))\n        attn = torch.softmax(scores, dim=-1)\n        out = attn @ v\n        # 4. 拼接：还原成 (batch, seq_len, d_model)\n        out = out.transpose(1, 2).contiguous().view(batch, seq_len, self.d_model)\n        # 5. 输出投影\n        return self.wo(out)\n```\nGPT-2 中的实现与上述一致，关键差异是**因果掩码**：mask 为下三角矩阵，保证位置 i 只能 attend 到位置 <= i 的 token。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 4 章 GPT-2 中的 Transformer 细节 > 4.1 Decoder-only 与因果掩码",
+    "text": "GPT-2 只使用解码器，并使用**因果掩码（Causal Mask）**：在计算注意力分数时，把未来位置的分数设为负无穷，Softmax 后权重为 0，保证生成时不会泄漏未来信息。这是 GPT-2 与 BERT 最核心的区别之一。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 4 章 GPT-2 中的 Transformer 细节 > 4.2 位置编码（Positional Embedding）",
+    "text": "注意力机制本身**不包含任何位置信息**——如果把 token 顺序打乱，自注意力的计算结果不变。因此必须显式加入位置信息。\nGPT-2 使用**可学习的绝对位置编码**：为每个位置维护一个可训练向量，加到 token 的嵌入向量上。与原始 Transformer 使用的正弦/余弦固定编码不同，GPT-2 的位置编码是训练出来的。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 4 章 GPT-2 中的 Transformer 细节 > 4.3 层归一化与残差连接",
+    "text": "GPT-2 在**每个注意力/前馈子层之前**先做 LayerNorm（Pre-Norm），再进入子层，最后加残差连接。这种 Pre-Norm + 残差的设计：\n- 让梯度在深层网络中更容易传播，避免梯度消失；\n- 层归一化对每个 token 的特征维度做归一化，稳定训练；\n- GPT-2 在最终输出前还会再做一次 LayerNorm。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 4 章 GPT-2 中的 Transformer 细节 > 4.4 前馈网络（FFN）",
+    "text": "每个 Transformer 层包含一个**逐位置的前馈网络**：对序列中每个位置独立执行两次线性变换，中间夹一个 GELU 激活函数：\n```\nFFN(x) = Linear2(GELU(Linear1(x)))\n```\n其中 Linear1 把维度从 d_model 放大到 4 倍（如 768 -> 3072），Linear2 再缩回。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 5 章 训练与推理 > 5.1 BPE 分词",
+    "text": "GPT-2 使用 **BPE（Byte Pair Encoding）** 分词：先把文本切到字节/字符级别，然后反复合并**出现频率最高**的相邻字符对，生成一个子词词表。这样：\n- 罕见词可以被拆成常见子词，避免 OOV（未登录词）问题；\n- 词表大小可控（GPT-2 约 50257 个 token）；\n- 任何文本都能被编码，包括没见过的词。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 5 章 训练与推理 > 5.2 自回归生成",
+    "text": "GPT-2 生成文本是**自回归**的：输入前 n 个 token，预测第 n+1 个 token 的概率分布；把预测出的 token 拼到末尾，再继续预测下一个，循环往复。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 5 章 训练与推理 > 5.3 损失函数与预训练",
+    "text": "GPT-2 的预训练目标是**语言建模**：最大化给定前文、预测下一个 token 的对数似然，损失函数为交叉熵损失。预训练数据来自大规模网页文本（WebText）。预训练完成后，GPT-2 可以通过**零样本（zero-shot）**或少量提示（prompt）直接完成下游任务，无需任务特定的微调数据。",
+    "score": 0.0
+  },
+  {
+    "doc_title": "GPT2-Transformer-讲义.md",
+    "heading_path": "GPT-2 与 Transformer 深度解析 > 第 6 章 常见问题解答（FAQ）",
+    "text": "**问：多头注意力和单头注意力的区别？**\n单头注意力只能捕捉一种依赖模式；多头把注意力拆到多个子空间并行计算，每个头可学习不同的依赖关系，最后拼接融合，表达能力更强。\n**问：为什么 GPT-2 没有编码器？**\nGPT-2 是生成模型，只需从左到右生成，Decoder 的因果掩码正好满足单向依赖；不需要像 BERT 那样双向理解上下文，所以省略了编码器。\n**问：什么是因果掩码（Causal Mask）？**\n一个下三角矩阵，保证注意力只能关注当前位置及之前的位置，防止生成时\"偷看\"未来 token。\n**问：上下文窗口是什么？**\nGPT-2 能处理的最大 token 数（如 1024）。因为位置编码是有限的，超过窗口的文本无法处理，这也是大模型的关键限制之一。\n**问：注意力分数为什么要除以 sqrt(d_k)？**\nd_k 较大时点积数值会偏大，Softmax 会进入饱和区导致梯度极小；除以 sqrt(d_k) 让分数尺度稳定，训练更顺利。\n**问：多头注意力的参数量如何计算？**\n每个头有独立的 W_Q、W_K、W_V（每个形状 d_model × head_dim），所有头共享 W_O（d_model × d_model）。多头相比单头的总参数量基本不变，只是权重被拆分使用。",
+    "score": 0.0
+  }
+]

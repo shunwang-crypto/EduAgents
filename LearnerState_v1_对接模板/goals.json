@@ -1,0 +1,19 @@
+{
+  "schema_version": "1.0",
+  "active_goals": [
+    {
+      "goal_id": "GOAL-JAVA-001",
+      "course_id": "JAVA-OOP",
+      "goal_name": "成绩管理实训",
+      "target": "完成 Java 面向对象程序设计实训中的成绩管理实训",
+      "priority": 1,
+      "status": "active",
+      "progress": 0.31,
+      "deadline": null,
+      "target_kcs": [],
+      "created_at": null,
+      "updated_at": null
+    }
+  ],
+  "completed_goals": []
+}

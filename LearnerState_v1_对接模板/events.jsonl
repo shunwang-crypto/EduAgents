@@ -1,0 +1,1 @@
+{"event_id": "EXAMPLE-EVT-001", "event_type": "PROFILE_SNAPSHOT_IMPORTED", "user_id": "STU-001", "course_id": "JAVA-OOP", "goal_id": "GOAL-JAVA-001", "kc_id": null, "timestamp": null, "payload": {"note": "示例事件。真实系统中请替换为实际学习事件。"}}

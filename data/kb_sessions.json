@@ -1,0 +1,154 @@
+{
+  "会话 1": {
+    "title": "多头注意力",
+    "messages": [
+      {
+        "role": "user",
+        "content": "多头注意力"
+      },
+      {
+        "role": "assistant",
+        "content": "多头注意力说白了就是：**不只用一套注意力去处理输入，而是把输入拆成多个“头”，每个头独立算注意力，最后再拼回来** [1]。\n\n下面按实现步骤给你捋一遍：\n\n1. **线性投影**：先把输入 \\(X\\) 分别乘上三个权重矩阵 \\(W_Q\\)、\\(W_K\\)、\\(W_V\\)，得到 \\(Q\\)、\\(K\\)、\\(V\\) [1]。这一步的目的是把原始输入变换到适合做注意力的空间。\n\n2. **拆头**：把 \\(Q\\)、\\(K\\)、\\(V\\) 的最后一维按头数拆开，比如形状从 `(batch, seq_len, d_model)` 变成 `(batch, num_heads, seq_len, head_dim)` [1]。每个头拿到的是完整序列的一部分维度，所以每个头可以关注不同的特征子空间。\n\n3. **缩放点积注意力**：对每个头并行执行 `softmax(Q·K^T / sqrt(d_k))·V` [1]。这里的 `sqrt(d_k)` 是缩放因子，防止点积结果太大导致 softmax 梯度消失。注意这里每个头是独立算的。\n\n4. **拼接**：把多个头的输出拼回去，恢复成 `(batch, seq_len, d_model)` [1]。因为拆的时候是按最后一维拆的，拼的时候也按最后一维拼回去。\n\n5. **输出投影**：最后再乘一个 \\(W_O\\) 做一次线性变换，得到最终输出 [1]。这一步相当于把多头合并后的信息再整体变换一次。\n\n在 GPT-2 里，实现和上面基本一致，唯一关键差异是**因果掩码**：mask 是下三角矩阵，保证位置 \\(i\\) 只能 attend 到位置 \\(\\le i\\) 的 token [1]。这就是 GPT-2 做自回归生成时“只能看过去，不能看未来”的实现方式。\n\n如果你是在跑 build-nanogpt，最容易写错的地方就是拆头和拼接的 shape 变换：拆的时候要用 `view` 再 `transpose`，拼的时候要 `transpose` 回来再 `contiguous().view()` [1]。记住“先拆后拼、维度对齐”就不会乱。资料里给你的例子就是 PyTorch 的核心代码，你可以直接对照着写 [1]。",
+        "meta": {
+          "intent": "kb_answered",
+          "answer_markdown": "",
+          "citations": [
+            {
+              "title": "GPT2-Transformer-讲义.md",
+              "location": "GPT-2 与 Transformer 深度解析 > 第 3 章 多头注意力机制（核心） > 3.5 多头注意力的实现方式（代码级）",
+              "snippet": "多头注意力在实现上通常按以下步骤： 1. **线性投影**：输入 X 分别乘 W_Q、W_K、W_V，得到 Q、K、V； 2. **拆头（Reshape）**：把 Q、K、V 的最后一维按头数拆开，例如形状从 `(batch, seq_len, d_model)` 变成 `(batch, num_heads, seq_...",
+              "content": "多头注意力在实现上通常按以下步骤：\n1. **线性投影**：输入 X 分别乘 W_Q、W_K、W_V，得到 Q、K、V；\n2. **拆头（Reshape）**：把 Q、K、V 的最后一维按头数拆开，例如形状从 `(batch, seq_len, d_model)` 变成 `(batch, num_heads, seq_len, head_dim)`，每个头独立计算；\n3. **缩放点积注意力**：对每个头并行执行 `softmax(Q·K^T/sqrt(d_k))·V`；\n4. **拼接（Concat）**：把所有头的输出拼接回 `(batch, seq_len, d_model)`；\n5. **输出投影**：乘 W_O 做一次线性变换得到最终输出。\n以 PyTorch 为例，核心代码片段：\n```python\nimport torch\nimport torch.nn as nn\nclass MultiHeadAttention(nn.Module):\n    def __init__(self, d_model, num_heads):\n        super().__init__()\n        assert d_model % num_heads == 0\n        self.d_model = d_model\n        self.num_heads = num_heads\n        self.head_dim = d_model // num_heads\n        self.wq = nn.Linear(d_model, d_model)\n        self.wk = nn.Linear(d_model, d_model)\n        self.wv = nn.Linear(d_model, d_model)\n        self.wo = nn.Linear(d_model, d_model)\n    def forward(self, x, mask=None):\n        batch, seq_len, _ = x.shape\n        # 1. 线性投影\n        q = self.wq(x)\n        k = self.wk(x)\n        v = self.wv(x)\n        # 2. 拆头：变成 (batch, num_heads, seq_len, head_dim)\n        q = q.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)\n        k = k.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)\n        v = v.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)\n        # 3. 缩放点积注意力\n        scores = q @ k.transpose(-2, -1) / (self.head_dim ** 0.5)\n        if mask is not None:\n            scores = scores.masked_fill(mask == 0, float(\"-inf\"))\n        attn = torch.softmax(scores, dim=-1)\n        out = attn @ v\n        # 4. 拼接：还原成 (batch, seq_len, d_model)\n        out = out.transpose(1, 2).contiguous().view(batch, seq_len, self.d_model)\n        # 5. 输出投影\n        return self.wo(out)\n```\nGPT-2 中的实现与上述一致，关键差异是**因果掩码**：mask 为下三角矩阵，保证位置 i 只能 attend 到位置 <= i 的 token。"
+            },
+            {
+              "title": "GPT2-Transformer-讲义.md",
+              "location": "GPT-2 与 Transformer 深度解析 > 第 3 章 多头注意力机制（核心） > 3.5 多头注意力的实现方式（代码级）",
+              "snippet": "多头注意力在实现上通常按以下步骤： 1. **线性投影**：输入 X 分别乘 W_Q、W_K、W_V，得到 Q、K、V； 2. **拆头（Reshape）**：把 Q、K、V 的最后一维按头数拆开，例如形状从 `(batch, seq_len, d_model)` 变成 `(batch, num_heads, seq_...",
+              "content": "多头注意力在实现上通常按以下步骤：\n1. **线性投影**：输入 X 分别乘 W_Q、W_K、W_V，得到 Q、K、V；\n2. **拆头（Reshape）**：把 Q、K、V 的最后一维按头数拆开，例如形状从 `(batch, seq_len, d_model)` 变成 `(batch, num_heads, seq_len, head_dim)`，每个头独立计算；\n3. **缩放点积注意力**：对每个头并行执行 `softmax(Q·K^T/sqrt(d_k))·V`；\n4. **拼接（Concat）**：把所有头的输出拼接回 `(batch, seq_len, d_model)`；\n5. **输出投影**：乘 W_O 做一次线性变换得到最终输出。\n以 PyTorch 为例，核心代码片段：\n```python\nimport torch\nimport torch.nn as nn\nclass MultiHeadAttention(nn.Module):\n    def __init__(self, d_model, num_heads):\n        super().__init__()\n        assert d_model % num_heads == 0\n        self.d_model = d_model\n        self.num_heads = num_heads\n        self.head_dim = d_model // num_heads\n        self.wq = nn.Linear(d_model, d_model)\n        self.wk = nn.Linear(d_model, d_model)\n        self.wv = nn.Linear(d_model, d_model)\n        self.wo = nn.Linear(d_model, d_model)\n    def forward(self, x, mask=None):\n        batch, seq_len, _ = x.shape\n        # 1. 线性投影\n        q = self.wq(x)\n        k = self.wk(x)\n        v = self.wv(x)\n        # 2. 拆头：变成 (batch, num_heads, seq_len, head_dim)\n        q = q.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)\n        k = k.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)\n        v = v.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)\n        # 3. 缩放点积注意力\n        scores = q @ k.transpose(-2, -1) / (self.head_dim ** 0.5)\n        if mask is not None:\n            scores = scores.masked_fill(mask == 0, float(\"-inf\"))\n        attn = torch.softmax(scores, dim=-1)\n        out = attn @ v\n        # 4. 拼接：还原成 (batch, seq_len, d_model)\n        out = out.transpose(1, 2).contiguous().view(batch, seq_len, self.d_model)\n        # 5. 输出投影\n        return self.wo(out)\n```\nGPT-2 中的实现与上述一致，关键差异是**因果掩码**：mask 为下三角矩阵，保证位置 i 只能 attend 到位置 <= i 的 token。"
+            },
+            {
+              "title": "GPT2-Transformer-讲义.md",
+              "location": "GPT-2 与 Transformer 深度解析 > 第 3 章 多头注意力机制（核心） > 3.5 多头注意力的实现方式（代码级）",
+              "snippet": "多头注意力在实现上通常按以下步骤： 1. **线性投影**：输入 X 分别乘 W_Q、W_K、W_V，得到 Q、K、V； 2. **拆头（Reshape）**：把 Q、K、V 的最后一维按头数拆开，例如形状从 `(batch, seq_len, d_model)` 变成 `(batch, num_heads, seq_...",
+              "content": "多头注意力在实现上通常按以下步骤：\n1. **线性投影**：输入 X 分别乘 W_Q、W_K、W_V，得到 Q、K、V；\n2. **拆头（Reshape）**：把 Q、K、V 的最后一维按头数拆开，例如形状从 `(batch, seq_len, d_model)` 变成 `(batch, num_heads, seq_len, head_dim)`，每个头独立计算；\n3. **缩放点积注意力**：对每个头并行执行 `softmax(Q·K^T/sqrt(d_k))·V`；\n4. **拼接（Concat）**：把所有头的输出拼接回 `(batch, seq_len, d_model)`；\n5. **输出投影**：乘 W_O 做一次线性变换得到最终输出。\n以 PyTorch 为例，核心代码片段：\n```python\nimport torch\nimport torch.nn as nn\nclass MultiHeadAttention(nn.Module):\n    def __init__(self, d_model, num_heads):\n        super().__init__()\n        assert d_model % num_heads == 0\n        self.d_model = d_model\n        self.num_heads = num_heads\n        self.head_dim = d_model // num_heads\n        self.wq = nn.Linear(d_model, d_model)\n        self.wk = nn.Linear(d_model, d_model)\n        self.wv = nn.Linear(d_model, d_model)\n        self.wo = nn.Linear(d_model, d_model)\n    def forward(self, x, mask=None):\n        batch, seq_len, _ = x.shape\n        # 1. 线性投影\n        q = self.wq(x)\n        k = self.wk(x)\n        v = self.wv(x)\n        # 2. 拆头：变成 (batch, num_heads, seq_len, head_dim)\n        q = q.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)\n        k = k.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)\n        v = v.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)\n        # 3. 缩放点积注意力\n        scores = q @ k.transpose(-2, -1) / (self.head_dim ** 0.5)\n        if mask is not None:\n            scores = scores.masked_fill(mask == 0, float(\"-inf\"))\n        attn = torch.softmax(scores, dim=-1)\n        out = attn @ v\n        # 4. 拼接：还原成 (batch, seq_len, d_model)\n        out = out.transpose(1, 2).contiguous().view(batch, seq_len, self.d_model)\n        # 5. 输出投影\n        return self.wo(out)\n```\nGPT-2 中的实现与上述一致，关键差异是**因果掩码**：mask 为下三角矩阵，保证位置 i 只能 attend 到位置 <= i 的 token。"
+            },
+            {
+              "title": "GPT2-Transformer-讲义.md",
+              "location": "GPT-2 与 Transformer 深度解析 > 第 3 章 多头注意力机制（核心） > 3.5 多头注意力的实现方式（代码级）",
+              "snippet": "多头注意力在实现上通常按以下步骤： 1. **线性投影**：输入 X 分别乘 W_Q、W_K、W_V，得到 Q、K、V； 2. **拆头（Reshape）**：把 Q、K、V 的最后一维按头数拆开，例如形状从 `(batch, seq_len, d_model)` 变成 `(batch, num_heads, seq_...",
+              "content": "多头注意力在实现上通常按以下步骤：\n1. **线性投影**：输入 X 分别乘 W_Q、W_K、W_V，得到 Q、K、V；\n2. **拆头（Reshape）**：把 Q、K、V 的最后一维按头数拆开，例如形状从 `(batch, seq_len, d_model)` 变成 `(batch, num_heads, seq_len, head_dim)`，每个头独立计算；\n3. **缩放点积注意力**：对每个头并行执行 `softmax(Q·K^T/sqrt(d_k))·V`；\n4. **拼接（Concat）**：把所有头的输出拼接回 `(batch, seq_len, d_model)`；\n5. **输出投影**：乘 W_O 做一次线性变换得到最终输出。\n以 PyTorch 为例，核心代码片段：\n```python\nimport torch\nimport torch.nn as nn\nclass MultiHeadAttention(nn.Module):\n    def __init__(self, d_model, num_heads):\n        super().__init__()\n        assert d_model % num_heads == 0\n        self.d_model = d_model\n        self.num_heads = num_heads\n        self.head_dim = d_model // num_heads\n        self.wq = nn.Linear(d_model, d_model)\n        self.wk = nn.Linear(d_model, d_model)\n        self.wv = nn.Linear(d_model, d_model)\n        self.wo = nn.Linear(d_model, d_model)\n    def forward(self, x, mask=None):\n        batch, seq_len, _ = x.shape\n        # 1. 线性投影\n        q = self.wq(x)\n        k = self.wk(x)\n        v = self.wv(x)\n        # 2. 拆头：变成 (batch, num_heads, seq_len, head_dim)\n        q = q.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)\n        k = k.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)\n        v = v.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)\n        # 3. 缩放点积注意力\n        scores = q @ k.transpose(-2, -1) / (self.head_dim ** 0.5)\n        if mask is not None:\n            scores = scores.masked_fill(mask == 0, float(\"-inf\"))\n        attn = torch.softmax(scores, dim=-1)\n        out = attn @ v\n        # 4. 拼接：还原成 (batch, seq_len, d_model)\n        out = out.transpose(1, 2).contiguous().view(batch, seq_len, self.d_model)\n        # 5. 输出投影\n        return self.wo(out)\n```\nGPT-2 中的实现与上述一致，关键差异是**因果掩码**：mask 为下三角矩阵，保证位置 i 只能 attend 到位置 <= i 的 token。"
+            }
+          ],
+          "ai_generated": true,
+          "mock": false,
+          "suggested_directions": [],
+          "suggested_questions": [
+            "把「GPT-2 与 Transformer 深度解析 > 第 3 章 多头注意力机制（核心） > 3.5 多头注意力的实现方式（代码级）」展开成完整讲解",
+            "「GPT-2 与 Transformer 深度解析 > 第 3 章 多头注意力机制（核心） > 3.5 多头注意力的实现方式（代码级）」有什么易错点？",
+            "给我出一道和刚才内容相关的练习题"
+          ],
+          "diagnosis_hint": null
+        },
+        "citations": [
+          {
+            "title": "GPT2-Transformer-讲义.md",
+            "location": "GPT-2 与 Transformer 深度解析 > 第 3 章 多头注意力机制（核心） > 3.5 多头注意力的实现方式（代码级）",
+            "snippet": "多头注意力在实现上通常按以下步骤： 1. **线性投影**：输入 X 分别乘 W_Q、W_K、W_V，得到 Q、K、V； 2. **拆头（Reshape）**：把 Q、K、V 的最后一维按头数拆开，例如形状从 `(batch, seq_len, d_model)` 变成 `(batch, num_heads, seq_...",
+            "content": "多头注意力在实现上通常按以下步骤：\n1. **线性投影**：输入 X 分别乘 W_Q、W_K、W_V，得到 Q、K、V；\n2. **拆头（Reshape）**：把 Q、K、V 的最后一维按头数拆开，例如形状从 `(batch, seq_len, d_model)` 变成 `(batch, num_heads, seq_len, head_dim)`，每个头独立计算；\n3. **缩放点积注意力**：对每个头并行执行 `softmax(Q·K^T/sqrt(d_k))·V`；\n4. **拼接（Concat）**：把所有头的输出拼接回 `(batch, seq_len, d_model)`；\n5. **输出投影**：乘 W_O 做一次线性变换得到最终输出。\n以 PyTorch 为例，核心代码片段：\n```python\nimport torch\nimport torch.nn as nn\nclass MultiHeadAttention(nn.Module):\n    def __init__(self, d_model, num_heads):\n        super().__init__()\n        assert d_model % num_heads == 0\n        self.d_model = d_model\n        self.num_heads = num_heads\n        self.head_dim = d_model // num_heads\n        self.wq = nn.Linear(d_model, d_model)\n        self.wk = nn.Linear(d_model, d_model)\n        self.wv = nn.Linear(d_model, d_model)\n        self.wo = nn.Linear(d_model, d_model)\n    def forward(self, x, mask=None):\n        batch, seq_len, _ = x.shape\n        # 1. 线性投影\n        q = self.wq(x)\n        k = self.wk(x)\n        v = self.wv(x)\n        # 2. 拆头：变成 (batch, num_heads, seq_len, head_dim)\n        q = q.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)\n        k = k.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)\n        v = v.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)\n        # 3. 缩放点积注意力\n        scores = q @ k.transpose(-2, -1) / (self.head_dim ** 0.5)\n        if mask is not None:\n            scores = scores.masked_fill(mask == 0, float(\"-inf\"))\n        attn = torch.softmax(scores, dim=-1)\n        out = attn @ v\n        # 4. 拼接：还原成 (batch, seq_len, d_model)\n        out = out.transpose(1, 2).contiguous().view(batch, seq_len, self.d_model)\n        # 5. 输出投影\n        return self.wo(out)\n```\nGPT-2 中的实现与上述一致，关键差异是**因果掩码**：mask 为下三角矩阵，保证位置 i 只能 attend 到位置 <= i 的 token。"
+          },
+          {
+            "title": "GPT2-Transformer-讲义.md",
+            "location": "GPT-2 与 Transformer 深度解析 > 第 3 章 多头注意力机制（核心） > 3.5 多头注意力的实现方式（代码级）",
+            "snippet": "多头注意力在实现上通常按以下步骤： 1. **线性投影**：输入 X 分别乘 W_Q、W_K、W_V，得到 Q、K、V； 2. **拆头（Reshape）**：把 Q、K、V 的最后一维按头数拆开，例如形状从 `(batch, seq_len, d_model)` 变成 `(batch, num_heads, seq_...",
+            "content": "多头注意力在实现上通常按以下步骤：\n1. **线性投影**：输入 X 分别乘 W_Q、W_K、W_V，得到 Q、K、V；\n2. **拆头（Reshape）**：把 Q、K、V 的最后一维按头数拆开，例如形状从 `(batch, seq_len, d_model)` 变成 `(batch, num_heads, seq_len, head_dim)`，每个头独立计算；\n3. **缩放点积注意力**：对每个头并行执行 `softmax(Q·K^T/sqrt(d_k))·V`；\n4. **拼接（Concat）**：把所有头的输出拼接回 `(batch, seq_len, d_model)`；\n5. **输出投影**：乘 W_O 做一次线性变换得到最终输出。\n以 PyTorch 为例，核心代码片段：\n```python\nimport torch\nimport torch.nn as nn\nclass MultiHeadAttention(nn.Module):\n    def __init__(self, d_model, num_heads):\n        super().__init__()\n        assert d_model % num_heads == 0\n        self.d_model = d_model\n        self.num_heads = num_heads\n        self.head_dim = d_model // num_heads\n        self.wq = nn.Linear(d_model, d_model)\n        self.wk = nn.Linear(d_model, d_model)\n        self.wv = nn.Linear(d_model, d_model)\n        self.wo = nn.Linear(d_model, d_model)\n    def forward(self, x, mask=None):\n        batch, seq_len, _ = x.shape\n        # 1. 线性投影\n        q = self.wq(x)\n        k = self.wk(x)\n        v = self.wv(x)\n        # 2. 拆头：变成 (batch, num_heads, seq_len, head_dim)\n        q = q.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)\n        k = k.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)\n        v = v.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)\n        # 3. 缩放点积注意力\n        scores = q @ k.transpose(-2, -1) / (self.head_dim ** 0.5)\n        if mask is not None:\n            scores = scores.masked_fill(mask == 0, float(\"-inf\"))\n        attn = torch.softmax(scores, dim=-1)\n        out = attn @ v\n        # 4. 拼接：还原成 (batch, seq_len, d_model)\n        out = out.transpose(1, 2).contiguous().view(batch, seq_len, self.d_model)\n        # 5. 输出投影\n        return self.wo(out)\n```\nGPT-2 中的实现与上述一致，关键差异是**因果掩码**：mask 为下三角矩阵，保证位置 i 只能 attend 到位置 <= i 的 token。"
+          },
+          {
+            "title": "GPT2-Transformer-讲义.md",
+            "location": "GPT-2 与 Transformer 深度解析 > 第 3 章 多头注意力机制（核心） > 3.5 多头注意力的实现方式（代码级）",
+            "snippet": "多头注意力在实现上通常按以下步骤： 1. **线性投影**：输入 X 分别乘 W_Q、W_K、W_V，得到 Q、K、V； 2. **拆头（Reshape）**：把 Q、K、V 的最后一维按头数拆开，例如形状从 `(batch, seq_len, d_model)` 变成 `(batch, num_heads, seq_...",
+            "content": "多头注意力在实现上通常按以下步骤：\n1. **线性投影**：输入 X 分别乘 W_Q、W_K、W_V，得到 Q、K、V；\n2. **拆头（Reshape）**：把 Q、K、V 的最后一维按头数拆开，例如形状从 `(batch, seq_len, d_model)` 变成 `(batch, num_heads, seq_len, head_dim)`，每个头独立计算；\n3. **缩放点积注意力**：对每个头并行执行 `softmax(Q·K^T/sqrt(d_k))·V`；\n4. **拼接（Concat）**：把所有头的输出拼接回 `(batch, seq_len, d_model)`；\n5. **输出投影**：乘 W_O 做一次线性变换得到最终输出。\n以 PyTorch 为例，核心代码片段：\n```python\nimport torch\nimport torch.nn as nn\nclass MultiHeadAttention(nn.Module):\n    def __init__(self, d_model, num_heads):\n        super().__init__()\n        assert d_model % num_heads == 0\n        self.d_model = d_model\n        self.num_heads = num_heads\n        self.head_dim = d_model // num_heads\n        self.wq = nn.Linear(d_model, d_model)\n        self.wk = nn.Linear(d_model, d_model)\n        self.wv = nn.Linear(d_model, d_model)\n        self.wo = nn.Linear(d_model, d_model)\n    def forward(self, x, mask=None):\n        batch, seq_len, _ = x.shape\n        # 1. 线性投影\n        q = self.wq(x)\n        k = self.wk(x)\n        v = self.wv(x)\n        # 2. 拆头：变成 (batch, num_heads, seq_len, head_dim)\n        q = q.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)\n        k = k.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)\n        v = v.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)\n        # 3. 缩放点积注意力\n        scores = q @ k.transpose(-2, -1) / (self.head_dim ** 0.5)\n        if mask is not None:\n            scores = scores.masked_fill(mask == 0, float(\"-inf\"))\n        attn = torch.softmax(scores, dim=-1)\n        out = attn @ v\n        # 4. 拼接：还原成 (batch, seq_len, d_model)\n        out = out.transpose(1, 2).contiguous().view(batch, seq_len, self.d_model)\n        # 5. 输出投影\n        return self.wo(out)\n```\nGPT-2 中的实现与上述一致，关键差异是**因果掩码**：mask 为下三角矩阵，保证位置 i 只能 attend 到位置 <= i 的 token。"
+          },
+          {
+            "title": "GPT2-Transformer-讲义.md",
+            "location": "GPT-2 与 Transformer 深度解析 > 第 3 章 多头注意力机制（核心） > 3.5 多头注意力的实现方式（代码级）",
+            "snippet": "多头注意力在实现上通常按以下步骤： 1. **线性投影**：输入 X 分别乘 W_Q、W_K、W_V，得到 Q、K、V； 2. **拆头（Reshape）**：把 Q、K、V 的最后一维按头数拆开，例如形状从 `(batch, seq_len, d_model)` 变成 `(batch, num_heads, seq_...",
+            "content": "多头注意力在实现上通常按以下步骤：\n1. **线性投影**：输入 X 分别乘 W_Q、W_K、W_V，得到 Q、K、V；\n2. **拆头（Reshape）**：把 Q、K、V 的最后一维按头数拆开，例如形状从 `(batch, seq_len, d_model)` 变成 `(batch, num_heads, seq_len, head_dim)`，每个头独立计算；\n3. **缩放点积注意力**：对每个头并行执行 `softmax(Q·K^T/sqrt(d_k))·V`；\n4. **拼接（Concat）**：把所有头的输出拼接回 `(batch, seq_len, d_model)`；\n5. **输出投影**：乘 W_O 做一次线性变换得到最终输出。\n以 PyTorch 为例，核心代码片段：\n```python\nimport torch\nimport torch.nn as nn\nclass MultiHeadAttention(nn.Module):\n    def __init__(self, d_model, num_heads):\n        super().__init__()\n        assert d_model % num_heads == 0\n        self.d_model = d_model\n        self.num_heads = num_heads\n        self.head_dim = d_model // num_heads\n        self.wq = nn.Linear(d_model, d_model)\n        self.wk = nn.Linear(d_model, d_model)\n        self.wv = nn.Linear(d_model, d_model)\n        self.wo = nn.Linear(d_model, d_model)\n    def forward(self, x, mask=None):\n        batch, seq_len, _ = x.shape\n        # 1. 线性投影\n        q = self.wq(x)\n        k = self.wk(x)\n        v = self.wv(x)\n        # 2. 拆头：变成 (batch, num_heads, seq_len, head_dim)\n        q = q.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)\n        k = k.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)\n        v = v.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)\n        # 3. 缩放点积注意力\n        scores = q @ k.transpose(-2, -1) / (self.head_dim ** 0.5)\n        if mask is not None:\n            scores = scores.masked_fill(mask == 0, float(\"-inf\"))\n        attn = torch.softmax(scores, dim=-1)\n        out = attn @ v\n        # 4. 拼接：还原成 (batch, seq_len, d_model)\n        out = out.transpose(1, 2).contiguous().view(batch, seq_len, self.d_model)\n        # 5. 输出投影\n        return self.wo(out)\n```\nGPT-2 中的实现与上述一致，关键差异是**因果掩码**：mask 为下三角矩阵，保证位置 i 只能 attend 到位置 <= i 的 token。"
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": "transformer解释一下"
+      },
+      {
+        "role": "assistant",
+        "content": "好，我先一句话给你结论：Transformer 是一种深度学习架构，GPT-2 就是基于它的 Decoder-only 版本，靠“多头注意力”等组件来建模文本。\n\n下面我分几步给你讲清楚：\n\n1. **先记住 Transformer 的“出身”和基本组成**  \n   Transformer 来自 2017 年那篇论文，它本身分成两个大块：**编码器（Encoder）** 和 **解码器（Decoder）**。编码器负责理解输入（比如 BERT 那类模型），解码器负责生成输出（比如 GPT 系列）。每一层里面都包含一个**多头注意力子层**和一个**前馈网络子层**，而且每个子层外面都裹着**残差连接 + 层归一化** [2][3]。\n\n2. **GPT-2 只用了 Decoder 部分**  \n   GPT-2 是自回归语言模型，只保留了解码器，所以也叫 **Decoder-only** 架构。它生成文本时是从左到右逐个 token 生成，每次只能看到之前的 token，不能“偷看”未来。这个限制是通过**因果掩码（Causal Mask）** 实现的 [2][3]。\n\n3. **Transformer 的四个核心组件你要心里有数**  \n   理解 GPT-2 关键就看这四个东西：  \n   - **多头注意力**：模型的核心，用来捕捉 token 之间的依赖关系；  \n   - **位置编码**：给每个 token 标记位置信息，因为注意力本身不区分顺序；  \n   - **层归一化与残差连接**：稳定训练，让深层网络能收敛；  \n   - **前馈网络**：对每个位置独立做非线性变换 [2]。\n\n4. **一句话总结整个工作方式**  \n   输入 token 先加上位置信息，然后经过一层层“注意力 + 前馈 + 残差 + 归一化”，最后输出下一个 token 的概率分布。因为用了因果掩码，所以每次预测都只依赖过去的信息，这就是它能做文本生成的原因 [2][3]。\n\n如果你是想跑 build-nanogpt 训练，建议重点先吃透**多头注意力**和**因果掩码**这两个实现细节，因为它们最容易写错。资料里目前只给了概念层面的解释，没有具体代码，所以代码部分需要你再结合其他材料看。",
+        "meta": {
+          "intent": "kb_answered",
+          "answer_markdown": "",
+          "citations": [
+            {
+              "title": "GPT2-Transformer-讲义.md",
+              "location": "GPT-2 与 Transformer 深度解析",
+              "snippet": "> 本文系统讲解 GPT-2 所用到的 Transformer 架构，重点覆盖多头注意力机制、Q/K/V 向量、自注意力、位置编码、层归一化、BPE 分词等概念，适合从零理解 GPT-2 的实现方式。",
+              "content": "> 本文系统讲解 GPT-2 所用到的 Transformer 架构，重点覆盖多头注意力机制、Q/K/V 向量、自注意力、位置编码、层归一化、BPE 分词等概念，适合从零理解 GPT-2 的实现方式。"
+            },
+            {
+              "title": "GPT2-Transformer-讲义.md",
+              "location": "GPT-2 与 Transformer 深度解析 > 第 1 章 引言：GPT-2 与 Transformer 的关系",
+              "snippet": "GPT-2（Generative Pre-trained Transformer 2）是 OpenAI 于 2019 年发布的**自回归语言模型**。它的核心架构来自 2017 年的论文《Attention Is All You Need》提出的 Transformer，并且只使用了其中的 **Decoder（解码器）...",
+              "content": "GPT-2（Generative Pre-trained Transformer 2）是 OpenAI 于 2019 年发布的**自回归语言模型**。它的核心架构来自 2017 年的论文《Attention Is All You Need》提出的 Transformer，并且只使用了其中的 **Decoder（解码器）部分**，因此 GPT-2 也被称为 **Decoder-only** 架构。\n与 BERT 等编码器模型不同，GPT-2 只能从左到右单向生成文本：每生成一个 token，它只能看到之前的所有 token（使用掩码自注意力实现），因此天然适合文本生成任务。\n理解 GPT-2 的关键在于理解 Transformer 的四个核心组件：\n1. **多头注意力（Multi-Head Attention）**：模型的核心，负责捕捉 token 之间的依赖关系；\n2. **位置编码（Positional Encoding）**：给每个 token 标记位置信息；\n3. **层归一化（LayerNorm）与残差连接**：稳定训练，让深层网络可以收敛；\n4. **前馈网络（FFN）**：对每个位置独立做非线性变换。"
+            },
+            {
+              "title": "GPT2-Transformer-讲义.md",
+              "location": "GPT-2 与 Transformer 深度解析 > 第 2 章 Transformer 总体架构",
+              "snippet": "标准的 Transformer 由两部分组成：**编码器（Encoder）** 和 **解码器（Decoder）**。 编码器用于理解输入（如 BERT），解码器用于生成输出（如 GPT 系列）。每个编码器/解码器层内部都包含： - 一个**多头注意力子层**； - 一个**前馈网络子层**； - 每个子层外面都包裹*...",
+              "content": "标准的 Transformer 由两部分组成：**编码器（Encoder）** 和 **解码器（Decoder）**。\n编码器用于理解输入（如 BERT），解码器用于生成输出（如 GPT 系列）。每个编码器/解码器层内部都包含：\n- 一个**多头注意力子层**；\n- 一个**前馈网络子层**；\n- 每个子层外面都包裹**残差连接 + 层归一化**。\nGPT-2 只保留了解码器部分，并且在注意力中使用**因果掩码（Causal Mask）**，保证每个位置只能看到当前位置及之前的位置，不能\"偷看\"未来。"
+            },
+            {
+              "title": "GPT2-Transformer-讲义.md",
+              "location": "GPT-2 与 Transformer 深度解析",
+              "snippet": "> 本文系统讲解 GPT-2 所用到的 Transformer 架构，重点覆盖多头注意力机制、Q/K/V 向量、自注意力、位置编码、层归一化、BPE 分词等概念，适合从零理解 GPT-2 的实现方式。",
+              "content": "> 本文系统讲解 GPT-2 所用到的 Transformer 架构，重点覆盖多头注意力机制、Q/K/V 向量、自注意力、位置编码、层归一化、BPE 分词等概念，适合从零理解 GPT-2 的实现方式。"
+            }
+          ],
+          "ai_generated": true,
+          "mock": false,
+          "suggested_directions": [],
+          "suggested_questions": [
+            "把「GPT-2 与 Transformer 深度解析」展开成完整讲解",
+            "「GPT-2 与 Transformer 深度解析」有什么易错点？",
+            "给我出一道和刚才内容相关的练习题"
+          ],
+          "diagnosis_hint": null
+        },
+        "citations": [
+          {
+            "title": "GPT2-Transformer-讲义.md",
+            "location": "GPT-2 与 Transformer 深度解析",
+            "snippet": "> 本文系统讲解 GPT-2 所用到的 Transformer 架构，重点覆盖多头注意力机制、Q/K/V 向量、自注意力、位置编码、层归一化、BPE 分词等概念，适合从零理解 GPT-2 的实现方式。",
+            "content": "> 本文系统讲解 GPT-2 所用到的 Transformer 架构，重点覆盖多头注意力机制、Q/K/V 向量、自注意力、位置编码、层归一化、BPE 分词等概念，适合从零理解 GPT-2 的实现方式。"
+          },
+          {
+            "title": "GPT2-Transformer-讲义.md",
+            "location": "GPT-2 与 Transformer 深度解析 > 第 1 章 引言：GPT-2 与 Transformer 的关系",
+            "snippet": "GPT-2（Generative Pre-trained Transformer 2）是 OpenAI 于 2019 年发布的**自回归语言模型**。它的核心架构来自 2017 年的论文《Attention Is All You Need》提出的 Transformer，并且只使用了其中的 **Decoder（解码器）...",
+            "content": "GPT-2（Generative Pre-trained Transformer 2）是 OpenAI 于 2019 年发布的**自回归语言模型**。它的核心架构来自 2017 年的论文《Attention Is All You Need》提出的 Transformer，并且只使用了其中的 **Decoder（解码器）部分**，因此 GPT-2 也被称为 **Decoder-only** 架构。\n与 BERT 等编码器模型不同，GPT-2 只能从左到右单向生成文本：每生成一个 token，它只能看到之前的所有 token（使用掩码自注意力实现），因此天然适合文本生成任务。\n理解 GPT-2 的关键在于理解 Transformer 的四个核心组件：\n1. **多头注意力（Multi-Head Attention）**：模型的核心，负责捕捉 token 之间的依赖关系；\n2. **位置编码（Positional Encoding）**：给每个 token 标记位置信息；\n3. **层归一化（LayerNorm）与残差连接**：稳定训练，让深层网络可以收敛；\n4. **前馈网络（FFN）**：对每个位置独立做非线性变换。"
+          },
+          {
+            "title": "GPT2-Transformer-讲义.md",
+            "location": "GPT-2 与 Transformer 深度解析 > 第 2 章 Transformer 总体架构",
+            "snippet": "标准的 Transformer 由两部分组成：**编码器（Encoder）** 和 **解码器（Decoder）**。 编码器用于理解输入（如 BERT），解码器用于生成输出（如 GPT 系列）。每个编码器/解码器层内部都包含： - 一个**多头注意力子层**； - 一个**前馈网络子层**； - 每个子层外面都包裹*...",
+            "content": "标准的 Transformer 由两部分组成：**编码器（Encoder）** 和 **解码器（Decoder）**。\n编码器用于理解输入（如 BERT），解码器用于生成输出（如 GPT 系列）。每个编码器/解码器层内部都包含：\n- 一个**多头注意力子层**；\n- 一个**前馈网络子层**；\n- 每个子层外面都包裹**残差连接 + 层归一化**。\nGPT-2 只保留了解码器部分，并且在注意力中使用**因果掩码（Causal Mask）**，保证每个位置只能看到当前位置及之前的位置，不能\"偷看\"未来。"
+          },
+          {
+            "title": "GPT2-Transformer-讲义.md",
+            "location": "GPT-2 与 Transformer 深度解析",
+            "snippet": "> 本文系统讲解 GPT-2 所用到的 Transformer 架构，重点覆盖多头注意力机制、Q/K/V 向量、自注意力、位置编码、层归一化、BPE 分词等概念，适合从零理解 GPT-2 的实现方式。",
+            "content": "> 本文系统讲解 GPT-2 所用到的 Transformer 架构，重点覆盖多头注意力机制、Q/K/V 向量、自注意力、位置编码、层归一化、BPE 分词等概念，适合从零理解 GPT-2 的实现方式。"
+          }
+        ]
+      }
+    ],
+    "_pending_stream": null
+  }
+}
