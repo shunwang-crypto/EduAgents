@@ -7,7 +7,7 @@ from typing import Dict, List
 from edu_agent.adaptive.reason_codes import REASON_LOW_PREREQUISITE_MASTERY
 from edu_agent.adaptive.policies.mastery import MASTERED_THRESHOLD
 from edu_agent.domain.learning.kc_graph import Course
-from edu_agent.integrations.learner_state.schemas import KnowledgeItem
+from edu_agent.learner_model.schemas import KnowledgeItem
 
 
 def prerequisite_policy(

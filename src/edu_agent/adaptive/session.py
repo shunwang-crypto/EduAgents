@@ -10,8 +10,9 @@
 - recent_pedagogical_actions
 
 原则：
-- 不写入长期 Profile；
-- Session 结束后，长期有价值信息通过 Event 回传合作伙伴，Session 本身过期即可。
+- 不写入长期画像；
+- Session 结束后，长期有价值信息通过 Event 写入本地 Learner Model（SQLite），
+  Session 本身过期即可。
 """
 
 from __future__ import annotations

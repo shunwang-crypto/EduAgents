@@ -1,9 +1,11 @@
-"""应用状态持久化存储（学习计划 / 学生输入 / 会话历史 / LearnerState 缓存）。
+"""应用状态持久化存储（学习计划 / 学生输入 / 会话历史 / 短期 Session State）。
 
 文件位置：
 - ``data/study_plan.json``   学习计划结果 + 学生输入
 - ``data/kb_sessions.json``   知识库问答多会话历史
-- ``data/cache_learner-state-*.json``   LearnerState 缓存（EduAgents 不维护第二套画像）
+- ``data/cache_adaptive-session-*.json``  短期会话状态（Session Store）
+
+注：长期画像数据在 ``data/learner_model.db``（SQLite），不在此 JSON 存储。
 
 读写都做容错：文件缺失或损坏时回退为默认值。
 为保证调用方零负担，序列化策略支持三种常见类型：

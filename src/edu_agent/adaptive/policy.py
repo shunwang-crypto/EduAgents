@@ -28,7 +28,7 @@ from edu_agent.adaptive.schemas import (
 )
 from edu_agent.adaptive.temporal_resolver import resolve
 from edu_agent.domain.learning.kc_graph import Course
-from edu_agent.integrations.learner_state.schemas import KnowledgeItem
+from edu_agent.learner_model.schemas import KnowledgeItem
 
 
 def make_decision(

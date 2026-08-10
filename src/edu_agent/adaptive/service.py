@@ -1,7 +1,8 @@
-"""AdaptiveService：一键完成「读 LearnerState → 选上下文 → 决策 → Prompt 上下文」。
+"""AdaptiveService：一键完成「读本地 Learner Model → 选上下文 → 决策 → Prompt 上下文」。
 
 工作流与前端只需要调用 prepare_adaptive_context(...)，
-无需关心 Provider / ContextSelector / Policy 的组装细节。
+无需关心 LearnerModelService / ContextSelector / Policy 的组装细节。
+画像数据来自本地 SQLite Dynamic Learner Model（唯一 Source of Truth）。
 """
 
 from __future__ import annotations
@@ -13,23 +14,26 @@ from edu_agent.adaptive.policy import make_decision
 from edu_agent.adaptive.prompt_builder import build_prompt_context, decision_instructions
 from edu_agent.adaptive.schemas import AdaptiveDecision, SelectedLearnerContext, TaskType
 from edu_agent.domain.learning.kc_graph import Course, get_course
-from edu_agent.integrations.learner_state.provider import get_learner_state_provider
-from edu_agent.integrations.learner_state.schemas import LearnerStateBundle
+from edu_agent.learner_model.schemas import LearnerStateBundle
+from edu_agent.learner_model.service import (
+    DEFAULT_COURSE_ID,
+    DEFAULT_USER_ID,
+    LearnerModelService,
+)
 
 
 def load_bundle(
     user_id: str = "",
     course_id: str = "",
-    provider_name: str = "",
 ) -> LearnerStateBundle:
     """读取 LearnerStateBundle（user_id/course_id 缺省用配置默认值）。"""
     from edu_agent.config.settings import get_settings
 
     settings = get_settings()
-    user_id = user_id or settings.learner_state_user_id
-    course_id = course_id or settings.learner_state_course_id
-    provider = get_learner_state_provider(provider_name)
-    return provider.get_bundle(user_id=user_id, course_id=course_id)
+    user_id = user_id or settings.learner_model_user_id or DEFAULT_USER_ID
+    course_id = course_id or settings.learner_model_course_id or DEFAULT_COURSE_ID
+    service = LearnerModelService()
+    return service.build_bundle(user_id=user_id, course_id=course_id)
 
 
 def prepare_adaptive_context(
@@ -46,6 +50,7 @@ def prepare_adaptive_context(
 
     - 课程未注册时退化为通用决策（不崩）。
     - task_type 决定上下文选择范围（多课程隔离由 course_id 保证）。
+    - 画像数据来自本地 Learner Model；无画像时返回中性决策（不编造）。
     """
     if bundle is None:
         bundle = load_bundle(user_id=user_id, course_id=course_id)

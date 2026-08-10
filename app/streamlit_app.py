@@ -656,34 +656,42 @@ def _render_knowledge_map(
 
 
 def _learner_state_bundle():
-    """读取 LearnerStateBundle（配置 mock/remote），失败返回空 bundle 不中断。"""
+    """读取 LearnerStateBundle（来自本地 SQLite Learner Model），失败返回空 bundle 不中断。"""
     from edu_agent.adaptive.service import load_bundle
 
     try:
         return load_bundle()
     except Exception:  # noqa: BLE001 - 画像服务不可用时前端仍可用
-        from edu_agent.integrations.learner_state.schemas import LearnerStateBundle
+        from edu_agent.learner_model.schemas import LearnerStateBundle
 
         return LearnerStateBundle()
 
 
 def _render_learner_state_panel(bundle=None) -> None:
-    """只读展示学习者画像：当前课程/目标/进度/掌握度/能力/误解/偏好/版本。"""
-    from edu_agent.domain.learning.kc_graph import get_course
-    from edu_agent.integrations.learner_state.schemas import LearnerStateBundle
+    """本地动态学习画像：facts/goal/知识/能力/偏好/误解/记忆 + 变化记录 + 用户操作。"""
+    from edu_agent.config.settings import get_settings
+    from edu_agent.learner_model.service import LearnerModelService
+
+    settings = get_settings()
+    user_id = settings.learner_model_user_id
+    course_id = settings.learner_model_course_id
+    service = LearnerModelService()
 
     bundle = bundle or _learner_state_bundle()
     course_state = bundle.course_state
     global_state = bundle.global_state
     goal = bundle.active_goal
+    profile = global_state.profile
 
-    st.markdown('<div class="section-title">学习画像（Learner State · 只读）</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="section-title">动态学习画像（Local Learner Model · SQLite）</div>',
+        unsafe_allow_html=True,
+    )
     st.caption(
-        f"数据来源：LearnerStateProvider · 状态新鲜度：{course_state.freshness}"
-        f" · 画像版本：v{course_state.state_version or '-'}"
+        f"数据来源：本地 `data/learner_model.db` · 画像版本 v{course_state.state_version or '-'}"
+        f" · 最近更新：{str(course_state.updated_at or '')[:19]}"
     )
 
-    profile = global_state.profile
     col1, col2, col3 = st.columns(3)
     col1.metric("用户", profile.display_name or profile.user_id or "未命名", border=False)
     col2.metric("当前课程", bundle.course_id, border=False)
@@ -694,7 +702,24 @@ def _render_learner_state_panel(bundle=None) -> None:
         if goal.target:
             st.caption(goal.target)
 
-    # 掌握度
+    # ---------------- 背景事实（可删除） ----------------
+    facts = service.repo.list_profile_facts(user_id)
+    st.markdown("#### 背景事实")
+    if not facts:
+        st.caption("暂无背景事实。可在「学习计划」提交时填写，或在下方手动添加。")
+    for fact in facts:
+        fkey = fact.get("fact_key", "")
+        fvalue = fact.get("fact_value_json", "")
+        fcol1, fcol2 = st.columns([0.75, 0.25])
+        with fcol1:
+            st.markdown(f"- **{fkey}**：`{fvalue}`（置信度 {fact.get('confidence', 0):.0%} · {fact.get('status')}）")
+        with fcol2:
+            if st.button("删除", key=f"del-fact-{fact.get('fact_id')}", help="用户明确删除该事实"):
+                service.delete_profile_fact(user_id, fkey)
+                st.toast(f"已删除事实：{fkey}")
+                st.rerun()
+
+    # ---------------- 掌握度 ----------------
     if course_state.knowledge:
         st.markdown("#### 知识掌握度")
         rows = []
@@ -711,8 +736,10 @@ def _render_learner_state_panel(bundle=None) -> None:
             "| 知识点 | 掌握度 | 置信度 | 状态 | 趋势 |\n"
             "| -- | -- | -- | -- | -- |\n" + "\n".join(rows)
         )
+    else:
+        st.caption("尚无知识点掌握数据（首次学习后由事件产生，不编造默认值）。")
 
-    # 能力
+    # ---------------- 能力 ----------------
     if course_state.abilities:
         st.markdown("#### 能力维度")
         ability_rows = [
@@ -725,43 +752,85 @@ def _render_learner_state_panel(bundle=None) -> None:
             "| 能力 | 分数 | 置信度 | 趋势 |\n| -- | -- | -- | -- |\n" + "\n".join(ability_rows)
         )
 
-    # 误解
+    # ---------------- 偏好（可纠正） ----------------
+    st.markdown("#### 学习偏好")
+    prefs = global_state.preferences
+    pref_rows = service.repo.list_preferences(user_id, course_id)
+    if pref_rows:
+        for pref in pref_rows:
+            pcol1, pcol2 = st.columns([0.7, 0.3])
+            with pcol1:
+                st.markdown(
+                    f"- **{pref['preference_key']}**：score {pref['score']:.2f} · "
+                    f"置信度 {pref['confidence']:.2f} · 样本 {pref['evidence_count']} · {pref['status']}"
+                )
+            with pcol2:
+                direction = st.selectbox(
+                    "纠正",
+                    ["保持", "↑ 更喜欢", "↓ 不喜欢"],
+                    key=f"pref-adj-{pref['preference_key']}",
+                    label_visibility="collapsed",
+                )
+                if st.button("应用", key=f"pref-apply-{pref['preference_key']}"):
+                    if direction == "↑ 更喜欢":
+                        service.set_preference(user_id, pref["preference_key"], direction="pos")
+                        st.toast(f"偏好已强化：{pref['preference_key']}")
+                    elif direction == "↓ 不喜欢":
+                        service.set_preference(user_id, pref["preference_key"], direction="neg")
+                        st.toast(f"偏好已弱化：{pref['preference_key']}")
+                    st.rerun()
+    else:
+        st.caption("暂无偏好记录（多次请求示例/图解等行为后自动积累）。")
+
+    # ---------------- 误解（生命周期） ----------------
     if course_state.misconceptions:
         st.markdown("#### 已知误解")
         for m in course_state.misconceptions:
-            if m.status == "active":
-                st.markdown(f"- ⚠️ **{m.kc_id}**：{m.description}（严重度 {m.severity:.0%}）")
-            else:
-                st.markdown(f"- {m.kc_id}：{m.description}（已{('解决' if m.status=='resolved' else '休眠')}）")
+            status_label = {
+                "candidate": "候选",
+                "active": "活跃",
+                "resolving": "解决中",
+                "resolved": "已解决",
+                "dormant": "休眠",
+            }.get(m.status, m.status)
+            st.markdown(
+                f"- {m.kc_id}：{m.description}（{status_label} · 置信度 {m.confidence:.0%}"
+                f" · 出现 {m.occurrence_count} 次）"
+            )
+    else:
+        st.caption("暂无误解记录。")
 
-    # 偏好
-    prefs = global_state.preferences
-    st.markdown("#### 学习偏好")
-    st.caption(
-        f"首选模式：{prefs.preferred_mode or '未记录'} · 节奏系数：{prefs.pace_factor} · "
-        f"支架偏好：{prefs.scaffold_preference:.0%}"
-    )
-    if prefs.mode_effectiveness:
-        eff_rows = [
-            f"| {mode} | {item.score:.2f} | {item.confidence:.2f} | {item.sample_size} |"
-            for mode, item in prefs.mode_effectiveness.items()
-        ]
+    # ---------------- 语义记忆（可删除） ----------------
+    memories = service.repo.list_memories(user_id, "")
+    st.markdown("#### 长期记忆")
+    if not memories:
+        st.caption("暂无长期记忆。")
+    for mem in memories:
+        mcol1, mcol2 = st.columns([0.78, 0.22])
+        with mcol1:
+            st.markdown(f"- {mem.get('content', '')}（{mem.get('status')}）")
+        with mcol2:
+            if st.button("删除", key=f"del-mem-{mem.get('memory_id')}", help="用户明确删除该记忆"):
+                service.delete_memory(user_id, mem.get("memory_id", ""))
+                st.toast("已删除该记忆")
+                st.rerun()
+
+    # ---------------- 画像变化记录 ----------------
+    st.markdown("#### 画像变化记录")
+    changes = service.get_changes(user_id, course_id, limit=15)
+    if not changes:
+        st.caption("暂无画像变化（用户产生学习行为后自动记录）。")
+    for ch in changes:
         st.markdown(
-            "| 模式 | 实测效果 | 置信度 | 样本量 |\n| -- | -- | -- | -- |\n" + "\n".join(eff_rows)
+            f"- `{ch.get('operation')}` {ch.get('entity_type')}:{ch.get('entity_id')} "
+            f"— {ch.get('reason', '')}（{str(ch.get('created_at', ''))[:19]}）"
         )
 
-    # 行为
-    behavior = course_state.behavior
-    st.markdown("#### 近期行为")
-    st.caption(
-        f"30 天活动：{behavior.activity_count_30d} · 连续学习：{behavior.streak_days} 天 · "
-        f"平均每次 {behavior.average_session_minutes:.0f} 分钟"
-    )
-    if behavior.recent_topics:
-        st.caption("最近主题：" + "、".join(behavior.recent_topics))
-
     st.caption("---")
-    st.caption("本页面为只读 Learner State 展示；EduAgents 不在此修改画像数值。")
+    st.caption(
+        "本页面展示本地 Dynamic Learner Model：事件 → 证据 → 定向更新 → 变化记录。"
+        "画像支持新增/修改/强化/弱化/失效/解决/删除。"
+    )
 
 
 def _render_process_details(result: dict) -> None:
@@ -946,21 +1015,26 @@ def _emit_event(
     payload: dict | None = None,
     session_id: str = "",
 ) -> None:
-    """把学习行为写成 Event（写 Outbox；失败不阻塞主流程）。"""
+    """把学习行为写成 Event 并更新本地 Learner Model（失败不阻塞主流程）。"""
     try:
         from edu_agent.config.settings import get_settings
-        from edu_agent.integrations.learner_state.event_emitter import build_event, emit_event
+        from edu_agent.learner_model.evidence.extractor import build_event
+        from edu_agent.learner_model.service import LearnerModelService
 
         settings = get_settings()
         event = build_event(
             event_type=event_type,
-            user_id=settings.learner_state_user_id,
-            course_id=settings.learner_state_course_id,
+            user_id=settings.learner_model_user_id,
+            course_id=settings.learner_model_course_id,
             kc_id=kc_id,
             session_id=session_id or "",
             payload=payload or {},
         )
-        emit_event(event)
+        service = LearnerModelService()
+        if settings.learner_model_auto_update:
+            service.apply_event(event)
+        else:
+            service.record_event(event)
     except Exception:  # noqa: BLE001 - 事件失败绝不阻塞用户请求
         pass
 
@@ -1412,7 +1486,7 @@ def _render_kb_qa_page(engine: str = "kb_qa") -> None:
     kb = _kb_instance()
     doc_count = len({c.doc_title for c in kb.chunks})
 
-    # 学习者状态摘要（只读，来自 LearnerStateProvider；EduAgents 不修改画像）
+    # 学习者状态摘要（来自本地 SQLite Learner Model，EduAgents 唯一画像真值）
     learner_state = _learner_state_bundle()
     course_state = learner_state.course_state
     mastered_count = sum(1 for k in course_state.knowledge if k.mastery >= 0.7)
@@ -1426,7 +1500,7 @@ def _render_kb_qa_page(engine: str = "kb_qa") -> None:
             f" · 已掌握 {mastered_count} · 薄弱 {weak_count}"
         )
     with hint_col:
-        st.caption(f"新鲜度：{course_state.freshness}（{course_state.course_id}）")
+        st.caption(f"本地画像 · {course_state.course_id}")
 
     # 导入完成提示：banner 引导用户到学习计划 tab
     if st.session_state.get("_kb_last_import"):

@@ -1,88 +1,101 @@
-# 自适应学习架构
+# 自适应学习架构（Local Dynamic Learner Model 版）
 
-## 1. 分层职责
+> 本文档是当前代码的权威架构说明。旧「Partner Learner Model 作为 Source of Truth」
+> 的设计已废弃，见 `docs/archive/learner-state-v1-contract/`（NOT RUNTIME）。
 
-| 层 | 模块 | 职责 |
-| -- | -- | -- |
-| 外部状态 | 合作伙伴 Learner Model | LearnerState 唯一 Source of Truth（profile/goals/preferences/mastery/ability/misconception/behavior） |
-| Provider 层 | `integrations/learner_state/` | 业务层唯一访问入口；mock / remote；缓存与降级 |
-| 适配层 | `adapter.py` | 合作伙伴原始 JSON → 内部契约；字段变化只改这里 |
-| 领域层 | `domain/kc_graph.py` | 课程知识结构（KC + 关系 + KST-lite） |
-| 会话层 | Session State | 可立即变化的短时状态（当前 KC、re_explain 次数等） |
-| 决策层 | `adaptive/` | Context Selector → Temporal Resolver → Policy → Prompt Builder |
-| 业务层 | `workflows/` | Study Plan / Topic Tutor / Adaptive QA / Plan Chat |
-| 回传层 | `event_emitter.py` | LearningEvent → Outbox → 异步投递合作伙伴 |
+## 1. 定位
 
-## 2. 数据流
+EduAgents = **具有本地动态学习者模型的自适应学习规划与个性化辅导系统**。
+
+- **Dynamic Learner Model**：回答"这个学生现在是什么状态？"（本地 SQLite 维护）
+- **Adaptive Learning Engine**：回答"面对这个状态，现在应该怎么学、怎么教？"（规则策略）
+- **LLM**：只执行教学策略，生成内容，不承担完整个性化决策。
+
+## 2. 总架构
+
+```
+Observe（用户行为）
+   │
+   ▼
+LearningEvent（append-only 历史）
+   │
+   ▼
+EvidenceExtractor（事件 → StructuredEvidence）
+   │
+   ▼
+Updaters（8 个定向更新器）
+   │
+   ▼
+SQLite Learner Model（唯一 Source of Truth）
+   │
+   ├──► ContextSelector（按任务截取）
+   │         ▼
+   │    TemporalResolver（时间衰减）
+   │         ▼
+   │    AdaptivePolicy（AdaptiveDecision + reason codes）
+   │         ▼
+   │    PromptBuilder → LLM → 个性化输出
+   │
+   └──────────────► 新的用户行为 → 再次闭环
+```
+
+## 3. 数据存储分层
+
+| 数据 | 存储 | 说明 |
+|---|---|---|
+| 长期画像（facts/goals/mastery/ability/preference/misconception/memory） | SQLite `data/learner_model.db` | 唯一真值，支持增删改 |
+| 学习事件（历史证据） | SQLite `learning_events` 表 | append-only，与当前状态分离 |
+| 画像变更记录 | SQLite `profile_change_log` | 每次增删改可回放、可展示 |
+| 画像快照 | SQLite `learner_state_snapshots` | 每累计 N 个事件生成 |
+| 短期会话状态 | JSON `data/cache_adaptive-session-*.json` | TTL 1h，不落长期画像 |
+| 学习计划/会话历史/知识库 | JSON `data/study_plan.json` 等 | 业务数据，非画像 |
+
+未来迁移生产环境：Repository 接口（`learner_model/repository.py`）可换 PostgreSQL；
+Session 可换 Redis；Semantic Memory 可换向量库。**画像逻辑不动**。
+
+## 4. 动态画像闭环
 
 ```
 LearnerState_t
-  ↓ Read（Provider + Adapter + Cache）
-Diagnose（Context Selector：只选相关 KC/前置/误解/能力/偏好）
-  ↓
-Decide（Temporal Resolver + Adaptive Policy → AdaptiveDecision + reason_codes）
-  ↓
-Teach（Prompt Builder → LLM → 个性化输出）
-  ↓
-Observe（用户行为）
-  ↓
-Emit Evidence（LearningEvent → Outbox）
-  ↓
-Partner Update（合作伙伴刷新 LearnerState）
-  ↓
-LearnerState_t+1 → 下一轮
+    → AdaptiveDecision（记录 state_version）
+    → 用户学习（讲解/问答/反馈）
+    → LearningEvent（SELF_REPORTED_CONFUSION 等）
+    → EvidenceExtractor（弱/中/强 × 来源可靠度）
+    → 特定 Updater 定向更新（不是整份画像重写）
+    → LearnerState_t+1
+    → 下一次决策基于新状态
 ```
 
-## 3. Context Selector：按任务类型选上下文
+禁止：`recent_messages → LLM → 整份 profile 覆盖`。
+允许：`Event → Evidence → specific updater → targeted change`。
 
-- `study_plan`：Goal + 目标 KC + 全课程掌握度快照 + 能力 + 偏好 + 进度
-- `topic_tutor`：目标 KC + 传递前置 + 误解 + understanding/application/expression + 偏好
-- `adaptive_qa`：学习型问题映射 KC 后同上；非学习型问题只带基础偏好
-- `plan_chat`：计划 + 进度 + 弱 KC + 节奏
-
-**多课程隔离**：所有 key 都是 `user_id + course_id`；Java 请求绝不会加载 Transformer mastery。
-
-## 4. Temporal Resolver
+## 5. 更新速度分层（从快到慢）
 
 ```
-raw_mastery=.82, last_evidence_at=120 天前
-  → recency_days=120, review_risk=high, effective_state=needs_refresh
-raw_mastery=.82, last_evidence_at=2 天前
-  → recency_days=2, review_risk=low, effective_state=mastered
+Session State（即时，不落长期画像）
+> KC State（每次有效证据）
+> Misconception（重复出现才升，持续正确才降）
+> Preference（多次行为积累，用户显式可立即改）
+> Ability（慢 EMA，弱证据只计数）
+> Stable Profile（极少更新）
 ```
 
-V1 为可解释规则；接口保留升级为复杂遗忘模型的空间。
+## 6. Adaptive Engine
 
-## 5. Adaptive Policy
+- **ContextSelector**：`study_plan` 全课程快照+目标；`topic_tutor` 只取目标 KC+前置+误解+相关能力；
+  `adaptive_qa` 先判断学习型问题，非学习型不加载掌握度；`plan_chat` 计划+进度+节奏。
+  多课程隔离：所有查询按 `(user_id, course_id)`。
+- **TemporalResolver**：`raw_mastery` 不每天重写；使用时算 `recency_days / review_risk / effective_state`
+  （mastery=.85 且 180 天无证据 → needs_refresh）。
+- **AdaptivePolicy**：策略组件拆分（mastery/confidence/prerequisite/misconception/preference/temporal/ability），
+  输出 `AdaptiveDecision`（depth/difficulty/scaffold/pedagogical_actions/delivery_mode/example_count/
+  review_or_new/reason_codes/learner_state_version）。
+- **PromptBuilder**：把结构化决策转成 LLM 上下文；LLM 不得自行决定教学策略。
 
-规则式基线，策略组件拆分（非 1000 行 if/else）：
+## 7. 关键规则
 
-| 组件 | 输入 → 输出 |
-| -- | -- |
-| mastery_policy | mastery → depth / difficulty / scaffold / 基础动作 |
-| confidence_policy | confidence<0.5 → 保守 + CHECK_UNDERSTANDING |
-| prerequisite_policy | 目标前置链未掌握 → REVIEW_PREREQUISITE + prerequisite_topics |
-| misconception_policy | active 误解 → CONCEPT_COMPARISON + COUNTEREXAMPLE |
-| temporal_policy | review_risk 高 → review_or_new=review |
-| preference_policy | Pedagogical Need > Task Suitability > User Preference |
-
-输出始终带 `reason_codes`（如 `LOW_PREREQUISITE_MASTERY`），可解释、可调试、可做实验对比。
-
-教学动作固定集合：`EXPLAIN / WORKED_EXAMPLE / PARTIAL_EXAMPLE / HINT / ANALOGY / COUNTEREXAMPLE / REVIEW_PREREQUISITE / SUMMARIZE / CONCEPT_COMPARISON / DECOMPOSE / SIMPLIFY / DEEPEN / CHECK_UNDERSTANDING / SOCRATIC_QUESTION`。**不包含任何练习/测验动作。**
-
-## 6. 降级策略
-
-Partner API 不可用：
-
-1. 尝试 Remote；
-2. 有可接受缓存 → 用缓存并标记 `stale`；
-3. 无缓存 → Mock 数据标记 `mock`（或空状态 `missing`）；
-4. 业务输出仍然可用，上下文标注 `state_freshness`。
-
-## 7. 与主项目（FastAPI/Next.js/PostgreSQL/Redis/Qdrant）的关系
-
-本仓库为 Streamlit 原型实现。Provider / Outbox 接口按生产可替换设计：
-
-- `LearnerStateProvider` → 生产可换成 Redis 缓存 + 服务发现；
-- Session State → 当前用本地 JSON（`app_state_store` 动态 key），生产换 Redis（`learner-session:{user_id}:{course_id}`，TTL）；
-- Outbox → 当前为 JSON 文件，生产复用 Worker + 指数退避 + `event_id` 幂等。
+- 弱证据（曝光/理解了）不改变 mastery；mastery 变更只留给未来强证据（外部 assessment）。
+- 用户显式声明（`USER_EXPLICIT_*`）优先级最高，可立即覆盖推断偏好。
+- Preference 不越积越多：同 key 一条记录，score/confidence 升降、可 inactive/reactivate。
+- Misconception 有生命周期：candidate → active → resolving → resolved（可 reactivate）。
+- 用户删除 Fact/Memory：真正 DELETE，change log 只留最小审计。

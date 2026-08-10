@@ -1,41 +1,29 @@
-# 存储架构
+# 存储架构（Storage Architecture）
 
-## 总原则：数据存哪里，由"谁是真值"决定
+## 数据分层（本地原型）
 
-| 数据 | 存储 | 角色 |
-| -- | -- | -- |
-| 长期 LearnerState（Profile/Mastery/Ability/Misconception/Preference/Behavior/历史） | **合作伙伴数据库** | 唯一 Source of Truth |
-| LearnerState 缓存 | EduAgents Redis（`learner-state:{user_id}:{course_id}`，带 TTL） | 非真值，可过期 |
-| Session State | EduAgents Redis（`adaptive-session:{user_id}:{course_id}:{session_id}`，TTL） | 短期状态 |
-| Study Plans / Plan Progress / Domain Model | EduAgents PostgreSQL | EduAgents 自有业务 |
-| Adaptive Decision Log | EduAgents PostgreSQL | 调试/实验/论文 |
-| Learning Events / Event Outbox | EduAgents PostgreSQL | 待回传证据 |
-| Semantic Memory | Qdrant | 长期语义记忆（用户经历/有效类比） |
-| `docs/contracts/learner-state-v1/` | 仓库文档 | Contract / Example / Mock reference，**不是生产真值** |
-| `src/edu_agent/adaptive/` | 代码 | 自适应算法（不存数据真值） |
+| 数据 | 位置 | 特性 |
+|---|---|---|
+| **动态学习者画像** | `data/learner_model.db`（SQLite） | 唯一 Source of Truth；支持增删改/强化/弱化/失效/解决 |
+| 学习事件（历史） | SQLite `learning_events` 表 | append-only，与当前状态分离 |
+| 画像变更记录 | SQLite `profile_change_log` 表 | 每次画像改动可回放 |
+| 画像快照 | SQLite `learner_state_snapshots` 表 | 每累计 N 个有意义事件生成 |
+| 短期会话状态 | `data/cache_adaptive-session-*.json` | TTL 1h，不落长期画像 |
+| 学习计划 + 学生输入 | `data/study_plan.json` | 业务数据 |
+| 知识库问答会话 | `data/kb_sessions.json` | 业务数据 |
+| 导入的知识库 | `data/knowledge_base.json` | RAG 素材 |
 
-## EduAgents Redis Keys
+## 生产迁移契约（不改变画像逻辑）
 
-```
-learner-state:{user_id}:{course_id}                     # LearnerState 缓存（fresh/stale/mock/missing）
-adaptive-session:{user_id}:{course_id}:{session_id}     # 会话状态（re_explain_count 等）
-```
+| 层 | 原型 | 生产 | 说明 |
+|---|---|---|---|
+| Learner Model Repository | `sqlite_repository.py` | PostgreSQL（替换 `repository.py` 实现） | 表结构一一对应 |
+| 画像缓存/Session | JSON | Redis（key `adaptive-session:{user_id}:{course_id}:{session_id}`） | TTL 语义一致 |
+| Semantic Memory | SQLite 表 | Qdrant 向量库 | `learner_semantic_memories` 可迁 |
 
-原型实现：`data/cache_learner-state-*.json`、`data/cache_adaptive-session-*.json`（接口可替换 Redis）。
+## 存储原则
 
-## EduAgents PostgreSQL 表（生产）
-
-- `plans` / `plan_steps` / `plan_progress`
-- `courses` / `knowledge_components` / `kc_relations`（Domain Model，所有用户共享）
-- `adaptive_decisions`（decision_id / user_id / course_id / goal_id / session_id / task_type / target_kc / learner_state_version / state_freshness / selected_context_json / temporal_state_json / decision_json / reason_codes / policy_version / created_at）
-- `learning_events` / `learning_event_outbox`（event_id 幂等 / delivery_status / retry_count）
-
-## Qdrant
-
-只存 Semantic Memory（"用户通过 Java interface 理解 Python Protocol"之类），禁止存 `mastery=.63` 精确数值。
-
-## 禁止
-
-- EduAgents 不把合作伙伴 LearnerState 永久保存为第二套真值
-- 不创建 `session_state.json` 作为长期状态（Session 用 Redis 语义，过期即弃）
-- 不读取 `docs/contracts` 下 JSON 作为真实用户画像
+1. **不复制第二套画像**：唯一真值在 SQLite Learner Model；`study_plan.json` 等只存业务数据。
+2. **不把精确状态放非结构化位置**：mastery 等精确数值只存在于结构化表。
+3. **事件与状态分离**：`learning_events` 只增；画像表可改可删。
+4. **敏感删除最小化**：用户明确删除的 Fact/Memory，change log 不保存内容副本。

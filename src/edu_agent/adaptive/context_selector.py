@@ -13,7 +13,7 @@ from typing import Optional
 
 from edu_agent.adaptive.schemas import SelectedLearnerContext, TaskType
 from edu_agent.domain.learning.kc_graph import Course
-from edu_agent.integrations.learner_state.schemas import LearnerStateBundle
+from edu_agent.learner_model.schemas import LearnerStateBundle
 
 
 def _freshness_of(bundle: LearnerStateBundle) -> str:

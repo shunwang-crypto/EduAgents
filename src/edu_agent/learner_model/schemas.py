@@ -1,12 +1,12 @@
-"""内部 LearnerState 领域模型（EduAgents 侧的唯一画像契约）。
+"""本地 Dynamic Learner Model 领域模型（SQLite 是唯一 Source of Truth）。
 
-设计原则（与架构文档一致）：
-- 这里是 LearnerState 的 Source of Truth（只读消费）。
-- EduAgents 禁止在本地再维护一套 student_profile / mastery 变更。
+设计原则：
+- 这里是 Learner Model 的 Source of Truth（由 LearnerModelService 读写）。
 - Mastery 与 Confidence 必须分离：
     mastery=.20 + confidence=.95  → 基本确定学生不会；
     mastery=.20 + confidence=.15  → 数据不足，不能武断。
-- 多课程隔离：所有状态都带 user_id + course_id。
+- 多课程隔离：所有课程状态都带 user_id + course_id。
+- 画像支持增删改（CREATE/UPDATE/REINFORCE/WEAKEN/DEACTIVATE/REACTIVATE/RESOLVE/DELETE）。
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ Trend = Literal["improving", "declining", "stable", "unknown"]
 MisconceptionType = Literal[
     "conceptual_confusion", "formula_error", "calc_slip", "misread", "knowledge_gap"
 ]
-MisconceptionStatus = Literal["active", "resolved", "dormant"]
+MisconceptionStatus = Literal["candidate", "active", "resolving", "resolved", "dormant"]
 
 
 def _now_iso() -> str:

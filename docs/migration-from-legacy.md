@@ -1,45 +1,45 @@
-# 从旧架构迁移
+# 迁移记录（migration-from-legacy）
 
-本文记录：删除了什么、为什么删除、旧模块对应到新架构什么位置。
+## 本次迁移（2026-08-10）：Partner 画像 → 本地 SQLite Dynamic Learner Model
 
-## 删除
+### 背景
 
-| 旧模块 | 原因 | 对应新架构位置 |
-| -- | -- | -- |
-| `workflows/quiz/`（自适应练习：题库/生成一轮题/判题/更新 mastery） | 产品定位不再做练习业务 | 无（移除） |
-| `workflows/quiz_generation/`、`workflows/mistake_reflection/`（占位 README） | 练习/错题业务废弃 | 无（移除） |
-| `core/mastery.py`（本地 ±delta 变更：答对 +0.3 / 答错 -0.25） | 画像数值必须由合作伙伴更新，EduAgents 禁止本地变更 | `adaptive/policy.py` 只**读取** mastery 决策；`domain/kc_graph.py` 承接路径推荐 |
-| `core/student_profile.py`（关键词推断 level → 第二套画像） | Source of Truth 冲突 | `integrations/learner_state/` 统一消费外部画像 |
-| `tools/student_memory.py`（TODO 空壳） | 无实现 | `integrations/learner_state/semantic_memory` 概念 |
-| `tests/test_quiz.py` / `test_mastery.py` / `test_student_profile.py` | 对应模块删除 | `test_architecture_contracts.py` 等替代 |
-| `DecompositionResult.practice_directions` | 改名 | `application_directions` |
-| `KnowledgeNode.practice_task` | 改名 | `application_task` |
-| `TopicDetail.exercises` | 练习字段删除 | `next_learning_suggestions` |
-| `DraftPlan` 中练习设计残留、`PracticePlan` 类 | 练习设计业务删除 | 无 |
-| 前端"自适应练习"tab / 雷达图 / 学生水平下拉 | 本地 mastery/画像 UI 删除 | "学习画像"只读面板 |
-| `student_profile` 相关 env/持久化 key | 第二套画像删除 | `LEARNER_STATE_*` |
+此前两轮重构的方向是「合作伙伴 Learner Model 作为 Source of Truth，EduAgents 只读画像并回传事件」。
+该前提取消（合作伙伴画像系统尚未完成，不能依赖任何上游服务）。
 
-## 改名与移动
+### 删除
 
-| 旧 | 新 |
-| -- | -- |
-| `mastery.next_node` | `domain.kc_graph.recommended_next`（KST-lite 可达前沿） |
-| kb_qa 的 `student_profile` prompt 变量 | `learner_context` + `adaptive_instructions` |
-| study_plan/topic_tutor/plan_chat 的画像输入 | `learner_context` / `adaptive_instructions` |
+| 内容 | 原因 |
+|---|---|
+| `src/edu_agent/integrations/`（provider/adapter/mock/remote/cache/event_emitter） | Partner 架构整体废弃 |
+| `LEARNER_STATE_*`、`LEARNING_EVENT_DELIVERY_*` 环境变量 | 无外部服务 |
+| `docs/learner-state-contract.md` | 已被 `docs/learner-model-schema.md` 取代 |
+| `docs/contracts/learner-state-v1/` | 移到 `docs/archive/learner-state-v1-contract/`（NOT RUNTIME） |
+| `data/learning_event_outbox.json`、`data/cache_learner-state-*.json` | Partner 时代残留数据 |
+| 旧测试（`test_learner_state_adapter/provider/schemas`、`test_learning_events`、`test_architecture_contracts`） | 对象已删除 |
 
-## 保留（不动）
+### 新增
 
-- `core/llm.py`（多模型 fallback）· `core/agent_runner.py` · `core/exceptions.py`
-- `tools/course_kb.py`（RAG）· `kb_store.py` · `github_importer.py` · `web_search.py`
-- `workflows/study_plan/`（清洗练习语后）· `kb_qa/` · `plan_chat/` · `topic_tutor/`
-- 知识库问答的引用溯源 / 未覆盖拒答 / 澄清引导 / 降级
+| 内容 | 说明 |
+|---|---|
+| `learner_model/db.py` | SQLite DDL（12 表） |
+| `learner_model/sqlite_repository.py` + `repository.py` | 仓库实现 + 抽象接口（未来可换 PostgreSQL） |
+| `learner_model/service.py` | 业务门面：事件闭环 / 画像操作 |
+| `learner_model/change_log.py` / `snapshot.py` | 变更记录 / 快照 |
+| `learner_model/evidence/` | 事件 → 结构化证据 |
+| `learner_model/updaters/` | knowledge/ability/preference/misconception/profile_fact/semantic_memory/goal/behavior |
+| `docs/learner-model-schema.md` | 本地画像 schema 文档 |
+| 新测试（`test_learner_model.py` 等，37 用例） | 生命周期/闭环/契约 |
 
-## 残留检查
+### 复用（未改动）
 
-```bash
-# 确认无本地 mastery 变更 / 无练习系统 / 无第二套画像
-grep -rn "mastery +=\|mastery -=\|update_mastery" src/        # 应为空
-grep -rn "workflows.quiz\|PracticePlan\|student_profile" src/ # 应为空
-```
+- `adaptive/`（context_selector/temporal_resolver/policy/prompt_builder/policies/）—— 纯算法，改数据源
+- `domain/learning/`（KC Graph / KST-lite）
+- `workflows/`（study_plan/topic_tutor/kb_qa/plan_chat）—— 通过 `learner_context` 字符串接入
+- `core/llm.py`、`tools/`（知识库/状态存储）
 
-`learning_report/` 占位目录保留（学情报告，非练习业务，未实现）。
+### 早期迁移（2026-08 更早轮次，已生效）
+
+- `workflows/quiz/`、`quiz_generation/`、`mistake_reflection/` 已物理删除
+- `core/mastery.py`（±delta 本地变更）、`core/student_profile.py`（第二套画像）已删除
+- `PracticePlan` / `practice_task` / `practice_directions` 等练习字段已删除

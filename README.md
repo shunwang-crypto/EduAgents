@@ -1,113 +1,104 @@
-# EduAgents — 自适应学习引擎
+# EduAgents — 自适应学习规划与个性化辅导系统
 
-EduAgents 是一个**基于外部动态学习者模型（LearnerState）的自适应学习规划与个性化辅导系统**。
+> 具有**本地动态学习者模型**（SQLite）的自适应学习系统。
+> 回答两个问题：**这个学生现在是什么状态？**（Learner Model）
+> **面对这个状态，现在应该怎么学、怎么教？**（Adaptive Engine）
 
-它**不负责学习者画像建模，也不实现练习/测验系统**，而是回答一个核心问题：
-
-> 合作伙伴 Learner Model 告诉我"这个学生现在是什么状态"；
-> EduAgents 负责决定"面对这个学生，现在应该怎么学、怎么教"。
-
-## 核心定位
+## 核心架构
 
 ```
-合作伙伴 Learner Model（LearnerState 的唯一 Source of Truth）
-        │ LearnerState API
-        ▼
-LearnerStateProvider（mock / remote）
-        │ Adapter（容忍字段变化）
-        ▼
-LearnerState（内部契约）
+用户行为（提问 / 请求讲解 / 反馈 / 完成计划）
         │
-   ┌────┴────────────┐
-   ▼                 ▼
-Domain Model      Session State
-KC Graph / KST-lite  （Redis 或本地 JSON）
-        │                 │
-        └───────┬─────────┘
-                ▼
-         Context Selector（按任务只选相关状态）
-                ▼
-         Temporal Resolver（掌握度时间衰减）
-                ▼
-         Adaptive Policy（规则式教学决策 + reason codes）
-                ▼
-          Prompt Builder（结构化 → LLM 上下文）
-                ▼
-     Study Plan / Topic Tutor / Adaptive QA / Plan Chat
-                ▼
-              LLM → 个性化输出
-                ▼
-         Interaction Event → Outbox → 合作伙伴
-                ▼
-            合作伙伴更新 LearnerState → 下一轮
+        ▼
+   LearningEvent（append-only 历史证据）
+        │
+        ▼
+   EvidenceExtractor（事件 → 结构化证据）
+        │
+        ▼
+   Updaters（knowledge / preference / misconception / ability / fact / goal / memory）
+        │
+        ▼
+   SQLite Learner Model（data/learner_model.db · 唯一画像真值）
+        │
+        ▼
+   Context Selector（按任务只选相关状态）
+        │
+        ▼
+   Temporal Resolver（掌握度时间衰减）
+        │
+        ▼
+   Adaptive Policy（结构化教学决策 + reason codes）
+        │
+        ▼
+   Prompt Builder → LLM → 个性化输出
+        │
+        └──────────────→ 新的用户行为 → 再次闭环
 ```
 
-## 已删除的业务
+## 两个核心部分
 
-- ❌ Quiz / Practice / 练习生成 / 练习设计
-- ❌ 错题 / 答题 / 自动判分 / 错题反思
-- ❌ 本地 student_profile 推断（第二套画像引擎）
-- ❌ 本地 mastery ±delta 变更
+### A. Dynamic Learner Model（`src/edu_agent/learner_model/`）
 
-EduAgents 只 **读取** LearnerState、**决策**、**Emit Evidence**；数值更新归合作伙伴。
+本地 SQLite 维护完整学习者画像，支持完整生命周期：
 
-## 功能
+- **CREATE / UPDATE / REINFORCE / WEAKEN / DEACTIVATE / REACTIVATE / RESOLVE / DELETE**
+- Preference 能升能降（`worked_example .82 → .68`）
+- Misconception 能出现也能解决（`candidate → active → resolving → resolved`）
+- Profile Fact 同 key 只保留一条（冲突 UPDATE 而非追加）
+- 用户明确删除 → 真正 DELETE（change log 只留最小审计，不存被删内容副本）
+- Events（历史）与 Learner State（当前结论）严格分离
 
-- **自适应学习计划**：读 LearnerState → KC Graph（前置链）→ 跳过已掌握、优先前置缺失、按目标安排顺序
-- **自适应专题讲解**：按目标 KC 掌握度/置信度/误解/偏好决定深度、脚手架、教学模式
-- **自适应知识问答**：学习型问题映射 KC → 注入画像上下文；非学习型问题不加载画像
-- **计划问答 / 计划调整**：结合当前计划 + 画像节奏动态调整
-- **Learner State 只读面板**：掌握度/能力/误解/偏好/行为/版本/新鲜度
-- **多课程隔离**：Java 请求不加载 Transformer mastery（key 均为 user_id + course_id）
-- **Learning Event 回传**：用户行为 → Outbox（幂等）→ 异步投递合作伙伴
+数据表（12 张）：`learners` / `learner_profile_facts` / `learning_goals` /
+`learner_course_states` / `learner_kc_states` / `learner_abilities` /
+`learner_preferences` / `learner_misconceptions` / `learner_semantic_memories` /
+`learning_events` / `profile_change_log` / `learner_state_snapshots`
 
-## 技术栈
+### B. Adaptive Engine（`src/edu_agent/adaptive/`）
 
-Streamlit · LangChain · langchain-openai · Pydantic · python-dotenv · pytest
+- **ContextSelector**：不同任务（学习计划/专题讲解/问答/计划问答）只挑选相关状态，多课程隔离（`user_id + course_id`）
+- **TemporalResolver**：掌握度是时间函数（`mastery=.85`，180 天无证据 → `needs_refresh`）
+- **AdaptivePolicy**：规则式教学决策（mastery/confidence/prerequisite/misconception/preference/temporal/ability 策略组件拆分），输出结构化 `AdaptiveDecision` + 可解释 `reason_codes`
+- **PromptBuilder**：策略先于 LLM —— LLM 只执行教学策略，不自行决定个性化
 
-## 项目结构
+## 关键原则
 
-```text
-EduAgents/
-├─ app/streamlit_app.py
-├─ src/edu_agent/
-│  ├─ adaptive/                 # 自适应引擎
-│  │  ├─ schemas.py             # SelectedContext / AdaptiveDecision / reason codes
-│  │  ├─ context_selector.py    # 按任务类型只选相关 LearnerState
-│  │  ├─ temporal_resolver.py   # 掌握度时间衰减（recency / review_risk）
-│  │  ├─ policy.py              # 规则式策略（mastery/confidence/prereq/misconception/preference/temporal）
-│  │  ├─ prompt_builder.py      # 结构化决策 → LLM 上下文
-│  │  └─ service.py             # 一键流水线（读状态→选上下文→决策→prompt）
-│  ├─ integrations/
-│  │  └─ learner_state/         # LearnerState Provider 层
-│  │     ├─ schemas.py          # 内部 LearnerState 契约
-│  │     ├─ adapter.py          # 合作伙伴原始 JSON → 内部模型
-│  │     ├─ provider.py         # Provider 接口 + 工厂
-│  │     ├─ mock_provider.py    # Java OOP 演示数据
-│  │     ├─ remote_provider.py  # HTTP 访问 + 缓存 + 降级
-│  │     └─ event_emitter.py    # LearningEvent / Outbox / 投递
-│  ├─ domain/kc_graph.py        # Course / KC / 关系 + KST-lite（reachable frontier）
-│  ├─ workflows/                # study_plan / topic_tutor / kb_qa / plan_chat
-│  ├─ tools/                    # course_kb / kb_store / github_importer / web_search / app_state_store
-│  ├─ core/llm.py               # 多模型 fallback
-│  └─ router/workflow_router.py
-├─ tests/                       # 架构契约 / provider / adapter / policy / event 等
-└─ docs/
-   ├─ adaptive-learning-architecture.md
-   ├─ learner-state-contract.md
-   ├─ learning-events.md
-   └─ migration-from-legacy.md
-```
+- **不维护第二套画像**：SQLite Learner Model 是唯一真值，无 student_profile / 旧 mastery ±delta
+- **无 Quiz / Practice / Mistake 业务**：只做教学讲解与检查理解，不做练习系统
+- **弱证据保守**：`EXPLANATION_DELIVERED` 只更新曝光时间，`SELF_REPORTED_UNDERSTANDING` 只微调 confidence，绝不跳 mastery
+- **用户显式声明 > 模型推断**：`USER_EXPLICIT_*` 事件优先于行为推断
+- **多课程隔离**：Java 的掌握度绝不作为 Transformer 的画像
+- **不依赖任何外部画像服务**：无 Partner API / Remote Provider / 事件回传网关
 
-## 运行
+## 快速开始
 
 ```bash
 pip install -r requirements.txt
-cp .env.example .env        # 配置 OPENAI_* 或 XINGCHEN_*；LearnerState 默认 mock
+cp .env.example .env       # 配置 LLM key（或留空走演示模式）
 streamlit run app/streamlit_app.py
 ```
 
-未配置 `LEARNER_STATE_BASE_URL` 时默认使用 **Mock LearnerStateProvider**（Java OOP 演示数据），开箱即可体验完整自适应链路。
+首次使用会在 `data/learner_model.db` 自动建库；新用户无画像时系统正常运转（不编造默认值），
+用户填写背景/目标/偏好后产生 `USER_EXPLICIT_*` 事件形成初始画像。
+
+## 目录结构
+
+```
+src/edu_agent/
+├── learner_model/          # 本地动态学习者模型（SQLite）
+│   ├── db.py               # 连接 + DDL
+│   ├── repository.py       # 抽象接口（未来可换 PostgreSQL）
+│   ├── sqlite_repository.py
+│   ├── service.py          # 业务门面（事件闭环/画像操作）
+│   ├── change_log.py       # 画像变更记录
+│   ├── snapshot.py         # 画像快照
+│   ├── evidence/           # 事件 → 证据
+│   └── updaters/           # 定向更新器（knowledge/ability/preference/...）
+├── adaptive/               # 自适应引擎（Context/Temporal/Policy/Prompt）
+├── domain/learning/        # KC Graph / KST-lite（所有用户共享）
+├── workflows/              # study_plan / topic_tutor / kb_qa / plan_chat
+└── tools/                  # 知识库 / 状态存储等
+```
 
 ## 测试
 
@@ -115,4 +106,6 @@ streamlit run app/streamlit_app.py
 pytest tests/ -v
 ```
 
-测试覆盖：LearnerState schema / adapter / provider 降级 / 多课程隔离 / Context Selector / Adaptive Policy（mastery 差异、confidence 区分、前置触发复习、误解改变动作、时间衰减）/ Event 幂等与可靠性 / 架构契约（无本地 mastery 变更、无练习系统残留、个性化差异）。
+覆盖：SQLite 仓库 CRUD、事件 append-only、画像生命周期（fact/preference/misconception）、
+弱证据保守更新、用户显式覆盖、删除不留副本、多课程隔离、时间衰减、
+上下文选择差异、策略差异、闭环（Event→State→Decision）、无 partner/quiz 残留契约。

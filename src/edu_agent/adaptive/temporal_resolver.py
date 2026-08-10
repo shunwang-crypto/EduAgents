@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from edu_agent.adaptive.schemas import TemporalState
-from edu_agent.integrations.learner_state.schemas import KnowledgeItem
+from edu_agent.learner_model.schemas import KnowledgeItem
 
 
 def _parse_iso(iso: Optional[str]) -> Optional[datetime]:
