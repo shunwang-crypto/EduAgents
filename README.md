@@ -44,19 +44,28 @@ SQLite（data/learner_model.db）
 - **多课程隔离**：任意主题建立独立 course_id（`CUSTOM-{slug}-{hash8}`），Java 状态不污染 Python。
 - **用户显式声明 > 推断**：聊天中"我会 Python"→ Profile Fact；"以后简洁一点"→ 偏好；"忘记我做过 FastAPI"→ 真正删除。
 
-## 快速开始
+## 快速开始（WSL · conda 环境 `EduAgent`）
 
 ```bash
-# 后端
-pip install -r requirements.txt
-cp .env.example .env        # 可选配置 LLM key；无 key 走确定性回退
-uvicorn edu_agent.api.main:app --reload --port 8000
+# ---------- 后端（WSL 终端）----------
+cd ~/EduAgents
+conda activate EduAgent                 # conda 环境名 EduAgent（/home/shunw/miniforge3/envs/EduAgent）
+pip install -r requirements.txt         # 首次或依赖变更后执行；已装可跳过
+cp -n .env.example .env                 # 首次配置；已有 .env 时跳过（-n 不覆盖，避免丢旧配置）
+PYTHONPATH=src uvicorn edu_agent.api.main:app --reload --port 8000
 
-# 前端
-cd frontend
-npm install
-npm run dev                 # Vite 代理 /api → :8000
+# ---------- 前端（另开一个 WSL 终端）----------
+cd ~/EduAgents/frontend
+npm install                             # 首次或依赖变更后执行；已装可跳过
+npm run dev                             # http://localhost:5173，Vite 代理 /api → :8000
 ```
+
+说明：
+
+- **src-layout**：代码在 `src/edu_agent/`（无 pyproject/setup.py），启动必须带 `PYTHONPATH=src`，否则 `ModuleNotFoundError: edu_agent`。
+- **LLM 可选**：无 key 走确定性回退，可直接体验；有 key 填 `.env` 的 `OPENAI_API_KEY` / `OPENAI_BASE_URL`（默认 DeepSeek）。
+- **用户标识**：`LEARNER_MODEL_USER_ID` 留空时，请求必须带 `X-User-Id` 头（宿主嵌入场景）；本地开发可设为 `STU-001` 省去每次传头。
+- 数据库自动创建于 `data/learner_model.db`（WAL）；改了 schema 约束后需删除旧库再启动。
 
 打开 http://localhost:5173 → 普通对话直接聊天；点侧边栏「+」按课程主题创建课程；进入课程后点「学习计划」生成三阶段计划。
 
