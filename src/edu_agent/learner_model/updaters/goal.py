@@ -12,7 +12,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from edu_agent.learner_model.evidence.schemas import StructuredEvidence
+from edu_agent.learner_model.evidence_light import LightEvidence
 from edu_agent.learner_model.repository import LearnerRepository
 
 
@@ -131,7 +131,7 @@ def update_goal_progress(
 
 
 def apply_goal_evidence(
-    repo: LearnerRepository, evidence: StructuredEvidence
+    repo: LearnerRepository, evidence: LightEvidence
 ) -> Dict[str, Any]:
     """事件驱动的目标处理（GOAL_* 事件）。"""
     goal_id = evidence.entity_key

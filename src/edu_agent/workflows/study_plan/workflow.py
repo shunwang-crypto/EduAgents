@@ -1,5 +1,5 @@
 import time
-from typing import Any, Callable
+from typing import Any, Callable, Dict, Optional
 
 from edu_agent.workflows.study_plan.agents import (
     analyzer_agent,
@@ -263,12 +263,19 @@ def run_study_plan_workflow(
     knowledge_context: str = "无",
     learner_context: str = "",
     adaptive_instructions: str = "",
+    plan_context: Optional[dict] = None,
 ) -> dict:
     """学习规划主工作流。
 
     knowledge_context：知识库参考资料文本（可为"无"）。
-    learner_context / adaptive_instructions：AdaptiveService 产出的画像上下文与教学指令。
+    learner_context / adaptive_instructions：画像上下文与教学指令（可由 plan_context 生成）。
+    plan_context：PlanContext dict（known/unknown/review/background/style），
+                  若提供会自动格式化为 learner_context + adaptive_instructions。
     """
+    if plan_context:
+        learner_context = learner_context or _plan_context_to_text(plan_context)
+        adaptive_instructions = adaptive_instructions or _plan_context_instructions(plan_context)
+
     workflow_start = time.time()
     print(
         f"[study_plan] 开始生成学习计划: topic={student_input.topic!r} "
@@ -350,3 +357,39 @@ def run_study_plan_workflow(
         "review": review,
         "final_plan": review.final_plan_markdown,
     }
+
+
+def _plan_context_to_text(plan_context: Dict[str, object]) -> str:
+    """PlanContext → 注入 Planner 的画像上下文文本。"""
+    lines = ["学习者状态（来自本地 Learner Model）："]
+    known = plan_context.get("known_topics") or []
+    unknown = plan_context.get("unknown_topics") or []
+    review = plan_context.get("topics_needing_review") or []
+    if known:
+        lines.append(f"- 已了解/可跳过基础：{'、'.join(known[:6])}")
+    if unknown:
+        lines.append(f"- 新内容（按顺序学）：{'、'.join(unknown[:6])}")
+    if review:
+        lines.append(f"- 需要复习：{'、'.join(review[:6])}")
+    if plan_context.get("background"):
+        lines.append(f"- 背景：{plan_context['background']}")
+    if plan_context.get("preferred_style"):
+        lines.append(f"- 偏好：{plan_context['preferred_style']}")
+    if plan_context.get("semantic_memories"):
+        lines.append(f"- 长期记忆：{'；'.join(plan_context['semantic_memories'][:2])}")
+    return "\n".join(lines)
+
+
+def _plan_context_instructions(plan_context: Dict[str, object]) -> str:
+    """PlanContext → 教学指令（生成前就决定跳过/复习/重点）。"""
+    parts = []
+    if plan_context.get("known_topics"):
+        parts.append("已知内容压缩学时，不安排入门讲解")
+    if plan_context.get("topics_needing_review"):
+        parts.append("为需复习的内容安排回顾环节")
+    if plan_context.get("unknown_topics"):
+        parts.append("新内容按前置关系安排顺序")
+    note = plan_context.get("personalization_note")
+    if note:
+        parts.append(f"个性化说明：{note}")
+    return "；".join(parts) if parts else "按学生当前状态安排学习顺序与重点。"

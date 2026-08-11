@@ -1,9 +1,14 @@
-streamlit
+# 运行时依赖（Streamlit 已移除，正式产品为 FastAPI + React）
 python-dotenv
 pydantic
 langchain
 langchain-core
 langchain-openai
 langchain-tavily
-langgraph
+fastapi
+uvicorn
+pydantic-settings
+
+# 开发/测试
 pytest
+httpx

@@ -1,7 +1,6 @@
 """Learner Model Repository 抽象接口。
 
 业务代码（service/updaters）只依赖本接口，禁止直接执行 SQL。
-未来迁移 PostgreSQL 时只替换 sqlite_repository.py 的实现。
 事务语义：写方法不主动提交；由 `transaction()` 上下文统一 COMMIT/ROLLBACK。
 """
 
@@ -15,7 +14,6 @@ from typing import Any, Dict, List, Optional
 class LearnerRepository(ABC):
     """Learner Model 持久化抽象。所有行数据以 dict 返回。"""
 
-    # ---- 事务 --------------------------------------------------------------
     @abstractmethod
     def transaction(self) -> AbstractContextManager[None]: ...
 
@@ -72,16 +70,6 @@ class LearnerRepository(ABC):
     @abstractmethod
     def list_kcs(self, user_id: str, course_id: str) -> List[dict]: ...
 
-    # ---- abilities --------------------------------------------------------
-    @abstractmethod
-    def upsert_ability(self, ability: Dict[str, Any]) -> None: ...
-
-    @abstractmethod
-    def get_ability(self, user_id: str, course_id: str, ability_type: str) -> Optional[dict]: ...
-
-    @abstractmethod
-    def list_abilities(self, user_id: str, course_id: str) -> List[dict]: ...
-
     # ---- preferences ------------------------------------------------------
     @abstractmethod
     def upsert_preference(self, pref: Dict[str, Any]) -> None: ...
@@ -91,19 +79,6 @@ class LearnerRepository(ABC):
 
     @abstractmethod
     def list_preferences(self, user_id: str, course_id: str = "") -> List[dict]: ...
-
-    # ---- misconceptions（多实例：user+course+kc+key）-----------------------
-    @abstractmethod
-    def upsert_misconception(self, m: Dict[str, Any]) -> None: ...
-
-    @abstractmethod
-    def get_misconception(self, misconception_id: str) -> Optional[dict]: ...
-
-    @abstractmethod
-    def find_misconception(self, user_id: str, course_id: str, kc_id: str, misconception_key: str = "") -> Optional[dict]: ...
-
-    @abstractmethod
-    def list_misconceptions(self, user_id: str, course_id: str) -> List[dict]: ...
 
     # ---- semantic memories（课程隔离）-------------------------------------
     @abstractmethod
@@ -119,9 +94,6 @@ class LearnerRepository(ABC):
     def list_effective_memories(self, user_id: str, course_id: str) -> List[dict]: ...
 
     @abstractmethod
-    def list_memories(self, user_id: str, course_id: str = "") -> List[dict]: ...
-
-    @abstractmethod
     def delete_memory(self, user_id: str, memory_id: str) -> None: ...
 
     # ---- events（append-only + 幂等）--------------------------------------
@@ -135,20 +107,7 @@ class LearnerRepository(ABC):
     def list_events(self, user_id: str, course_id: str = "", limit: int = 200) -> List[dict]: ...
 
     @abstractmethod
-    def list_events_since(self, user_id: str, course_id: str, since_iso: str, limit: int = 1000) -> List[dict]: ...
-
-    @abstractmethod
     def count_events(self, user_id: str, course_id: str = "") -> int: ...
-
-    # ---- evidences（provenance + 幂等）------------------------------------
-    @abstractmethod
-    def insert_evidence(self, evidence: Dict[str, Any]) -> bool: ...
-
-    @abstractmethod
-    def evidence_exists(self, event_id: str, entity_type: str, entity_key: str, classifier_version: str = "rule-v1") -> bool: ...
-
-    @abstractmethod
-    def list_evidences(self, user_id: str, course_id: str = "", limit: int = 100) -> List[dict]: ...
 
     # ---- change log -------------------------------------------------------
     @abstractmethod
@@ -157,19 +116,40 @@ class LearnerRepository(ABC):
     @abstractmethod
     def list_changes(self, user_id: str, course_id: str = "", limit: int = 100) -> List[dict]: ...
 
-    # ---- snapshots --------------------------------------------------------
+    # ---- chat -------------------------------------------------------------
     @abstractmethod
-    def insert_snapshot(self, snapshot: Dict[str, Any]) -> None: ...
+    def upsert_conversation(self, conv: Dict[str, Any]) -> None: ...
 
     @abstractmethod
-    def list_snapshots(self, user_id: str, course_id: str = "", limit: int = 20) -> List[dict]: ...
-
-    # ---- adaptive decisions ----------------------------------------------
-    @abstractmethod
-    def insert_decision(self, decision: Dict[str, Any]) -> None: ...
+    def get_conversation(self, conversation_id: str) -> Optional[dict]: ...
 
     @abstractmethod
-    def list_decisions(self, user_id: str, course_id: str = "", limit: int = 50) -> List[dict]: ...
+    def get_course_conversation(self, user_id: str, course_id: str) -> Optional[dict]: ...
+
+    @abstractmethod
+    def insert_message(self, msg: Dict[str, Any]) -> None: ...
+
+    @abstractmethod
+    def list_messages(self, conversation_id: str, limit: int = 100) -> List[dict]: ...
+
+    # ---- study plans ------------------------------------------------------
+    @abstractmethod
+    def upsert_plan(self, plan: Dict[str, Any]) -> None: ...
+
+    @abstractmethod
+    def get_plan(self, user_id: str, course_id: str) -> Optional[dict]: ...
+
+    @abstractmethod
+    def upsert_plan_step(self, step: Dict[str, Any]) -> None: ...
+
+    @abstractmethod
+    def list_plan_steps(self, plan_id: str) -> List[dict]: ...
+
+    @abstractmethod
+    def get_plan_step(self, plan_id: str, step_id: str) -> Optional[dict]: ...
+
+    @abstractmethod
+    def update_plan_progress(self, plan_id: str, progress: float) -> None: ...
 
     # ---- domain courses ---------------------------------------------------
     @abstractmethod
@@ -180,6 +160,9 @@ class LearnerRepository(ABC):
 
     @abstractmethod
     def list_domain_courses(self) -> List[dict]: ...
+
+    @abstractmethod
+    def delete_domain_course(self, course_id: str) -> None: ...
 
     @abstractmethod
     def upsert_domain_kc(self, kc: Dict[str, Any]) -> None: ...

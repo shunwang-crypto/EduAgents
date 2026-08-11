@@ -1,1 +1,1 @@
-"""自适应引擎：Context Selector / Temporal Resolver / Policy / Prompt Builder。"""
+"""自适应模块：PlanContext + ChatContextBuilder（范围收缩后仅两个文件）。"""

@@ -1,7 +1,14 @@
-"""SQLite 连接管理 + V1 初始表结构。
+"""SQLite 连接管理 + Dynamic Learner Model Baseline Schema（SCHEMA_VERSION=1）。
 
-Schema 升级走 `migrations.py`（PRAGMA user_version 驱动），
-本文件只负责建 V1 表；后续版本在 migrations 中 ALTER/重建/新增。
+范围收缩后的正式 Baseline：
+- 保留：learners / learner_profile_facts / learning_goals / learner_course_states /
+  learner_kc_states / learner_preferences / learner_semantic_memories /
+  learning_events / profile_change_log
+- 新增：chat_conversations / chat_messages / study_plans / plan_steps /
+  domain_courses / domain_kcs / domain_kc_relations
+- 删除：learner_abilities / learner_misconceptions / learner_evidences /
+  adaptive_decisions / learner_state_snapshots（无消费方）
+- 不做旧库迁移：旧开发阶段数据直接弃用，首次启动建干净表。
 """
 
 from __future__ import annotations
@@ -12,16 +19,16 @@ from typing import Optional
 
 DEFAULT_DB_PATH = Path(__file__).resolve().parents[3] / "data" / "learner_model.db"
 
-# 与 migrations.CURRENT_SCHEMA_VERSION 保持一致（V1 初始）
 SCHEMA_VERSION = 1
 
-_V1_DDL = """
+_DDL = """
 CREATE TABLE IF NOT EXISTS learners (
     user_id TEXT PRIMARY KEY,
     display_name TEXT DEFAULT '',
     education_level TEXT DEFAULT '',
     language TEXT DEFAULT 'zh',
     background TEXT DEFAULT '',
+    global_state_version INTEGER DEFAULT 1,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -43,7 +50,7 @@ CREATE TABLE IF NOT EXISTS learner_profile_facts (
 );
 
 CREATE TABLE IF NOT EXISTS learning_goals (
-    goal_id TEXT PRIMARY KEY,
+    goal_id TEXT NOT NULL,
     user_id TEXT NOT NULL,
     course_id TEXT DEFAULT '',
     name TEXT NOT NULL,
@@ -54,7 +61,8 @@ CREATE TABLE IF NOT EXISTS learning_goals (
     target_kcs_json TEXT DEFAULT '[]',
     deadline TEXT,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, goal_id)
 );
 
 CREATE TABLE IF NOT EXISTS learner_course_states (
@@ -86,20 +94,6 @@ CREATE TABLE IF NOT EXISTS learner_kc_states (
     PRIMARY KEY (user_id, course_id, kc_id)
 );
 
-CREATE TABLE IF NOT EXISTS learner_abilities (
-    user_id TEXT NOT NULL,
-    course_id TEXT NOT NULL,
-    ability_type TEXT NOT NULL,
-    score REAL,
-    confidence REAL,
-    trend TEXT,
-    evidence_count INTEGER DEFAULT 0,
-    first_evidence_at TEXT,
-    last_evidence_at TEXT,
-    updated_at TEXT NOT NULL,
-    PRIMARY KEY (user_id, course_id, ability_type)
-);
-
 CREATE TABLE IF NOT EXISTS learner_preferences (
     user_id TEXT NOT NULL,
     course_id TEXT NOT NULL DEFAULT '',
@@ -113,25 +107,6 @@ CREATE TABLE IF NOT EXISTS learner_preferences (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     PRIMARY KEY (user_id, course_id, preference_key)
-);
-
-CREATE TABLE IF NOT EXISTS learner_misconceptions (
-    misconception_id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL,
-    course_id TEXT NOT NULL,
-    kc_id TEXT NOT NULL,
-    misconception_key TEXT DEFAULT '',
-    type TEXT DEFAULT 'conceptual_confusion',
-    description TEXT DEFAULT '',
-    severity REAL DEFAULT 0.5,
-    confidence REAL DEFAULT 0.3,
-    occurrence_count INTEGER DEFAULT 1,
-    status TEXT DEFAULT 'candidate',
-    first_seen_at TEXT,
-    last_seen_at TEXT,
-    resolved_at TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS learner_semantic_memories (
@@ -182,19 +157,85 @@ CREATE TABLE IF NOT EXISTS profile_change_log (
 );
 CREATE INDEX IF NOT EXISTS idx_changelog_user ON profile_change_log(user_id, created_at);
 
-CREATE TABLE IF NOT EXISTS learner_state_snapshots (
-    snapshot_id TEXT PRIMARY KEY,
+-- 聊天（ChatGPT 风格正式保存）
+CREATE TABLE IF NOT EXISTS chat_conversations (
+    conversation_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    course_id TEXT DEFAULT '',
+    title TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_conv_user_course ON chat_conversations(user_id, course_id);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+    message_id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    metadata_json TEXT DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_msg_conv ON chat_messages(conversation_id, created_at);
+
+-- 学习计划
+CREATE TABLE IF NOT EXISTS study_plans (
+    plan_id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
     course_id TEXT NOT NULL,
-    state_version INTEGER DEFAULT 1,
-    snapshot_json TEXT NOT NULL,
+    goal_id TEXT DEFAULT '',
+    title TEXT DEFAULT '',
+    summary TEXT DEFAULT '',
+    plan_markdown TEXT NOT NULL,
+    progress REAL DEFAULT 0.0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_plans_course ON study_plans(user_id, course_id);
+
+CREATE TABLE IF NOT EXISTS plan_steps (
+    step_id TEXT PRIMARY KEY,
+    plan_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT DEFAULT '',
+    minutes INTEGER DEFAULT 30,
+    status TEXT DEFAULT 'not_started',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (plan_id, seq)
+);
+
+-- 自定义课程 Domain Model（学习计划生成时由 KnowledgeMap 构建，跨重启恢复）
+CREATE TABLE IF NOT EXISTS domain_courses (
+    course_id TEXT PRIMARY KEY,
+    title TEXT DEFAULT '',
+    topic TEXT DEFAULT '',
     created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS domain_kcs (
+    course_id TEXT NOT NULL,
+    kc_id TEXT NOT NULL,
+    title TEXT DEFAULT '',
+    category TEXT DEFAULT 'core',
+    description TEXT DEFAULT '',
+    difficulty TEXT DEFAULT 'medium',
+    PRIMARY KEY (course_id, kc_id)
+);
+
+CREATE TABLE IF NOT EXISTS domain_kc_relations (
+    course_id TEXT NOT NULL,
+    from_kc TEXT NOT NULL,
+    to_kc TEXT NOT NULL,
+    relation TEXT NOT NULL,
+    weight REAL DEFAULT 1.0,
+    PRIMARY KEY (course_id, from_kc, to_kc, relation)
 );
 """
 
 
 def connect(db_path: Optional[str | Path] = None) -> sqlite3.Connection:
-    """打开数据库连接（不初始化 schema，由 migrate 负责）。"""
     path = Path(db_path) if db_path else DEFAULT_DB_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path), timeout=10)
@@ -205,16 +246,13 @@ def connect(db_path: Optional[str | Path] = None) -> sqlite3.Connection:
     return conn
 
 
-def init_v1(conn: sqlite3.Connection) -> None:
-    """只建 V1 初始表（幂等）。"""
-    conn.executescript(_V1_DDL)
+def init_db(conn: sqlite3.Connection) -> None:
+    """建 Baseline 表（幂等）。"""
+    conn.executescript(_DDL)
     conn.commit()
 
 
 def get_connection(db_path: Optional[str | Path] = None) -> sqlite3.Connection:
-    """便捷入口：连接 + 迁移到最新版本。"""
-    from edu_agent.learner_model.migrations import migrate
-
     conn = connect(db_path)
-    migrate(conn)
+    init_db(conn)
     return conn
