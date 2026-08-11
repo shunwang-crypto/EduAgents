@@ -90,10 +90,11 @@ class LearnerModelService:
         return self._repo
 
     def close(self) -> None:
-        conn = getattr(self._repo, "_conn", None)
-        if conn is not None:
+        """关闭当前线程持有的连接（线程本地；其他线程连接不受影响）。"""
+        closer = getattr(self._repo, "close", None)
+        if closer is not None:
             try:
-                conn.close()
+                closer()
             except Exception:  # noqa: BLE001
                 pass
 

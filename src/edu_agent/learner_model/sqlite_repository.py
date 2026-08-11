@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from contextlib import contextmanager
 from typing import Any, Dict, Iterator, List, Optional
 
@@ -22,8 +23,36 @@ def _row_to_dict(row: sqlite3.Row | None) -> Optional[dict]:
 class SQLiteLearnerRepository(LearnerRepository):
     def __init__(self, db_path: Optional[str] = None) -> None:
         self._db_path = db_path
-        self._conn = get_connection(db_path)
-        self._tx_depth = 0
+        # 每线程一条连接（thread-local）：FastAPI 同步路由在线程池执行，
+        # 共享单例连接会被多线程同时使用而损坏；连接跨线程复用同样非法。
+        self._local = threading.local()
+
+    def _conn(self) -> sqlite3.Connection:
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            conn = get_connection(self._db_path)
+            self._local.conn = conn
+            if not hasattr(self._local, "tx_depth"):
+                self._local.tx_depth = 0
+        return conn
+
+    @property
+    def _tx_depth(self) -> int:
+        return getattr(self._local, "tx_depth", 0)
+
+    @_tx_depth.setter
+    def _tx_depth(self, value: int) -> None:
+        self._local.tx_depth = value
+
+    def close(self) -> None:
+        """关闭当前线程持有的连接（用于显式生命周期管理）。"""
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self._local.conn = None
 
     # ------------------------------------------------------------------
     # 事务
@@ -36,16 +65,16 @@ class SQLiteLearnerRepository(LearnerRepository):
         self._tx_depth += 1
         try:
             yield
-            self._conn.commit()
+            self._conn().commit()
         except Exception:
-            self._conn.rollback()
+            self._conn().rollback()
             raise
         finally:
             self._tx_depth -= 1
 
     def _commit(self) -> None:
         if self._tx_depth == 0:
-            self._conn.commit()
+            self._conn().commit()
 
     def _insert_or_update(self, table: str, row: Dict[str, Any], key_cols: List[str]) -> None:
         cols = list(row.keys())
@@ -55,14 +84,14 @@ class SQLiteLearnerRepository(LearnerRepository):
             f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({placeholders}) "
             f"ON CONFLICT({', '.join(key_cols)}) DO UPDATE SET {update_set}"
         )
-        self._conn.execute(sql, row)
+        self._conn().execute(sql, row)
         self._commit()
 
     def _fetchone(self, sql: str, params: tuple = ()) -> Optional[dict]:
-        return _row_to_dict(self._conn.execute(sql, params).fetchone())
+        return _row_to_dict(self._conn().execute(sql, params).fetchone())
 
     def _fetchall(self, sql: str, params: tuple = ()) -> List[dict]:
-        return [dict(r) for r in self._conn.execute(sql, params).fetchall()]
+        return [dict(r) for r in self._conn().execute(sql, params).fetchall()]
 
     # ---- learners ---------------------------------------------------------
     def ensure_learner(self, user_id: str, display_name: str = "") -> None:
@@ -77,7 +106,7 @@ class SQLiteLearnerRepository(LearnerRepository):
                 ["user_id"],
             )
         elif display_name and row.get("display_name") != display_name:
-            self._conn.execute(
+            self._conn().execute(
                 "UPDATE learners SET display_name=?, updated_at=? WHERE user_id=?",
                 (display_name, now, user_id),
             )
@@ -89,7 +118,7 @@ class SQLiteLearnerRepository(LearnerRepository):
     def bump_global_version(self, user_id: str) -> int:
         cur = self._fetchone("SELECT global_state_version FROM learners WHERE user_id=?", (user_id,))
         new_version = (cur["global_state_version"] + 1) if cur else 1
-        self._conn.execute(
+        self._conn().execute(
             "INSERT INTO learners (user_id, global_state_version, created_at, updated_at) "
             "VALUES (?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET global_state_version=?, updated_at=?",
             (user_id, new_version, _now_iso(), _now_iso(), new_version, _now_iso()),
@@ -114,7 +143,7 @@ class SQLiteLearnerRepository(LearnerRepository):
         )
 
     def delete_profile_fact(self, user_id: str, fact_id: str) -> None:
-        self._conn.execute(
+        self._conn().execute(
             "DELETE FROM learner_profile_facts WHERE user_id=? AND fact_id=?", (user_id, fact_id)
         )
         self._commit()
@@ -154,7 +183,7 @@ class SQLiteLearnerRepository(LearnerRepository):
             (user_id, course_id),
         )
         new_version = (cur["state_version"] + 1) if cur else 1
-        self._conn.execute(
+        self._conn().execute(
             "INSERT INTO learner_course_states (user_id, course_id, state_version, progress, current_stage, current_goal_id, updated_at) "
             "VALUES (?, ?, ?, 0.0, '', '', ?) ON CONFLICT(user_id, course_id) "
             "DO UPDATE SET state_version=?, updated_at=?",
@@ -230,7 +259,7 @@ class SQLiteLearnerRepository(LearnerRepository):
         return self.list_global_memories(user_id)
 
     def delete_memory(self, user_id: str, memory_id: str) -> None:
-        self._conn.execute(
+        self._conn().execute(
             "DELETE FROM learner_semantic_memories WHERE user_id=? AND memory_id=?",
             (user_id, memory_id),
         )
@@ -238,7 +267,7 @@ class SQLiteLearnerRepository(LearnerRepository):
 
     # ---- events -----------------------------------------------------------
     def insert_event(self, event: Dict[str, Any]) -> bool:
-        cur = self._conn.execute(
+        cur = self._conn().execute(
             "INSERT OR IGNORE INTO learning_events (event_id, schema_version, event_type, user_id, course_id, "
             "goal_id, kc_id, session_id, timestamp, source, evidence_strength, payload_json, created_at) "
             "VALUES (:event_id, :schema_version, :event_type, :user_id, :course_id, :goal_id, :kc_id, "
@@ -249,7 +278,7 @@ class SQLiteLearnerRepository(LearnerRepository):
         return cur.rowcount > 0
 
     def event_exists(self, event_id: str) -> bool:
-        row = self._conn.execute("SELECT 1 FROM learning_events WHERE event_id=?", (event_id,)).fetchone()
+        row = self._conn().execute("SELECT 1 FROM learning_events WHERE event_id=?", (event_id,)).fetchone()
         return row is not None
 
     def list_events(self, user_id: str, course_id: str = "", limit: int = 200) -> List[dict]:
@@ -266,19 +295,19 @@ class SQLiteLearnerRepository(LearnerRepository):
 
     def count_events(self, user_id: str, course_id: str = "") -> int:
         if course_id:
-            row = self._conn.execute(
+            row = self._conn().execute(
                 "SELECT COUNT(*) AS n FROM learning_events WHERE user_id=? AND course_id=?",
                 (user_id, course_id),
             ).fetchone()
         else:
-            row = self._conn.execute(
+            row = self._conn().execute(
                 "SELECT COUNT(*) AS n FROM learning_events WHERE user_id=?", (user_id,)
             ).fetchone()
         return int(row["n"]) if row else 0
 
     # ---- change log -------------------------------------------------------
     def insert_change(self, change: Dict[str, Any]) -> None:
-        self._conn.execute(
+        self._conn().execute(
             "INSERT INTO profile_change_log (change_id, user_id, course_id, entity_type, entity_id, "
             "operation, before_json, after_json, reason, evidence_ids_json, created_at) "
             "VALUES (:change_id, :user_id, :course_id, :entity_type, :entity_id, :operation, "
@@ -316,12 +345,12 @@ class SQLiteLearnerRepository(LearnerRepository):
         )
 
     def insert_message(self, msg: Dict[str, Any]) -> None:
-        self._conn.execute(
+        self._conn().execute(
             "INSERT INTO chat_messages (message_id, conversation_id, role, content, created_at, metadata_json) "
             "VALUES (:message_id, :conversation_id, :role, :content, :created_at, :metadata_json)",
             msg,
         )
-        self._conn.execute(
+        self._conn().execute(
             "UPDATE chat_conversations SET updated_at=? WHERE conversation_id=?",
             (msg["created_at"], msg["conversation_id"]),
         )
@@ -358,7 +387,7 @@ class SQLiteLearnerRepository(LearnerRepository):
         )
 
     def update_plan_progress(self, plan_id: str, progress: float) -> None:
-        self._conn.execute(
+        self._conn().execute(
             "UPDATE study_plans SET progress=?, updated_at=? WHERE plan_id=?",
             (progress, _now_iso(), plan_id),
         )
@@ -375,9 +404,9 @@ class SQLiteLearnerRepository(LearnerRepository):
         return self._fetchall("SELECT * FROM domain_courses ORDER BY created_at DESC")
 
     def delete_domain_course(self, course_id: str) -> None:
-        self._conn.execute("DELETE FROM domain_courses WHERE course_id=?", (course_id,))
-        self._conn.execute("DELETE FROM domain_kcs WHERE course_id=?", (course_id,))
-        self._conn.execute("DELETE FROM domain_kc_relations WHERE course_id=?", (course_id,))
+        self._conn().execute("DELETE FROM domain_courses WHERE course_id=?", (course_id,))
+        self._conn().execute("DELETE FROM domain_kcs WHERE course_id=?", (course_id,))
+        self._conn().execute("DELETE FROM domain_kc_relations WHERE course_id=?", (course_id,))
         self._commit()
 
     def upsert_domain_kc(self, kc: Dict[str, Any]) -> None:

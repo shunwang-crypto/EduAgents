@@ -238,7 +238,10 @@ CREATE TABLE IF NOT EXISTS domain_kc_relations (
 def connect(db_path: Optional[str | Path] = None) -> sqlite3.Connection:
     path = Path(db_path) if db_path else DEFAULT_DB_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path), timeout=10)
+    # check_same_thread=False：LearnerModelService 进程级共享连接（单例避免 WAL 多连接锁），
+    # 而 FastAPI 同步路由在线程池执行，连接会被不同线程复用。
+    # SQLite threadsafety=SERIALIZED + WAL + busy_timeout + 短事务（transaction()）下跨线程安全。
+    conn = sqlite3.connect(str(path), timeout=10, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
