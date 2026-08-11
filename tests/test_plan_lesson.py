@@ -32,6 +32,73 @@ def client(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# 离线 mock 计划生成工作流：避免真实 LLM 网络调用（7 个 agent 步骤）。
+# 本文件只验证 lesson/plan 的行为（缓存 / 归属 / 配置 / mastery），
+# 不依赖计划正文内容，故用确定性假数据替代 run_study_plan_workflow。
+# ---------------------------------------------------------------------------
+
+
+class _FakeNode:
+    def __init__(self, **kw):
+        self._d = kw
+
+    def model_dump(self):
+        return self._d
+
+
+class _FakeKnowledgeMap:
+    def __init__(self, nodes):
+        self.nodes = nodes
+
+
+@pytest.fixture(autouse=True)
+def mock_plan_workflow(monkeypatch):
+    def fake_workflow(*args, **kwargs):
+        nodes = [
+            _FakeNode(
+                id="KC1",
+                title="变量与类型",
+                summary="认识变量与基本类型",
+                learning_objective="能定义并使用变量",
+                prerequisites=[],
+                stage_id="stage-1",
+                stage_title="基础准备",
+                stage_order=1,
+                difficulty="easy",
+                estimated_minutes=30,
+            ),
+            _FakeNode(
+                id="KC2",
+                title="控制流",
+                summary="条件判断与循环",
+                learning_objective="能编写循环与分支",
+                prerequisites=["KC1"],
+                stage_id="stage-2",
+                stage_title="核心学习",
+                stage_order=2,
+                difficulty="medium",
+                estimated_minutes=45,
+            ),
+        ]
+        return {
+            "final_plan": "## 学习计划\n1. 变量与类型\n2. 控制流",
+            "knowledge_map": _FakeKnowledgeMap(nodes),
+            "analysis": {},
+            "decomposition": {},
+            "research": {},
+            "evaluated_research": {},
+            "draft_plan": {},
+            "validation": {},
+            "review": {"review_summary": "ok"},
+        }
+
+    monkeypatch.setattr(
+        "edu_agent.application.study_plan_service.run_study_plan_workflow",
+        fake_workflow,
+    )
+
+
+# ---------------------------------------------------------------------------
 # 课程解析器：token/word boundary（修复 "javascript" 误命中 "java"）
 # ---------------------------------------------------------------------------
 
