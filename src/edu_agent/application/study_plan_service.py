@@ -75,30 +75,44 @@ def generate_plan(
     )
     result = run_study_plan_workflow(
         student_input,
-        learner_context="",
-        adaptive_instructions="",
         plan_context=plan_context,
     )
     final_plan = result.get("final_plan", "")
 
-    # 持久化 plan + steps（KnowledgeMap nodes → plan_steps；node.id 即 kc_id）
+    # 持久化 plan + steps（KnowledgeMap nodes → plan_steps；node.id 即 kc_id；
+    # step_id 与 kc_id 分离：step_id=PLANSTEP-{uuid}，kc_id=KnowledgeNode.id）
     plan_id = f"PLAN-{uuid.uuid4().hex[:10]}"
     km = result.get("knowledge_map")
     nodes = [n.model_dump() for n in (km.nodes if km and hasattr(km, "nodes") else [])]
     summary = _plan_summary(plan_context, nodes)
-    learner.repo.upsert_plan(
-        {"plan_id": plan_id, "user_id": user_id, "course_id": course_id,
-         "goal_id": goal_id, "title": f"{course_info.get('display_name', course_id)} 学习计划",
-         "summary": summary, "plan_markdown": final_plan, "progress": 0.0,
-         "created_at": _now_iso(), "updated_at": _now_iso()}
-    )
-    for idx, node in enumerate(nodes, start=1):
-        learner.repo.upsert_plan_step(
-            {"step_id": node.get("id") or f"step-{idx}", "plan_id": plan_id, "seq": idx,
-             "title": node.get("title", ""), "description": node.get("summary", ""),
-             "minutes": int(node.get("estimated_minutes", 30) or 30),
-             "status": "not_started", "created_at": _now_iso(), "updated_at": _now_iso()}
+
+    # 每课程一个 current plan：重新生成 = 事务替换旧 plan+steps，失败旧 plan 仍可用
+    with learner.repo.transaction():
+        old_plan = learner.repo.get_plan(user_id, course_id)
+        if old_plan is not None:
+            learner.repo.delete_plan(old_plan["plan_id"])
+        learner.repo.upsert_plan(
+            {"plan_id": plan_id, "user_id": user_id, "course_id": course_id,
+             "goal_id": goal_id, "title": f"{course_info.get('display_name', course_id)} 学习计划",
+             "summary": summary, "plan_markdown": final_plan, "progress": 0.0,
+             "created_at": _now_iso(), "updated_at": _now_iso()}
         )
+        for idx, node in enumerate(nodes, start=1):
+            learner.repo.upsert_plan_step(
+                {"step_id": f"PLANSTEP-{uuid.uuid4().hex[:10]}", "plan_id": plan_id, "seq": idx,
+                 "stage_id": node.get("stage_id", "stage-1"),
+                 "stage_title": node.get("stage_title", ""),
+                 "stage_order": int(node.get("stage_order", 1) or 1),
+                 "kc_id": node.get("id") or "",
+                 "title": node.get("title", ""), "description": node.get("summary", ""),
+                 "learning_objective": node.get("learning_objective", ""),
+                 "prerequisites_json": json.dumps(node.get("prerequisites") or [], ensure_ascii=False),
+                 "difficulty": node.get("difficulty", ""),
+                 "minutes": int(node.get("estimated_minutes", 30) or 30),
+                 "status": "not_started", "created_at": _now_iso(), "updated_at": _now_iso()}
+            )
+    # 说明：learning_activity 与 check_method 随 node 保留在知识地图/计划文档中，
+    # plan_steps 持久化核心展示字段（title/objective/prerequisites/difficulty 已完整保存）。
 
     # 目标 target_kcs + 课程 Domain 注册
     if nodes:
@@ -124,12 +138,39 @@ def generate_plan(
 
 def get_plan(user_id: str, course_id: str,
              learner: Optional[LearnerModelService] = None) -> Optional[dict]:
-    """取当前课程计划（plan + steps）。"""
+    """取当前课程计划（plan + 三阶段 steps）。"""
     learner = learner or LearnerModelService()
     plan = learner.repo.get_plan(user_id, course_id)
     if plan is None:
         return None
     steps = learner.repo.list_plan_steps(plan["plan_id"])
+    step_dicts = [
+        {
+            "step_id": s["step_id"], "seq": s["seq"],
+            "stage_id": s.get("stage_id", "stage-1"),
+            "stage_title": s.get("stage_title", ""),
+            "stage_order": s.get("stage_order", 1),
+            "kc_id": s.get("kc_id", ""),
+            "title": s["title"], "description": s.get("description", ""),
+            "learning_objective": s.get("learning_objective", ""),
+            "prerequisites": json.loads(s.get("prerequisites_json") or "[]") or [],
+            "difficulty": s.get("difficulty", ""),
+            "minutes": s.get("minutes", 30),
+            "status": s.get("status", "not_started"),
+        }
+        for s in steps
+    ]
+    # 三阶段分组（stage_order 1→2→3；无阶段信息时兜底归为阶段 1）
+    stages: Dict[int, dict] = {}
+    for step in step_dicts:
+        order = int(step.get("stage_order", 1) or 1)
+        group = stages.setdefault(
+            order,
+            {"stage_id": step.get("stage_id", f"stage-{order}"),
+             "stage_title": step.get("stage_title") or _DEFAULT_STAGE_TITLES.get(order, f"阶段 {order}"),
+             "order": order, "steps": []},
+        )
+        group["steps"].append(step)
     return {
         "plan_id": plan["plan_id"],
         "course_id": plan["course_id"],
@@ -140,12 +181,37 @@ def get_plan(user_id: str, course_id: str,
         "progress": float(plan.get("progress", 0.0)),
         "created_at": plan.get("created_at"),
         "updated_at": plan.get("updated_at"),
-        "steps": [
-            {"step_id": s["step_id"], "seq": s["seq"], "title": s["title"],
-             "description": s.get("description", ""), "minutes": s.get("minutes", 30),
-             "status": s.get("status", "not_started")}
-            for s in steps
-        ],
+        "stages": [stages[order] for order in sorted(stages)],
+        "steps": step_dicts,
+    }
+
+
+_DEFAULT_STAGE_TITLES = {1: "基础准备", 2: "核心学习", 3: "综合应用"}
+
+
+def get_step(user_id: str, course_id: str, step_id: str,
+             learner: Optional[LearnerModelService] = None) -> dict:
+    """取单个计划步骤，并校验属于 user+course（Chat plan_step context / GET endpoint 用）。"""
+    learner = learner or LearnerModelService()
+    step = learner.repo.get_plan_step_by_id(user_id, course_id, step_id)
+    if step is None:
+        raise KeyError(f"plan step not found: {step_id}")
+    return {
+        "step_id": step["step_id"],
+        "plan_id": step["plan_id"],
+        "seq": step["seq"],
+        "stage_id": step.get("stage_id", "stage-1"),
+        "stage_title": step.get("stage_title", ""),
+        "stage_order": step.get("stage_order", 1),
+        "kc_id": step.get("kc_id", ""),
+        "title": step["title"],
+        "description": step.get("description", ""),
+        "learning_objective": step.get("learning_objective", ""),
+        "prerequisites": json.loads(step.get("prerequisites_json") or "[]") or [],
+        "difficulty": step.get("difficulty", ""),
+        "minutes": step.get("minutes", 30),
+        "status": step.get("status", "not_started"),
+        "updated_at": step.get("updated_at"),
     }
 
 

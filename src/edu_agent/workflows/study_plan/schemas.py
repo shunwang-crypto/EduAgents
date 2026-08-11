@@ -2,6 +2,9 @@ from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
+STAGE_COUNT = 3
+"""学习计划一级结构固定为 3 个阶段（基础准备 / 核心学习 / 综合应用，标题可自定义）。"""
+
 
 class StudentInput(BaseModel):
     topic: str = Field(description="学生想学习的内容")
@@ -33,17 +36,26 @@ class ResearchResult(BaseModel):
     resources: List[WebResource] = Field(description="推荐资源列表")
 
 
+class LearningStageSuggestion(BaseModel):
+    """固定三阶段之一（exactly 3 个）。"""
+
+    stage_id: str = Field(description="阶段稳定标识，如 stage-1/stage-2/stage-3")
+    title: str = Field(description="阶段标题（默认：基础准备/核心学习/综合应用，可按主题自定义）")
+    objective: str = Field(description="该阶段要达成的目标")
+    order: int = Field(ge=1, le=3, description="阶段顺序 1-3")
+
+
 class DecompositionResult(BaseModel):
     core_concepts: List[str] = Field(description="核心知识点")
     prerequisite_concepts: List[str] = Field(description="前置知识点")
     learning_sequence: List[str] = Field(description="推荐学习顺序")
     difficulty_points: List[str] = Field(description="学习难点")
-    stage_suggestions: List[str] = Field(description="阶段划分建议")
+    stages: List[LearningStageSuggestion] = Field(description="固定 3 个阶段，按 order 1→2→3")
     application_directions: List[str] = Field(description="推荐应用/产出方向（案例、项目等）")
 
 
 class KnowledgeNode(BaseModel):
-    id: str = Field(description="知识节点稳定标识")
+    id: str = Field(description="知识节点稳定标识（即 kc_id）")
     title: str = Field(description="知识点名称")
     category: str = Field(description="知识点分类")
     parent_id: Optional[str] = Field(default=None, description="父节点标识")
@@ -51,10 +63,12 @@ class KnowledgeNode(BaseModel):
     prerequisites: List[str] = Field(default_factory=list, description="前置知识点名称")
     difficulty: str = Field(description="难度等级")
     estimated_minutes: int = Field(ge=10, le=600, description="建议学习时间，单位：分钟")
-    stage: str = Field(description="所属学习阶段")
+    stage_id: str = Field(description="所属阶段标识（stage-1/2/3）")
+    stage_title: str = Field(description="所属阶段标题")
+    stage_order: int = Field(ge=1, le=3, description="所属阶段顺序")
     learning_objective: str = Field(description="可检查的学习目标")
-    application_task: str = Field(description="建议应用/产出任务（案例或小项目）")
-    check_method: str = Field(description="完成检查方式")
+    learning_activity: str = Field(description="建议学习活动（阅读/代码演示/案例观察/小功能实现/笔记整理/项目应用/资料查阅/总结）")
+    check_method: str = Field(description="完成检查方式（如何确认步骤已完成，如完成阅读/运行示例/写出总结）")
 
 
 class KnowledgeMap(BaseModel):

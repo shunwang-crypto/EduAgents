@@ -1,0 +1,177 @@
+/* GPT 风格 Markdown 渲染（RichMarkdown 专用，不依赖浏览器默认样式） */
+
+.rich-markdown {
+  font-size: 15px;
+  line-height: 1.75;
+  color: var(--text-primary, #1a1a1a);
+  word-break: break-word;
+}
+
+.rich-markdown > *:first-child {
+  margin-top: 0;
+}
+
+.rich-markdown > *:last-child {
+  margin-bottom: 0;
+}
+
+.rich-markdown p {
+  margin: 0.6em 0;
+}
+
+.rich-markdown h1,
+.rich-markdown h2,
+.rich-markdown h3,
+.rich-markdown h4 {
+  margin: 1.2em 0 0.5em;
+  line-height: 1.35;
+  font-weight: 650;
+}
+
+.rich-markdown h1 { font-size: 1.5em; }
+.rich-markdown h2 { font-size: 1.3em; border-bottom: 1px solid var(--border, #e5e5e5); padding-bottom: 0.25em; }
+.rich-markdown h3 { font-size: 1.15em; }
+.rich-markdown h4 { font-size: 1.02em; }
+
+.rich-markdown ul,
+.rich-markdown ol {
+  margin: 0.5em 0;
+  padding-left: 1.5em;
+}
+.rich-markdown li {
+  margin: 0.25em 0;
+}
+.rich-markdown li > ul,
+.rich-markdown li > ol {
+  margin: 0.2em 0;
+}
+
+.rich-markdown blockquote {
+  margin: 0.8em 0;
+  padding: 0.1em 1em;
+  border-left: 3px solid var(--border, #e5e5e5);
+  color: var(--text-secondary, #666);
+  background: var(--bg-surface, #fafafa);
+  border-radius: 0 var(--radius-sm, 8px) var(--radius-sm, 8px) 0;
+}
+
+.rich-markdown hr {
+  border: none;
+  border-top: 1px solid var(--border, #e5e5e5);
+  margin: 1.2em 0;
+}
+
+.rich-markdown a {
+  color: var(--primary, #176b55);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.rich-markdown strong {
+  font-weight: 650;
+}
+
+.rich-markdown code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.88em;
+  background: rgba(0, 0, 0, 0.06);
+  border-radius: 4px;
+  padding: 0.12em 0.35em;
+}
+
+.rich-markdown pre {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  overflow-x: auto;
+}
+
+/* 代码块（深色 surface + 语言标签 + 复制按钮） */
+.md-code-block {
+  margin: 0.8em 0;
+  border-radius: var(--radius-md, 10px);
+  overflow: hidden;
+  background: #1e1e24;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.md-code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.35rem 0.75rem;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.md-code-lang {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.65);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.md-copy-btn {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.8);
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 6px;
+  padding: 2px 10px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.md-copy-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.md-code-block pre {
+  padding: 0.8rem 1rem;
+}
+
+.md-code-block pre code {
+  background: transparent;
+  padding: 0;
+  color: #e6e6e6;
+  font-size: 13.5px;
+  line-height: 1.6;
+}
+
+/* 表格：横向滚动容器 + 轻边框 */
+.md-table-wrap {
+  margin: 0.8em 0;
+  overflow-x: auto;
+  border: 1px solid var(--border, #e5e5e5);
+  border-radius: var(--radius-sm, 8px);
+}
+
+.md-table-wrap table {
+  border-collapse: collapse;
+  width: 100%;
+  min-width: 480px;
+  font-size: 0.95em;
+}
+
+.md-table-wrap th,
+.md-table-wrap td {
+  border: 1px solid var(--border, #e5e5e5);
+  padding: 0.45rem 0.75rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+.md-table-wrap th {
+  background: var(--bg-surface, #f6f6f6);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* 数学：长公式可横向滚动，防止撑破页面 */
+.rich-markdown .katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.75rem 0;
+}
+
+.rich-markdown .katex {
+  font-size: 1.05em;
+}

@@ -10,8 +10,17 @@ if str(SRC_DIR) not in sys.path:
 from edu_agent.workflows.study_plan.knowledge_map import build_knowledge_map  # noqa: E402
 from edu_agent.workflows.study_plan.schemas import (  # noqa: E402
     DecompositionResult,
+    LearningStageSuggestion,
     StudentInput,
 )
+
+
+def _three_stages() -> list:
+    return [
+        LearningStageSuggestion(stage_id="stage-1", title="基础准备", objective="补齐前置", order=1),
+        LearningStageSuggestion(stage_id="stage-2", title="核心学习", objective="掌握核心", order=2),
+        LearningStageSuggestion(stage_id="stage-3", title="综合应用", objective="完成案例", order=3),
+    ]
 
 
 def test_build_knowledge_map_creates_categories_and_path():
@@ -27,7 +36,7 @@ def test_build_knowledge_map_creates_categories_and_path():
         core_concepts=["二叉树节点结构", "前中后序遍历"],
         learning_sequence=["递归", "节点结构", "遍历"],
         difficulty_points=["递归调用栈"],
-        stage_suggestions=["基础准备", "核心学习", "综合实践"],
+        stages=_three_stages(),
         application_directions=["手写三种遍历并验证结果"],
     )
 
@@ -42,6 +51,10 @@ def test_build_knowledge_map_creates_categories_and_path():
         "实践应用",
     }
     assert all(node.learning_objective for node in knowledge_map.nodes)
+    # 三阶段：每个节点都带 stage 信息，且 stage_order 落在 1-3
+    assert all(1 <= node.stage_order <= 3 for node in knowledge_map.nodes)
+    assert all(node.stage_id.startswith("stage-") for node in knowledge_map.nodes)
+    assert all(node.stage_title for node in knowledge_map.nodes)
 
 
 def test_build_knowledge_map_uses_compact_titles_and_keeps_full_summary():
@@ -61,7 +74,7 @@ def test_build_knowledge_map_uses_compact_titles_and_keeps_full_summary():
         core_concepts=[long_concept],
         learning_sequence=[long_concept],
         difficulty_points=[],
-        stage_suggestions=["基础准备", "核心学习"],
+        stages=_three_stages(),
         application_directions=[],
     )
 
@@ -70,3 +83,24 @@ def test_build_knowledge_map_uses_compact_titles_and_keeps_full_summary():
     assert len(node.title) <= 24
     assert node.title == "向量数据库的索引构建、相似度检索"
     assert node.summary == long_concept
+
+
+def test_knowledge_map_always_has_exactly_three_stages():
+    """KnowledgeMap 节点归属阶段覆盖全部 3 个 stage（阶段缺失时兜底补齐）。"""
+    student_input = StudentInput(
+        topic="Transformer", level=None, days=14, daily_time="60 分钟", goal="理解原理",
+    )
+    decomposition = DecompositionResult(
+        prerequisite_concepts=["矩阵乘法", "Softmax"],
+        core_concepts=["Attention", "多头注意力"],
+        learning_sequence=["矩阵", "Attention"],
+        difficulty_points=["QK^T 缩放"],
+        stages=[LearningStageSuggestion(stage_id="stage-1", title="数学基础", objective="x", order=1)],
+        application_directions=["实现一个 mini transformer"],
+    )
+    km = build_knowledge_map(student_input, decomposition)
+    orders = {node.stage_order for node in km.nodes}
+    assert orders == {1, 2, 3}
+    titles = {node.stage_title for node in km.nodes}
+    assert "数学基础" in titles  # 自定义标题保留
+    assert "核心学习" in titles and "综合应用" in titles  # 缺失阶段自动补默认

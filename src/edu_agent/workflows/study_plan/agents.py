@@ -25,6 +25,7 @@ from edu_agent.workflows.study_plan.schemas import (
     DraftPlan,
     EvaluatedResearchResult,
     EvaluatedResource,
+    LearningStageSuggestion,
     PlanValidationResult,
     ResearchResult,
     ReviewResult,
@@ -33,16 +34,24 @@ from edu_agent.workflows.study_plan.schemas import (
 )
 
 
-def analyzer_agent(student_input: StudentInput) -> AnalysisResult:
+def analyzer_agent(
+    student_input: StudentInput,
+    plan_context_text: str = "",
+) -> AnalysisResult:
     """
     需求分析 Agent：
     使用 LangChain LLM + structured output 输出 AnalysisResult。
+    plan_context_text：来自本地 Learner Model 的画像上下文（在需求分析阶段就影响
+    level_summary / prerequisites），而非等到 Planner 才注入。
     """
 
+    payload = student_input.model_dump()
+    if plan_context_text:
+        payload["plan_context"] = plan_context_text
     return invoke_structured_output(
         ANALYZER_PROMPT,
         AnalysisResult,
-        student_input.model_dump(),
+        payload,
         get_llm(temperature=0.2),
     )
 
@@ -77,10 +86,25 @@ def _fallback_decomposition(
             "容易把学习范围扩得过大，导致每日任务超时",
             "容易忽略检查标准，无法判断当天是否完成",
         ],
-        stage_suggestions=[
-            f"基础准备阶段：补齐 {topic} 前置知识并跑通环境",
-            f"核心学习阶段：围绕 {topic} 主流程完成最小应用案例",
-            "综合产出阶段：完成最终作品、复盘薄弱点并整理验收记录",
+        stages=[
+            LearningStageSuggestion(
+                stage_id="stage-1",
+                title="基础准备",
+                objective=f"补齐 {topic} 前置知识并跑通环境",
+                order=1,
+            ),
+            LearningStageSuggestion(
+                stage_id="stage-2",
+                title="核心学习",
+                objective=f"围绕 {topic} 主流程完成最小应用案例",
+                order=2,
+            ),
+            LearningStageSuggestion(
+                stage_id="stage-3",
+                title="综合应用",
+                objective="完成最终作品、复盘薄弱点并整理验收记录",
+                order=3,
+            ),
         ],
         application_directions=[
             f"围绕 {topic} 制作一份概念卡片和错误清单",
@@ -100,25 +124,55 @@ def _fallback_decomposition(
 def decomposer_agent(
     student_input: StudentInput,
     analysis: AnalysisResult,
+    plan_context_text: str = "",
 ) -> DecompositionResult:
     """
     内容拆解 Agent：
     使用 LLM 拆解前置知识、核心知识点、学习顺序、难点、阶段和实践方向。
+    - stages 必须恰好 3 个（结构化 LearningStageSuggestion）。
+    - plan_context_text：画像上下文在知识分解前生效（跳过/复习/顺序）。
     结构化解析失败时返回可展示、可继续规划的降级结果。
     """
 
     try:
-        return invoke_structured_output(
+        payload = {
+            **student_input.model_dump(),
+            "analysis": model_to_text(analysis),
+        }
+        if plan_context_text:
+            payload["plan_context"] = plan_context_text
+        result = invoke_structured_output(
             DECOMPOSER_PROMPT,
             DecompositionResult,
-            {
-                **student_input.model_dump(),
-                "analysis": model_to_text(analysis),
-            },
+            payload,
             get_llm(temperature=0.2),
         )
+        # 强制三阶段兜底：模型可能漏 stage 或多给
+        if len(result.stages) != 3:
+            result.stages = _normalize_stage_suggestions(result.stages)
+        return result
     except Exception as exc:  # noqa: BLE001 - agent should keep workflow usable
         return _fallback_decomposition(student_input, analysis, exc)
+
+
+def _normalize_stage_suggestions(stages: list) -> list:
+    """把模型返回的阶段列表规整为恰好 3 个（缺的补默认）。"""
+    from edu_agent.workflows.study_plan.schemas import LearningStageSuggestion
+
+    defaults = [
+        ("stage-1", "基础准备", "补齐必要背景、前置知识与环境"),
+        ("stage-2", "核心学习", "掌握核心概念、方法与原理"),
+        ("stage-3", "综合应用", "通过案例、小项目整合知识并总结"),
+    ]
+    ordered = sorted(stages or [], key=lambda s: getattr(s, "order", 0))
+    result: list = []
+    for order in range(1, 4):
+        stage = next((s for s in ordered if getattr(s, "order", -1) == order), None)
+        if stage is None or not (getattr(stage, "title", "") or "").strip():
+            stage_id, title, objective = defaults[order - 1]
+            stage = LearningStageSuggestion(stage_id=stage_id, title=title, objective=objective, order=order)
+        result.append(stage)
+    return result
 
 
 def researcher_agent(analysis: AnalysisResult) -> ResearchResult:

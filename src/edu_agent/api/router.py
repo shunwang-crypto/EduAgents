@@ -61,6 +61,7 @@ class ChatRequest(BaseModel):
     message: str = Field(description="用户消息")
     course_id: Optional[str] = Field(default=None, description="当前课程（无课程为普通对话）")
     conversation_id: Optional[str] = Field(default=None)
+    plan_step_id: Optional[str] = Field(default=None, description="当前计划步骤（就此提问进入，可空）")
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +145,15 @@ def update_step(course_id: str, step_id: str, req: UpdateStepRequest,
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@router.get("/courses/{course_id}/plan/steps/{step_id}")
+def get_step(course_id: str, step_id: str, user_id: str = Depends(_user_id)) -> dict:
+    """取单个计划步骤（校验属于 user+course；供 Chat「就此提问」上下文）。"""
+    try:
+        return study_plan_service.get_step(user_id, course_id, step_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 # ---------------------------------------------------------------------------
 # Chat
 # ---------------------------------------------------------------------------
@@ -157,6 +167,7 @@ def chat(req: ChatRequest, user_id: str = Depends(_user_id),
         message=req.message,
         course_id=req.course_id,
         conversation_id=req.conversation_id,
+        plan_step_id=req.plan_step_id,
     )
 
 

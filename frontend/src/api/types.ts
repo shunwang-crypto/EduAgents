@@ -22,10 +22,24 @@ export interface Course {
 export interface PlanStep {
   step_id: string;
   seq: number;
+  stage_id: string;
+  stage_title: string;
+  stage_order: number;
+  kc_id: string;
   title: string;
   description: string;
+  learning_objective: string;
+  prerequisites: string[];
+  difficulty: string;
   minutes: number;
   status: "not_started" | "in_progress" | "completed";
+}
+
+export interface PlanStage {
+  stage_id: string;
+  stage_title: string;
+  order: number;
+  steps: PlanStep[];
 }
 
 export interface StudyPlan {
@@ -38,6 +52,7 @@ export interface StudyPlan {
   progress: number;
   created_at: string;
   updated_at: string;
+  stages: PlanStage[];
   steps: PlanStep[];
 }
 
@@ -46,12 +61,20 @@ export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   created_at: string;
+  metadata?: Record<string, unknown>;
 }
 
 export interface Conversation {
   conversation_id: string;
   course_id: string | null;
   messages: ChatMessage[];
+}
+
+export interface ChatContext {
+  type: "general" | "course" | "plan_step";
+  course_id: string | null;
+  plan_step_id: string | null;
+  step_title: string;
 }
 
 export interface ChatResponse {
@@ -61,4 +84,5 @@ export interface ChatResponse {
   course_id: string | null;
   created_at: string;
   profile_updates: string[];
+  context?: ChatContext;
 }

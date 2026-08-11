@@ -3,6 +3,7 @@ import type {
   ChatResponse,
   Conversation,
   Course,
+  PlanStep,
   StudyPlan,
 } from "./types";
 
@@ -48,10 +49,16 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ status }),
     }),
+  getStep: (courseId: string, stepId: string) =>
+    request<PlanStep>(`/api/courses/${courseId}/plan/steps/${stepId}`),
 
   // Chat
-  chat: (body: { message: string; course_id?: string | null; conversation_id?: string | null }) =>
-    request<ChatResponse>("/api/chat", { method: "POST", body: JSON.stringify(body) }),
+  chat: (body: {
+    message: string;
+    course_id?: string | null;
+    conversation_id?: string | null;
+    plan_step_id?: string | null;
+  }) => request<ChatResponse>("/api/chat", { method: "POST", body: JSON.stringify(body) }),
   getChat: (courseId?: string | null, conversationId?: string | null) =>
     request<Conversation>(
       `/api/chat?course_id=${courseId ?? ""}&conversation_id=${conversationId ?? ""}`

@@ -393,6 +393,21 @@ class SQLiteLearnerRepository(LearnerRepository):
         )
         self._commit()
 
+    def delete_plan(self, plan_id: str) -> None:
+        """删除计划及其全部步骤（re-generate 替换旧 current plan 用，事务内调用）。"""
+        self._conn().execute("DELETE FROM plan_steps WHERE plan_id=?", (plan_id,))
+        self._conn().execute("DELETE FROM study_plans WHERE plan_id=?", (plan_id,))
+        self._commit()
+
+    def get_plan_step_by_id(self, user_id: str, course_id: str, step_id: str) -> Optional[dict]:
+        """按 step_id 跨 plan 定位，并校验属于 user+course（Chat plan_step context 用）。"""
+        return self._fetchone(
+            "SELECT ps.* FROM plan_steps ps "
+            "JOIN study_plans p ON p.plan_id = ps.plan_id "
+            "WHERE ps.step_id=? AND p.user_id=? AND p.course_id=?",
+            (step_id, user_id, course_id),
+        )
+
     # ---- domain courses ---------------------------------------------------
     def upsert_domain_course(self, course: Dict[str, Any]) -> None:
         self._insert_or_update("domain_courses", course, ["course_id"])

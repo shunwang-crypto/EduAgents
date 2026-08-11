@@ -5,6 +5,8 @@ from edu_agent.workflows.study_plan.schemas import (
     DecompositionResult,
     KnowledgeMap,
     KnowledgeNode,
+    LearningStageSuggestion,
+    STAGE_COUNT,
     StudentInput,
 )
 
@@ -42,22 +44,49 @@ def _unique_items(items: Iterable[str]) -> list[tuple[str, str]]:
     return result
 
 
+def _normalize_stages(stages: list[LearningStageSuggestion]) -> list[LearningStageSuggestion]:
+    """兜底：确保恰好 3 个阶段（缺的补默认，多的截断）。"""
+    defaults = [
+        ("stage-1", "基础准备", "补齐必要背景、前置知识与环境"),
+        ("stage-2", "核心学习", "掌握核心概念、方法与原理"),
+        ("stage-3", "综合应用", "通过案例、小项目整合知识并总结"),
+    ]
+    ordered = sorted((stages or [])[:STAGE_COUNT], key=lambda s: s.order)
+    result: list[LearningStageSuggestion] = []
+    for order in range(1, STAGE_COUNT + 1):
+        stage = next((s for s in ordered if s.order == order), None)
+        if stage is None or not stage.title.strip():
+            stage_id, title, objective = defaults[order - 1]
+            stage = LearningStageSuggestion(stage_id=stage_id, title=title, objective=objective, order=order)
+        result.append(stage)
+    return result
+
+
 def build_knowledge_map(
     student_input: StudentInput,
     decomposition: DecompositionResult,
 ) -> KnowledgeMap:
-    """Build a stable, UI-friendly knowledge map without another LLM call."""
+    """Build a stable, UI-friendly knowledge map without another LLM call.
+
+    - 一级结构固定 3 个阶段（stage_id/stage_title/stage_order）。
+    - node.id 即 kc_id（课程内稳定）。
+    - 不允许出现练习/题目语义；活动类型限定为学习活动（阅读/案例/项目等）。
+    """
 
     nodes: list[KnowledgeNode] = []
     path: list[str] = []
     node_index = 1
+    stages = _normalize_stages(decomposition.stages)
 
     prerequisite_items = _unique_items(decomposition.prerequisite_concepts)
     core_items = _unique_items(decomposition.core_concepts)
     application_items = _unique_items(decomposition.application_directions)
     prerequisite_titles = [title for title, _ in prerequisite_items]
     core_titles = [title for title, _ in core_items]
-    stages = decomposition.stage_suggestions or ["基础准备", "核心学习", "综合实践"]
+
+    def stage_of(index: int) -> LearningStageSuggestion:
+        """知识分类 → 阶段映射：前置→阶段1，核心→阶段2，应用→阶段3。"""
+        return stages[min(index, STAGE_COUNT - 1)]
 
     def add_node(
         title: str,
@@ -65,10 +94,10 @@ def build_knowledge_map(
         category: str,
         difficulty: str,
         minutes: int,
-        stage: str,
+        stage: LearningStageSuggestion,
         prerequisites: list[str],
         objective: str,
-        application: str,
+        activity: str,
         check: str,
     ) -> None:
         nonlocal node_index
@@ -83,9 +112,11 @@ def build_knowledge_map(
                 prerequisites=prerequisites,
                 difficulty=difficulty,
                 estimated_minutes=minutes,
-                stage=stage,
+                stage_id=stage.stage_id,
+                stage_title=stage.title,
+                stage_order=stage.order,
                 learning_objective=objective,
-                application_task=application,
+                learning_activity=activity,
                 check_method=check,
             )
         )
@@ -98,40 +129,38 @@ def build_knowledge_map(
             category="前置知识",
             difficulty="入门",
             minutes=30,
-            stage=_clean_title(stages[0]),
+            stage=stages[0],
             prerequisites=[],
             objective=f"能用自己的话说明「{title}」并完成一个最小示例。",
-            application=f"整理「{title}」的 3 条核心笔记，并完成一个最小应用案例。",
-            check=f"不看资料解释「{title}」，并提交案例结果。",
+            activity=f"阅读「{title}」入门资料，运行一个最小示例并整理 3 条笔记。",
+            check="不看资料解释「{title}」，并提交示例运行结果。",
         )
 
     for index, (title, summary) in enumerate(core_items):
-        stage = _clean_title(stages[min(index + 1, len(stages) - 1)])
         add_node(
             title=title,
             summary=summary,
             category="核心知识",
             difficulty="中等",
             minutes=45,
-            stage=stage,
+            stage=stages[min(index + 1, STAGE_COUNT - 1)],
             prerequisites=prerequisite_titles[:3],
             objective=f"能解释「{title}」的核心原理，并在学习目标场景中正确使用。",
-            application=f"完成一个直接应用「{title}」的案例或计算任务。",
-            check=f"提交案例结果，并说明「{title}」在其中解决了什么问题。",
+            activity=f"跟随示例代码完成一个直接应用「{title}」的小案例，并记录关键步骤。",
+            check="提交案例结果，并说明「{title}」在其中解决了什么问题。",
         )
 
     for index, (title, summary) in enumerate(application_items):
-        stage = _clean_title(stages[min(index + 1, len(stages) - 1)])
         add_node(
             title=title,
             summary=summary,
             category="实践应用",
             difficulty="实践",
             minutes=60,
-            stage=stage,
+            stage=stages[min(index + 1, STAGE_COUNT - 1)],
             prerequisites=core_titles[:4],
             objective=f"独立完成「{title}」并留下可检查的学习产出。",
-            application=summary,
+            activity=summary,
             check="提交作品、关键步骤说明和一条复盘记录。",
         )
 
@@ -142,10 +171,10 @@ def build_knowledge_map(
             category="核心知识",
             difficulty="入门",
             minutes=45,
-            stage="核心学习",
+            stage=stages[1],
             prerequisites=[],
             objective=f"能说明 {student_input.topic} 的核心概念和使用场景。",
-            application=f"完成一个与 {student_input.topic} 直接相关的小案例。",
+            activity=f"完成一个与 {student_input.topic} 直接相关的小案例并整理笔记。",
             check="提交案例结果并说明关键步骤。",
         )
 

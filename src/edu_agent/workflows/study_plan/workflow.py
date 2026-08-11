@@ -17,6 +17,7 @@ from edu_agent.workflows.study_plan.schemas import (
     EvaluatedResearchResult,
     EvaluatedResource,
     KnowledgeMap,
+    LearningStageSuggestion,
     PlanValidationResult,
     ResearchResult,
     ReviewResult,
@@ -88,10 +89,19 @@ def _fallback_decomposition(
             f"{topic} 范围可能过宽，需要聚焦当前周期主线",
             "每日任务需要有明确产出，否则难以检查进度",
         ],
-        stage_suggestions=[
-            "基础准备阶段：补齐前置知识和环境",
-            "核心学习阶段：完成主题主线学习与最小应用案例",
-            "综合产出阶段：完成作品、验收和复盘",
+        stages=[
+            LearningStageSuggestion(
+                stage_id="stage-1", title="基础准备",
+                objective=f"补齐 {topic} 前置知识和环境", order=1,
+            ),
+            LearningStageSuggestion(
+                stage_id="stage-2", title="核心学习",
+                objective=f"完成 {topic} 主题主线学习与最小应用案例", order=2,
+            ),
+            LearningStageSuggestion(
+                stage_id="stage-3", title="综合应用",
+                objective="完成作品、验收和复盘", order=3,
+            ),
         ],
         application_directions=[
             f"完成一个和 {topic} 直接相关的小案例",
@@ -144,12 +154,15 @@ def _fallback_draft(
         )
 
     stage_rows = []
-    stage_suggestions = decomposition.stage_suggestions or ["基础准备", "核心学习", "综合产出"]
-    for index, stage in enumerate(stage_suggestions[:5], start=1):
-        start_day = max(1, round((index - 1) * student_input.days / len(stage_suggestions)) + 1)
-        end_day = max(start_day, round(index * student_input.days / len(stage_suggestions)))
+    stages = decomposition.stages or []
+    stage_list = [
+        (s.title, s.objective) for s in sorted(stages, key=lambda s: s.order)
+    ] or [("基础准备", "补齐前置知识和环境"), ("核心学习", "完成主线学习与最小案例"), ("综合应用", "完成作品与复盘")]
+    for index, (stage_title, stage_objective) in enumerate(stage_list[:3], start=1):
+        start_day = max(1, round((index - 1) * student_input.days / max(len(stage_list[:3]), 1)) + 1)
+        end_day = max(start_day, round(index * student_input.days / max(len(stage_list[:3]), 1)))
         stage_rows.append(
-            f"| 阶段 {index} | 第 {start_day}-{end_day} 天 | {stage} | "
+            f"| 阶段 {index} | 第 {start_day}-{end_day} 天 | {stage_title}（{stage_objective}） | "
             "提交阶段应用案例、问题清单和复盘记录 |"
         )
 
@@ -164,7 +177,7 @@ def _fallback_draft(
         resource_rows = [
             "| 官方文档 | 按学习主题自行检索官方资料 | 查证概念、术语和接口说明 | 概念查证阶段 |",
             "| 入门教程 | 选择一份与当前目标匹配的教程 | 跟随完成最小示例 | 基础阶段 |",
-            "| 实践项目 | 选择一个小型案例或题目 | 用于最终综合产出 | 实践阶段 |",
+            "| 实践项目 | 选择一个小型案例 | 用于最终综合产出 | 实践阶段 |",
         ]
 
     markdown = f"""# {topic} 学习规划
@@ -261,20 +274,16 @@ def _fallback_review(draft_plan: DraftPlan, exc: Exception) -> ReviewResult:
 def run_study_plan_workflow(
     student_input: StudentInput,
     knowledge_context: str = "无",
-    learner_context: str = "",
-    adaptive_instructions: str = "",
     plan_context: Optional[dict] = None,
 ) -> dict:
     """学习规划主工作流。
 
     knowledge_context：知识库参考资料文本（可为"无"）。
-    learner_context / adaptive_instructions：画像上下文与教学指令（可由 plan_context 生成）。
     plan_context：PlanContext dict（known/unknown/review/background/style），
-                  若提供会自动格式化为 learner_context + adaptive_instructions。
+                  在 Analyzer/Decomposer/Planner 前生效（生成前就决定跳过/复习/重点）。
     """
-    if plan_context:
-        learner_context = learner_context or _plan_context_to_text(plan_context)
-        adaptive_instructions = adaptive_instructions or _plan_context_instructions(plan_context)
+    learner_context = _plan_context_to_text(plan_context) if plan_context else ""
+    adaptive_instructions = _plan_context_instructions(plan_context) if plan_context else ""
 
     workflow_start = time.time()
     print(
@@ -288,6 +297,7 @@ def run_study_plan_workflow(
         analyzer_agent,
         lambda exc: _fallback_analysis(student_input, exc),
         student_input,
+        learner_context,
     )
     decomposition = _run_step(
         "decomposition",
@@ -295,6 +305,7 @@ def run_study_plan_workflow(
         lambda exc: _fallback_decomposition(student_input, analysis, exc),
         student_input,
         analysis,
+        learner_context,
     )
     knowledge_map: KnowledgeMap = build_knowledge_map(student_input, decomposition)
     research = _run_step("research", researcher_agent, _fallback_research, analysis)

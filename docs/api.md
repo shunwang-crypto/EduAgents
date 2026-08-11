@@ -19,14 +19,15 @@ FastAPI 入口：`src/edu_agent/api/main.py`。所有路由以 `/api` 为前缀�
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | POST | `/api/courses/{course_id}/plan/generate` | 生成计划 `{goal?, duration_days?, daily_minutes?, background?, extra_requirement?}` |
-| GET | `/api/courses/{course_id}/plan` | 获取计划（无计划 404） |
+| GET | `/api/courses/{course_id}/plan` | 获取计划（无计划 404）；返回含 `stages` 三阶段结构 |
 | PATCH | `/api/courses/{course_id}/plan/steps/{step_id}` | 更新步骤状态 `{status: not_started\|in_progress\|completed}` |
+| GET | `/api/courses/{course_id}/plan/steps/{step_id}` | 单个步骤详情（校验 user+course 归属） |
 
 ## Chat
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/api/chat` | 发消息 `{message, course_id?, conversation_id?}` |
+| POST | `/api/chat` | 发消息 `{message, course_id?, conversation_id?, plan_step_id?}` |
 | GET | `/api/chat` | 取会话历史 `?course_id=&conversation_id=` |
 
 Chat 返回：
@@ -37,9 +38,18 @@ Chat 返回：
   "conversation_id": "...",
   "content": "...",
   "course_id": "... or null",
-  "created_at": "..."
+  "created_at": "...",
+  "profile_updates": [],
+  "context": {
+    "type": "general | course | plan_step",
+    "course_id": "...",
+    "plan_step_id": "... or null",
+    "step_title": "..."
+  }
 }
 ```
+
+`plan_step_id` 可选：从计划「就此提问」进入时携带；后端校验 step 属于当前 user+course 的 current plan，不属于则忽略（降级为课程/普通上下文）。
 
 ## Health
 

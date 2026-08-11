@@ -151,7 +151,29 @@ def test_profile_fact_intent_created(learner):
     reply = svc.chat(USER, "我会 Python 基础")
     assert reply["profile_updates"], "应识别并写入 profile fact"
     facts = learner.repo.list_profile_facts(USER)
-    assert any(f["fact_key"] == "skill" for f in facts)
+    assert any(f["fact_key"] == "skill:python" for f in facts)
+
+
+def test_skill_facts_do_not_override_each_other(learner):
+    """「我会 Python」+「我会 Java」→ skill:python 与 skill:java 并存，互不覆盖。"""
+    svc = ChatService(learner=learner)
+    svc.chat(USER, "我会 Python 基础")
+    svc.chat(USER, "我会 Java 面向对象")
+    keys = {f["fact_key"] for f in learner.repo.list_profile_facts(USER)}
+    assert "skill:python" in keys
+    assert "skill:java" in keys
+
+
+def test_forget_intent_deletes_real_fact(learner):
+    """「忘记我做过 FastAPI」只删匹配的 fact，不误删其他。"""
+    svc = ChatService(learner=learner)
+    svc.chat(USER, "我做过 FastAPI 项目")  # 创建 skill:fastapi
+    learner.set_profile_fact(USER, "skill:java", "Java 基础")
+    reply = svc.chat(USER, "忘记我做过 FastAPI 项目")
+    facts = {f["fact_key"] for f in learner.repo.list_profile_facts(USER)}
+    assert "skill:fastapi" not in facts
+    assert "skill:java" in facts
+    assert any("skill:fastapi" in u for u in reply["profile_updates"])
 
 
 def test_profile_fact_update_not_duplicate(learner):
