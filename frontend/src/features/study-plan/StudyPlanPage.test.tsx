@@ -104,10 +104,13 @@ describe("StudyPlanPage", () => {
     expect(screen.getByText("数据清洗案例")).toBeTruthy();
   });
 
-  it("renders step learning objective and prerequisites", async () => {
+  it("renders step learning objective and prerequisites (compact metadata)", async () => {
     renderPage();
-    await waitFor(() => expect(screen.getByText(/目标：能创建数组/)).toBeTruthy());
-    expect(screen.getByText(/前置：Python List/)).toBeTruthy();
+    await waitFor(() => expect(screen.getByText("能创建数组")).toBeTruthy());
+    // compact metadata：label「目标 / 前置」与内容分属两个 span
+    expect(screen.getAllByText("目标").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("Python List")).toBeTruthy();
+    expect(screen.getByText("前置")).toBeTruthy();
   });
 
   it("shows 就此提问 button per step", async () => {
