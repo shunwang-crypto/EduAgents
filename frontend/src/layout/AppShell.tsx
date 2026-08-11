@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Outlet, useNavigate } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
-import { api } from "../api/client";
+import { useApi } from "../api/ApiProvider";
 import "./shell.css";
 
 /** AppShell：ChatGPT 式外壳。唯一结构：
@@ -9,6 +9,7 @@ import "./shell.css";
  * sidebarCollapsed（桌面）与 mobileSidebarOpen（抽屉）由 AppShell 统一管理。
  */
 export function AppShell() {
+  const api = useApi();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const navigate = useNavigate();

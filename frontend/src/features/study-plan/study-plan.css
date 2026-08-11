@@ -7,7 +7,7 @@
 }
 
 .plan-doc {
-  max-width: var(--plan-width);
+  max-width: var(--ea-plan-width);
   margin: 0 auto;
   padding: 28px 24px 48px;
 }
@@ -21,12 +21,12 @@
   font-size: 24px;
   font-weight: 700;
   margin: 0 0 6px;
-  color: var(--text-primary);
+  color: var(--ea-text-primary);
 }
 
 .plan-hero-meta {
   font-size: 14px;
-  color: var(--text-secondary);
+  color: var(--ea-text-secondary);
   margin-bottom: 18px;
 }
 
@@ -46,14 +46,14 @@
 
 .plan-progress-fill {
   height: 100%;
-  background: var(--primary);
+  background: var(--ea-primary);
   border-radius: 2px;
   transition: width 200ms ease;
 }
 
 .plan-progress-label {
   font-size: 13px;
-  color: var(--text-secondary);
+  color: var(--ea-text-secondary);
   white-space: nowrap;
 }
 
@@ -64,14 +64,14 @@
 
 .plan-stage-head {
   padding-bottom: 10px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--ea-border);
   margin-bottom: 4px;
 }
 
 .plan-stage-eyebrow {
   font-size: 12px;
   font-weight: 600;
-  color: var(--text-muted);
+  color: var(--ea-text-muted);
   letter-spacing: 0.03em;
 }
 
@@ -79,7 +79,7 @@
   font-size: 19px;
   font-weight: 650;
   margin: 2px 0 0;
-  color: var(--text-primary);
+  color: var(--ea-text-primary);
 }
 
 /* ---------- Step ---------- */
@@ -93,13 +93,13 @@
 }
 
 .plan-step:hover {
-  background: var(--bg-hover);
+  background: var(--ea-bg-hover);
 }
 
 .plan-step-index {
   font-variant-numeric: tabular-nums;
   font-size: 13px;
-  color: var(--text-muted);
+  color: var(--ea-text-muted);
   font-weight: 600;
   min-width: 24px;
   padding-top: 2px;
@@ -113,13 +113,13 @@
 .plan-step-title {
   font-size: 15px;
   font-weight: 600;
-  color: var(--text-primary);
+  color: var(--ea-text-primary);
 }
 
 .plan-step-desc {
   font-size: 14px;
   line-height: 1.55;
-  color: var(--text-secondary);
+  color: var(--ea-text-secondary);
   margin-top: 2px;
 }
 
@@ -134,11 +134,11 @@
   display: flex;
   gap: 8px;
   font-size: 13px;
-  color: var(--text-secondary);
+  color: var(--ea-text-secondary);
 }
 
 .meta-label {
-  color: var(--text-muted);
+  color: var(--ea-text-muted);
   flex-shrink: 0;
 }
 
@@ -151,7 +151,7 @@
 
 .plan-step-time {
   font-size: 12px;
-  color: var(--text-muted);
+  color: var(--ea-text-muted);
 }
 
 .step-ask-btn {
@@ -160,7 +160,7 @@
   gap: 5px;
   border: none;
   background: transparent;
-  color: var(--primary);
+  color: var(--ea-primary);
   font-size: 13px;
   cursor: pointer;
   padding: 4px 8px;
@@ -169,7 +169,7 @@
 }
 
 .step-ask-btn:hover {
-  background: var(--primary-soft);
+  background: var(--ea-primary-soft);
 }
 
 .plan-step-status {
@@ -192,9 +192,9 @@
 }
 
 .status-not-started {
-  color: var(--text-secondary);
-  background: var(--bg-hover);
-  border-color: var(--border);
+  color: var(--ea-text-secondary);
+  background: var(--ea-bg-hover);
+  border-color: var(--ea-border);
 }
 
 .status-not-started:hover {
@@ -203,7 +203,7 @@
 
 .status-in-progress {
   color: #9a6700;
-  background: var(--amber-soft);
+  background: var(--ea-amber-soft);
   border-color: #f3e3c3;
 }
 
@@ -212,8 +212,8 @@
 }
 
 .status-completed {
-  color: var(--primary);
-  background: var(--primary-soft);
+  color: var(--ea-primary);
+  background: var(--ea-primary-soft);
   border-color: #d7e9df;
 }
 
@@ -239,13 +239,13 @@
 
 .plan-regen-text {
   font-size: 13px;
-  color: var(--text-secondary);
+  color: var(--ea-text-secondary);
 }
 
 .plan-markdown-full {
   margin-top: 20px;
   padding-top: 16px;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--ea-border);
 }
 
 /* ---------- Empty / Skeleton ---------- */
@@ -261,8 +261,8 @@
   width: 48px;
   height: 48px;
   border-radius: 14px;
-  background: var(--primary-soft);
-  color: var(--primary);
+  background: var(--ea-primary-soft);
+  color: var(--ea-primary);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -277,14 +277,14 @@
 
 .plan-empty p {
   font-size: 14px;
-  color: var(--text-secondary);
+  color: var(--ea-text-secondary);
   margin: 0 0 18px;
 }
 
 .plan-generating-note {
   margin-top: 12px;
   font-size: 13px;
-  color: var(--text-muted);
+  color: var(--ea-text-muted);
 }
 
 .plan-skeleton {

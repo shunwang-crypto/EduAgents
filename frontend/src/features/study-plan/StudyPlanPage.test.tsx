@@ -63,14 +63,16 @@ const { mockPlan } = vi.hoisted(() => ({
   },
 }));
 
-vi.mock("../../api/client", () => ({
-  api: {
+const { mockApi } = vi.hoisted(() => ({
+  mockApi: {
     getCourse: vi.fn().mockResolvedValue({ course_id: "PY", display_name: "Python 数据分析" }),
     getPlan: vi.fn().mockResolvedValue(mockPlan),
     generatePlan: vi.fn().mockResolvedValue(mockPlan),
     updateStep: vi.fn().mockResolvedValue(mockPlan),
   },
 }));
+
+vi.mock("../../api/ApiProvider", () => ({ useApi: () => mockApi }));
 
 function renderPage(initialPath = "/courses/PY/plan") {
   return render(
@@ -119,13 +121,12 @@ describe("StudyPlanPage", () => {
   });
 
   it("clicking 开始学习 calls updateStep with in_progress", async () => {
-    const { api } = await import("../../api/client");
     renderPage();
     await waitFor(() => expect(screen.getAllByText("开始学习").length).toBe(3));
     const btn = screen.getAllByText("开始学习")[0];
     fireEvent.click(btn);
     await waitFor(() =>
-      expect((api.updateStep as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith(
+      expect((mockApi.updateStep as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith(
         "PY", "S1", "in_progress"
       )
     );
@@ -143,8 +144,7 @@ describe("StudyPlanPage", () => {
   });
 
   it("shows empty state when no plan", async () => {
-    const { api } = await import("../../api/client");
-    (api.getPlan as ReturnType<typeof vi.fn>).mockResolvedValueOnce(null);
+    (mockApi.getPlan as ReturnType<typeof vi.fn>).mockResolvedValueOnce(null);
     renderPage();
     await waitFor(() => expect(screen.getByText("还没有学习计划")).toBeTruthy());
   });

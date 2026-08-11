@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useOutletContext, useParams, useSearchParams } from "react-router-dom";
 import { BookOpen, X } from "lucide-react";
-import { api } from "../../api/client";
+import { useApi } from "../../api/ApiProvider";
 import type { ChatMessage, Course, PlanStep } from "../../api/types";
 import RichMarkdown from "../../components/content/RichMarkdown";
 import { InlineError } from "../../components/ui/InlineError";
@@ -18,6 +18,7 @@ interface OutletCtx {
 /** ChatPage：GPT 风格主聊天（无课程 / 有课程 / 有课程+计划步骤）。
  * 只负责页面内容（header 由 CourseHeader 提供，workspace 由 AppShell 提供）。 */
 export function ChatPage() {
+  const api = useApi();
   const { courseId } = useParams<{ courseId: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
   const stepParam = searchParams.get("step");
@@ -32,6 +33,7 @@ export function ChatPage() {
   const [loading, setLoading] = useState(false);
   const [historyError, setHistoryError] = useState(false);
   const [sendError, setSendError] = useState("");
+  const [retryText, setRetryText] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
 
@@ -118,7 +120,9 @@ export function ChatPage() {
         };
         setMessages((prev) => [...prev, aiMsg]);
       } catch (e) {
-        setSendError(e instanceof Error ? e.message : "发送失败，请重试");
+        const msg = e instanceof Error ? e.message : "发送失败，请重试";
+        setSendError(msg);
+        setRetryText(text);
       } finally {
         setLoading(false);
       }
@@ -186,7 +190,9 @@ export function ChatPage() {
               <LoadingDots />
             </div>
           )}
-          {sendError && <InlineError message={sendError} />}
+          {sendError && (
+            <InlineError message={sendError} onRetry={retryText ? () => send(retryText) : undefined} />
+          )}
         </div>
       </div>
 

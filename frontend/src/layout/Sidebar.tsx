@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { GraduationCap, PanelLeftClose, PanelLeftOpen, Plus } from "lucide-react";
 import type { Course } from "../api/types";
 import { CreateCourseModal } from "../features/courses/CreateCourseModal";
-import { api } from "../api/client";
+import "./sidebar.css";
+import { useApi } from "../api/ApiProvider";
 
 /** SidebarLogo：展开显示 Logo + EduAgents；折叠只显示 Logo。 */
 export function SidebarLogo({ collapsed }: { collapsed: boolean }) {
@@ -58,6 +59,7 @@ interface SidebarProps {
 /** Sidebar：EduAgents + 新对话 + 我的课程（唯一新建入口）。
  * collapsed = 68px 真 icon rail（条件渲染，无竖排文字）。 */
 export function Sidebar({ open, collapsed, onClose, onToggleCollapse, newChat, navigateToCourse }: SidebarProps) {
+  const api = useApi();
   const [courses, setCourses] = useState<Course[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -147,7 +149,7 @@ export function Sidebar({ open, collapsed, onClose, onToggleCollapse, newChat, n
           {error && !loading && (
             <div className="sidebar-error" role="alert">
               <div>课程加载失败</div>
-              <button className="btn" onClick={load}>
+              <button className="ea-button" onClick={load}>
                 重试
               </button>
             </div>

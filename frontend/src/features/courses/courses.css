@@ -25,26 +25,26 @@
   font-size: 17px;
   font-weight: 650;
   margin: 0 0 16px;
-  color: var(--text-primary);
+  color: var(--ea-text-primary);
 }
 
 .modal-label {
   display: block;
   font-size: 13px;
   font-weight: 600;
-  color: var(--text-secondary);
+  color: var(--ea-text-secondary);
   margin-bottom: 6px;
 }
 
 .modal input,
 .modal textarea {
   width: 100%;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border: 1px solid var(--ea-border);
+  border-radius: var(--ea-radius-sm);
   padding: 10px 12px;
   font-size: 14px;
   font-family: inherit;
-  color: var(--text-primary);
+  color: var(--ea-text-primary);
   background: #ffffff;
   margin-bottom: 14px;
   outline: none;
@@ -53,7 +53,7 @@
 
 .modal input:focus,
 .modal textarea:focus {
-  border-color: var(--primary);
+  border-color: var(--ea-primary);
   box-shadow: 0 0 0 3px rgba(23, 107, 85, 0.1);
 }
 
@@ -62,7 +62,7 @@
 }
 
 .form-error {
-  color: var(--danger);
+  color: var(--ea-danger);
   font-size: 13px;
   margin: 0 0 12px;
 }

@@ -1,11 +1,11 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, waitFor, screen } from "@testing-library/react";
+import { render, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { AppShell } from "./AppShell";
 import { ChatPage } from "../features/chat/ChatPage";
 
-vi.mock("../api/client", () => ({
-  api: {
+const { mockApi } = vi.hoisted(() => ({
+  mockApi: {
     listCourses: vi.fn().mockResolvedValue([]),
     createConversation: vi.fn().mockResolvedValue({ conversation_id: "CONV-1" }),
     getChat: vi.fn().mockResolvedValue({ conversation_id: "C-1", course_id: null, messages: [] }),
@@ -13,6 +13,8 @@ vi.mock("../api/client", () => ({
     getStep: vi.fn(),
   },
 }));
+
+vi.mock("../api/ApiProvider", () => ({ useApi: () => mockApi }));
 
 describe("AppShell layout", () => {
   beforeEach(() => vi.clearAllMocks());

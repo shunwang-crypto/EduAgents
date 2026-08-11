@@ -10,7 +10,7 @@ import {
   LoaderCircle,
   MessageCircleQuestion,
 } from "lucide-react";
-import { api } from "../../api/client";
+import { useApi } from "../../api/ApiProvider";
 import type { Course, StudyPlan } from "../../api/types";
 import RichMarkdown from "../../components/content/RichMarkdown";
 import { CourseHeader } from "../../layout/CourseHeader";
@@ -22,6 +22,7 @@ interface OutletCtx {
 
 /** StudyPlanPage：ChatGPT 文档式三阶段计划（无 Dashboard）。 */
 export function StudyPlanPage() {
+  const api = useApi();
   const { courseId } = useParams<{ courseId: string }>();
   const navigate = useNavigate();
   const { openMobileSidebar = () => {} } = (useOutletContext<OutletCtx>() ?? {});
@@ -113,7 +114,7 @@ export function StudyPlanPage() {
               </span>
               <h2>还没有学习计划</h2>
               <p>根据课程目标生成三阶段学习计划。</p>
-              <button className="btn primary" onClick={generate} disabled={generating}>
+              <button className="ea-button primary" onClick={generate} disabled={generating}>
                 {generating ? (
                   <span className="loading-btn">
                     <LoaderCircle size={14} className="spin" aria-hidden /> 正在生成…
@@ -216,22 +217,22 @@ export function StudyPlanPage() {
 
               {/* Footer actions */}
               <div className="plan-actions">
-                <button type="button" className="btn" onClick={() => setShowMarkdown((v) => !v)}>
+                <button type="button" className="ea-button" onClick={() => setShowMarkdown((v) => !v)}>
                   {showMarkdown ? <ChevronUp size={15} aria-hidden /> : <ChevronDown size={15} aria-hidden />}
                   {showMarkdown ? "收起完整说明" : "查看完整说明"}
                 </button>
                 {confirmRegenerate ? (
                   <span className="plan-regen-confirm">
                     <span className="plan-regen-text">重新生成会替换当前计划，是否继续？</span>
-                    <button type="button" className="btn primary" onClick={generate} disabled={generating}>
+                    <button type="button" className="ea-button primary" onClick={generate} disabled={generating}>
                       确认重新生成
                     </button>
-                    <button type="button" className="btn" onClick={() => setConfirmRegenerate(false)}>
+                    <button type="button" className="ea-button" onClick={() => setConfirmRegenerate(false)}>
                       取消
                     </button>
                   </span>
                 ) : (
-                  <button type="button" className="btn secondary" onClick={() => setConfirmRegenerate(true)} disabled={generating}>
+                  <button type="button" className="ea-button secondary" onClick={() => setConfirmRegenerate(true)} disabled={generating}>
                     <LoaderCircle size={14} className={generating ? "spin" : ""} aria-hidden /> 重新生成计划
                   </button>
                 )}

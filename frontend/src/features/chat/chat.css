@@ -7,7 +7,7 @@
 }
 
 .chat-content {
-  max-width: var(--chat-width);
+  max-width: var(--ea-chat-width);
   margin: 0 auto;
   padding: 24px 24px 40px;
   display: flex;
@@ -31,7 +31,7 @@
   padding: 10px 14px;
   white-space: pre-wrap;
   word-break: break-word;
-  color: var(--text-primary);
+  color: var(--ea-text-primary);
   font-size: 15px;
   line-height: 1.6;
 }
@@ -72,7 +72,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  color: var(--danger);
+  color: var(--ea-danger);
   font-size: 13px;
   padding: 8px 0;
   margin-bottom: 16px;
@@ -85,7 +85,7 @@
 .inline-error-retry {
   border: none;
   background: transparent;
-  color: var(--primary);
+  color: var(--ea-primary);
   font-size: 13px;
   cursor: pointer;
   text-decoration: underline;
@@ -108,8 +108,8 @@
   width: 48px;
   height: 48px;
   border-radius: 14px;
-  background: var(--primary-soft);
-  color: var(--primary);
+  background: var(--ea-primary-soft);
+  color: var(--ea-primary);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -120,12 +120,12 @@
   font-size: 20px;
   font-weight: 650;
   margin: 0 0 8px;
-  color: var(--text-primary);
+  color: var(--ea-text-primary);
 }
 
 .empty-state p {
   font-size: 14px;
-  color: var(--text-secondary);
+  color: var(--ea-text-secondary);
   margin: 0 0 24px;
 }
 
@@ -143,7 +143,7 @@
   border: 1px solid #e5e7eb;
   background: #ffffff;
   border-radius: 999px;
-  color: var(--text-primary);
+  color: var(--ea-text-primary);
   font-size: 14px;
   cursor: pointer;
   transition: background 150ms ease, border-color 150ms ease;
@@ -152,7 +152,7 @@
 
 .suggestion-chip:hover {
   background: #f7faf8;
-  border-color: var(--primary-soft);
+  border-color: var(--ea-primary-soft);
 }
 
 /* ---------- Step Chip ---------- */
@@ -167,18 +167,18 @@
   border-radius: 999px;
   padding: 5px 12px;
   font-size: 13px;
-  color: var(--text-primary);
+  color: var(--ea-text-primary);
 }
 
 .step-chip-icon {
   display: inline-flex;
-  color: var(--primary);
+  color: var(--ea-primary);
 }
 
 .step-chip-x {
   background: transparent;
   border: none;
-  color: var(--text-muted);
+  color: var(--ea-text-muted);
   cursor: pointer;
   display: inline-flex;
   padding: 2px;
@@ -192,7 +192,7 @@
 .step-chip-error {
   background: rgba(196, 60, 60, 0.06);
   border-color: rgba(196, 60, 60, 0.3);
-  color: var(--danger);
+  color: var(--ea-danger);
 }
 
 /* ---------- Composer ---------- */
@@ -202,7 +202,7 @@
 }
 
 .composer {
-  max-width: var(--composer-width);
+  max-width: var(--ea-composer-width);
   margin: 0 auto;
 }
 
@@ -214,13 +214,13 @@
   border-radius: 24px;
   padding: 8px 8px 8px 16px;
   background: #ffffff;
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--ea-shadow-sm);
   transition: border-color 150ms ease, box-shadow 150ms ease;
 }
 
 .composer-box:focus-within {
   border-color: #c5c9cd;
-  box-shadow: 0 0 0 3px rgba(23, 107, 85, 0.08), var(--shadow-sm);
+  box-shadow: 0 0 0 3px rgba(23, 107, 85, 0.08), var(--ea-shadow-sm);
 }
 
 .composer-box.has-content {
@@ -237,7 +237,7 @@
   font-size: 15px;
   line-height: 1.5;
   background: transparent;
-  color: var(--text-primary);
+  color: var(--ea-text-primary);
   padding: 6px 0;
 }
 
@@ -254,7 +254,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--primary);
+  background: var(--ea-primary);
   color: #fff;
   cursor: pointer;
   transition: background 150ms ease, opacity 150ms ease;
@@ -267,7 +267,7 @@
 }
 
 .composer-send:not(:disabled):hover {
-  background: var(--primary-hover);
+  background: var(--ea-primary-hover);
 }
 
 .composer-footer {

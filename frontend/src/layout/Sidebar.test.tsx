@@ -3,18 +3,23 @@ import { render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
 
-const courses = [
-  { course_id: "PY", display_name: "Python 数据分析" },
-  { course_id: "JAVA", display_name: "Java OOP" },
-  { course_id: "TRANSFORMER", display_name: "Transformer" },
-];
-
-vi.mock("../api/client", () => ({
-  api: {
-    listCourses: vi.fn().mockResolvedValue(courses),
+const { courses, mockApi } = vi.hoisted(() => ({
+  courses: [
+    { course_id: "PY", display_name: "Python 数据分析" },
+    { course_id: "JAVA", display_name: "Java OOP" },
+    { course_id: "TRANSFORMER", display_name: "Transformer" },
+  ],
+  mockApi: {
     createConversation: vi.fn().mockResolvedValue({ conversation_id: "CONV-1" }),
     createCourse: vi.fn(),
   },
+}));
+
+vi.mock("../api/ApiProvider", () => ({
+  useApi: () => ({
+    ...mockApi,
+    listCourses: vi.fn().mockResolvedValue(courses),
+  }),
 }));
 
 function renderSidebar(props: Partial<React.ComponentProps<typeof Sidebar>> = {}) {

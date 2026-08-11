@@ -3,8 +3,8 @@ import { render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { ChatPage } from "./ChatPage";
 
-vi.mock("../../api/client", () => ({
-  api: {
+const { mockApi } = vi.hoisted(() => ({
+  mockApi: {
     getCourse: vi.fn().mockResolvedValue({ course_id: "PY", display_name: "Python 数据分析" }),
     getChat: vi.fn().mockResolvedValue({ conversation_id: "C-1", course_id: "PY", messages: [] }),
     getStep: vi.fn().mockResolvedValue({
@@ -20,6 +20,8 @@ vi.mock("../../api/client", () => ({
     }),
   },
 }));
+
+vi.mock("../../api/ApiProvider", () => ({ useApi: () => mockApi }));
 
 function renderChat(initialPath: string) {
   return render(
@@ -46,10 +48,9 @@ describe("ChatPage plan step context", () => {
   });
 
   it("loads conversation from ?conversation= query", async () => {
-    const { api } = await import("../../api/client");
     renderChat("/courses/PY/chat?conversation=CONV-NEW");
     await waitFor(() =>
-      expect(api.getChat as ReturnType<typeof vi.fn>).toHaveBeenCalledWith("PY", "CONV-NEW")
+      expect(mockApi.getChat as ReturnType<typeof vi.fn>).toHaveBeenCalledWith("PY", "CONV-NEW")
     );
   });
 });
