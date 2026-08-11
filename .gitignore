@@ -3,6 +3,7 @@
 __pycache__/
 .pytest_cache/
 *.pyc
+*.tsbuildinfo
 scripts/
 data/
 frontend/node_modules/
