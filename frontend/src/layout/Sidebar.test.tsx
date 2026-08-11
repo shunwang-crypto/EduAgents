@@ -3,13 +3,14 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
 
-const { courses, mockApi } = vi.hoisted(() => ({
-  courses: [
+const { mockApi } = vi.hoisted(() => {
+  const courses = [
     { course_id: "PY", display_name: "Python 数据分析" },
     { course_id: "JAVA", display_name: "Java OOP" },
     { course_id: "TRANSFORMER", display_name: "Transformer" },
-  ],
-  mockApi: {
+  ];
+  const mockApi = {
+    listCourses: vi.fn().mockResolvedValue(courses),
     createConversation: vi.fn().mockResolvedValue({ conversation_id: "CONV-1" }),
     createCourse: vi.fn(),
     renameCourse: vi
@@ -17,14 +18,14 @@ const { courses, mockApi } = vi.hoisted(() => ({
       .mockResolvedValue({ course_id: "PY", display_name: "Python 进阶" }),
     deleteCourse: vi.fn().mockResolvedValue(undefined),
     getCourse: vi.fn().mockResolvedValue({ course_id: "PY", display_name: "Python 数据分析" }),
-  },
-}));
+  };
+  return { mockApi };
+});
 
+// 返回严格同一个 object reference：Sidebar 的 useEffect([api]) 依赖 api 引用稳定性，
+// 引用不变则 rerender 不触发 load()，rename/delete 的本地 state 更新不会被 fixture 重新加载覆盖。
 vi.mock("../api/ApiProvider", () => ({
-  useApi: () => ({
-    ...mockApi,
-    listCourses: vi.fn().mockResolvedValue(courses),
-  }),
+  useApi: () => mockApi,
 }));
 
 function renderSidebar(props: Partial<React.ComponentProps<typeof Sidebar>> = {}) {
@@ -125,6 +126,8 @@ describe("Sidebar", () => {
     );
     // 就地更新侧边栏状态（不重新拉取列表）
     await waitFor(() => expect(screen.getByText("Python 进阶")).toBeTruthy());
+    // 根因修复验证：rename 只改本地 state，useApi 引用稳定，listCourses 仅初始化调用一次
+    expect(mockApi.listCourses).toHaveBeenCalledTimes(1);
   });
 
   it("opens delete dialog and removes the course from sidebar on confirm", async () => {
@@ -138,5 +141,7 @@ describe("Sidebar", () => {
       expect((mockApi.deleteCourse as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith("PY")
     );
     await waitFor(() => expect(screen.queryByText("Python 数据分析")).toBeNull());
+    // 根因修复验证：delete 只改本地 state，useApi 引用稳定，listCourses 仅初始化调用一次
+    expect(mockApi.listCourses).toHaveBeenCalledTimes(1);
   });
 });
