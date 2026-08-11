@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { Outlet, useNavigate } from "react-router-dom";
+import { Outlet } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
 import { useApi } from "../api/ApiProvider";
+import { useLearningNav } from "../app/useLearningNav";
 import "./shell.css";
 
 function useMediaQuery(query: string): boolean {
@@ -25,17 +26,19 @@ function useMediaQuery(query: string): boolean {
  */
 export function AppShell() {
   const api = useApi();
+  const nav = useLearningNav();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [newChatError, setNewChatError] = useState(false);
   const isMobile = useMediaQuery("(max-width: 768px)");
-  const navigate = useNavigate();
 
   const newChat = async () => {
     try {
       setNewChatError(false);
       const conv = await api.createConversation(null);
-      navigate(`?conversation=${conv.conversation_id}`, { replace: true });
+      // 「新对话」= General Chat：导航到 LearningApp 根（脱离课程路由），
+      // 不再停留在 courses/:courseId/chat（否则 course_id 与 conversation.course_id=null 不匹配 → 404）。
+      nav.openGeneralChat(conv.conversation_id, true);
     } catch {
       // 新建对话失败：不假装成功，保持当前页面并提示
       setNewChatError(true);
@@ -55,7 +58,7 @@ export function AppShell() {
         onClose={() => setMobileSidebarOpen(false)}
         onToggleCollapse={() => setSidebarCollapsed((v) => !v)}
         newChat={newChat}
-        navigateToCourse={(id) => navigate(`courses/${id}/chat`)}
+        navigateToCourse={(id) => nav.openCourseChat(id)}
       />
       <main className="workspace">
         <Outlet context={{ openMobileSidebar: () => setMobileSidebarOpen(true) }} />

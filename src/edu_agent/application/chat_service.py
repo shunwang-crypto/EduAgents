@@ -203,9 +203,11 @@ class ChatService:
         learner = self._learner
         learner.ensure_learner(user_id)
         if course_id:
-            learner.ensure_course(user_id, course_id)
+            # ownership 优先：先确认课程属于当前 user，再 ensure_course。
+            # 否则非法 course_id 会经 ensure_course 产生 ghost learner_course_state。
             if learner.repo.get_user_course(user_id, course_id) is None:
                 raise KeyError(f"course not found: {course_id}")
+            learner.ensure_course(user_id, course_id)
 
         # 1) 会话（ownership 校验：user + course 都必须匹配）
         conv = self._resolve_conversation(user_id, course_id, conversation_id)
@@ -278,8 +280,17 @@ class ChatService:
 
     def get_conversation(self, user_id: str, course_id: Optional[str] = None,
                          conversation_id: Optional[str] = None) -> dict:
+        """GET 历史：纯读取，不创建 conversation（避免 GET 产生 DB write）。
+
+        没有 conversation 时返回 conversation_id=None + 空 history（200），
+        前端据此显示 Empty State，而不是「无法加载历史消息」。
+        """
         learner = self._learner
-        conv = self._resolve_conversation(user_id, course_id, conversation_id)
+        conv = self._resolve_conversation(
+            user_id, course_id, conversation_id, create_if_missing=False
+        )
+        if conv is None:
+            return {"conversation_id": None, "course_id": course_id, "messages": []}
         messages = learner.repo.list_messages(conv["conversation_id"])
         return {"conversation_id": conv["conversation_id"], "course_id": course_id,
                 "messages": [{"message_id": m["message_id"], "role": m["role"],
@@ -289,8 +300,13 @@ class ChatService:
 
     # ------------------------------------------------------------------
     def _resolve_conversation(self, user_id: str, course_id: Optional[str],
-                              conversation_id: Optional[str]) -> dict:
-        """ownership-safe 会话解析：conversation_id 必须 user+course 匹配，否则拒绝。"""
+                              conversation_id: Optional[str],
+                              create_if_missing: bool = True) -> Optional[dict]:
+        """ownership-safe 会话解析：conversation_id 必须 user+course 匹配，否则拒绝。
+
+        create_if_missing：True 时（POST chat）无 conversation 自动创建；
+        False 时（GET 历史）无 conversation 返回 None，由调用方返回空 history，不写库。
+        """
         repo = self._learner.repo
         if conversation_id:
             conv = repo.get_conversation_for_user(user_id, conversation_id)
@@ -301,6 +317,8 @@ class ChatService:
             return conv
         conv = repo.get_course_conversation(user_id, course_id or "")
         if conv is None:
+            if not create_if_missing:
+                return None
             conv_id = f"CONV-{uuid.uuid4().hex[:12]}"
             repo.upsert_conversation(
                 {"conversation_id": conv_id, "user_id": user_id, "course_id": course_id or "",
@@ -316,11 +334,11 @@ class ChatService:
         # 最低保障：课程显示名 + 目标 + 计划摘要（个性化失败也保留，绝不变普通聊天）
         repo = self._learner.repo
         course_row = repo.get_user_course(user_id, course_id)
+        # 优先 user_courses.display_name（用户 rename 后的名字）；
+        # 内置课程首次访问时 display_name 即为内置 title 的副本，无需再用 domain title 覆盖。
         course_title = (course_row or {}).get("display_name") or course_id
         try:
             bundle, course = resolve_bundle_and_course(user_id, course_id, self._learner)
-            if course and course.title:
-                course_title = course.title
             plan = repo.get_plan(user_id, course_id)
             plan_summary = (plan or {}).get("summary", "")
             # RAG query：step.title + message 提升相关性；正式路径必须用真实问题
@@ -345,12 +363,15 @@ class ChatService:
             return "\n".join(lines)
 
     def _current_goal_summary(self, user_id: str, course_id: str) -> str:
-        """复用 LearnerModelService 的 active goal 解析（course_state.current_goal_id 优先）。"""
+        """复用 LearnerModelService 的 active goal 解析（course_state.current_goal_id 优先）。
+
+        resolve_active_goal 返回 Goal Pydantic 模型（非 dict），必须用属性访问。
+        """
         try:
             goal = self._learner.resolve_active_goal(user_id, course_id)
             if goal:
-                target = goal.get("target") or ""
-                name = goal.get("name") or ""
+                target = goal.target or ""
+                name = goal.goal_name or ""
                 return target or name
         except Exception:  # noqa: BLE001
             logger.warning("[chat] resolve active goal failed", exc_info=True)
@@ -393,8 +414,7 @@ class ChatService:
             history_text = "\n".join(f"{h['role']}: {h['content']}" for h in history[-6:]) or "（无）"
             response = (prompt | get_kb_llm(temperature=0.4)).invoke(
                 {"system": _SYSTEM_ROLE, "context_block": context_block,
-                 "requirement_block": requirement_block, "history": history_text,
-                 "message": message}
+                 "history": history_text, "message": message}
             )
             from edu_agent.core.agent_runner import model_to_text
             return model_to_text(response).strip() or _fallback_reply(message)

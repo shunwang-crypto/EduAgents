@@ -3,7 +3,7 @@
 .rich-markdown {
   font-size: 15px;
   line-height: 1.75;
-  color: var(--text-primary, #1a1a1a);
+  color: var(--ea-text-primary, #1a1a1a);
   word-break: break-word;
 }
 
@@ -49,20 +49,20 @@
 .rich-markdown blockquote {
   margin: 0.8em 0;
   padding: 0.1em 1em;
-  border-left: 3px solid var(--border, #e5e5e5);
-  color: var(--text-secondary, #666);
-  background: var(--bg-surface, #fafafa);
-  border-radius: 0 var(--radius-sm, 8px) var(--radius-sm, 8px) 0;
+  border-left: 3px solid var(--ea-border, #e5e5e5);
+  color: var(--ea-text-secondary, #666);
+  background: var(--ea-bg-sidebar, #fafafa);
+  border-radius: 0 var(--ea-radius-sm, 8px) var(--ea-radius-sm, 8px) 0;
 }
 
 .rich-markdown hr {
   border: none;
-  border-top: 1px solid var(--border, #e5e5e5);
+  border-top: 1px solid var(--ea-border, #e5e5e5);
   margin: 1.2em 0;
 }
 
 .rich-markdown a {
-  color: var(--primary, #176b55);
+  color: var(--ea-primary, #176b55);
   text-decoration: underline;
   text-underline-offset: 2px;
 }
@@ -89,7 +89,7 @@
 /* 代码块（深色 surface + 语言标签 + 复制按钮） */
 .md-code-block {
   margin: 0.8em 0;
-  border-radius: var(--radius-md, 10px);
+  border-radius: var(--ea-radius-md, 10px);
   overflow: hidden;
   background: #1e1e24;
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -140,8 +140,8 @@
 .md-table-wrap {
   margin: 0.8em 0;
   overflow-x: auto;
-  border: 1px solid var(--border, #e5e5e5);
-  border-radius: var(--radius-sm, 8px);
+  border: 1px solid var(--ea-border, #e5e5e5);
+  border-radius: var(--ea-radius-sm, 8px);
 }
 
 .md-table-wrap table {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { useNavigate, useOutletContext, useParams } from "react-router-dom";
+import { useOutletContext, useParams } from "react-router-dom";
 import {
   BookOpen,
   CheckCircle2,
@@ -14,6 +14,7 @@ import { useApi, ApiError } from "../../api/ApiProvider";
 import type { Course, StudyPlan } from "../../api/types";
 import RichMarkdown from "../../components/content/RichMarkdown";
 import { CourseHeader } from "../../layout/CourseHeader";
+import { useLearningNav } from "../../app/useLearningNav";
 import "./study-plan.css";
 
 interface OutletCtx {
@@ -23,13 +24,15 @@ interface OutletCtx {
 /** StudyPlanPage：ChatGPT 文档式三阶段计划（无 Dashboard）。 */
 export function StudyPlanPage() {
   const api = useApi();
+  const nav = useLearningNav();
   const { courseId } = useParams<{ courseId: string }>();
-  const navigate = useNavigate();
   const { openMobileSidebar = () => {} } = (useOutletContext<OutletCtx>() ?? {});
   const [course, setCourse] = useState<Course | null>(null);
   const [courseError, setCourseError] = useState(false);
   const [plan, setPlan] = useState<StudyPlan | null>(null);
-  const [planLoading, setPlanLoading] = useState(true);
+  // 计划状态机：loading（加载中）/ empty（404 无计划）/ ready（有计划）/ error（500 等加载失败）。
+  // 明确分离，避免 500 时「error」与「还没有学习计划」同时显示。
+  const [planStatus, setPlanStatus] = useState<"loading" | "empty" | "ready" | "error">("loading");
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState("");
   const [showMarkdown, setShowMarkdown] = useState(false);
@@ -40,20 +43,23 @@ export function StudyPlanPage() {
     setCourseError(false);
     setError("");
     api.getCourse(courseId).then(setCourse).catch(() => setCourseError(true));
-    setPlanLoading(true);
+    setPlanStatus("loading");
+    setPlan(null);
     api
       .getPlan(courseId)
-      .then(setPlan)
+      .then((p) => {
+        setPlan(p);
+        setPlanStatus("ready");
+      })
       .catch((e) => {
-        // 404 = 还没有计划；其他错误（500 等）= 服务器问题，显示重试
+        // 404 = 还没有计划；其他错误（500 等）= 服务器问题，明确为 error 状态
         if (e instanceof ApiError && e.status === 404) {
-          setPlan(null);
+          setPlanStatus("empty");
         } else {
-          setPlan(null);
+          setPlanStatus("error");
           setError("无法加载学习计划，请重试");
         }
-      })
-      .finally(() => setPlanLoading(false));
+      });
   }, [courseId, api]);
 
   const generate = useCallback(async () => {
@@ -63,6 +69,7 @@ export function StudyPlanPage() {
     try {
       const p = await api.generatePlan(courseId, {});
       setPlan(p);
+      setPlanStatus("ready");
       setShowMarkdown(false);
       setConfirmRegenerate(false);
     } catch (e) {
@@ -70,7 +77,7 @@ export function StudyPlanPage() {
     } finally {
       setGenerating(false);
     }
-  }, [courseId]);
+  }, [courseId, api]);
 
   const toggleStep = useCallback(
     async (stepId: string, status: string) => {
@@ -82,7 +89,7 @@ export function StudyPlanPage() {
         setError(e instanceof Error ? e.message : "更新失败");
       }
     },
-    [courseId]
+    [courseId, api]
   );
 
   const stages = plan?.stages?.length ? plan.stages : [];
@@ -101,13 +108,8 @@ export function StudyPlanPage() {
               无法加载课程
             </div>
           )}
-          {error && (
-            <div className="inline-error" role="alert">
-              {error}
-            </div>
-          )}
 
-          {planLoading && (
+          {planStatus === "loading" && (
             <div className="plan-skeleton" aria-busy="true">
               <div className="plan-skeleton-block" style={{ height: 28, width: "55%" }} />
               <div className="plan-skeleton-block" style={{ height: 14, width: "35%" }} />
@@ -116,7 +118,13 @@ export function StudyPlanPage() {
             </div>
           )}
 
-          {!planLoading && !plan && (
+          {planStatus === "error" && (
+            <div className="inline-error" role="alert">
+              {error || "无法加载学习计划，请重试"}
+            </div>
+          )}
+
+          {planStatus === "empty" && (
             <div className="plan-empty">
               <span className="plan-empty-icon">
                 <BookOpen size={22} aria-hidden />
@@ -136,7 +144,7 @@ export function StudyPlanPage() {
             </div>
           )}
 
-          {plan && (
+          {planStatus === "ready" && plan && (
             <>
               {/* Hero */}
               <div className="plan-hero">
@@ -184,7 +192,7 @@ export function StudyPlanPage() {
                           <button
                             type="button"
                             className="step-ask-btn"
-                            onClick={() => navigate(`/courses/${courseId}/chat?step=${step.step_id}`)}
+                            onClick={() => nav.openCourseChat(courseId, { stepId: step.step_id })}
                           >
                             <MessageCircleQuestion size={14} aria-hidden /> 就此提问
                           </button>
@@ -253,6 +261,12 @@ export function StudyPlanPage() {
                 </div>
               )}
             </>
+          )}
+
+          {planStatus === "ready" && error && (
+            <div className="inline-error" role="alert">
+              {error}
+            </div>
           )}
         </div>
       </div>

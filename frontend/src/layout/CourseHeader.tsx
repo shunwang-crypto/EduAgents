@@ -1,6 +1,6 @@
 import { Menu } from "lucide-react";
-import { useNavigate } from "react-router-dom";
 import type { Course } from "../api/types";
+import { useLearningNav } from "../app/useLearningNav";
 
 interface CourseHeaderProps {
   course: Course | null;
@@ -10,7 +10,7 @@ interface CourseHeaderProps {
 
 /** CourseHeader：移动端菜单 + 标题 + 对话/学习计划 tab（统一，不重复实现）。 */
 export function CourseHeader({ course, activeView, onOpenMobileSidebar }: CourseHeaderProps) {
-  const navigate = useNavigate();
+  const nav = useLearningNav();
   const showTabs = Boolean(course);
 
   const title = course ? course.display_name : "新对话";
@@ -28,14 +28,14 @@ export function CourseHeader({ course, activeView, onOpenMobileSidebar }: Course
           <button
             type="button"
             className={`header-tab ${activeView === "chat" ? "active" : ""}`}
-            onClick={() => navigate(`/courses/${course!.course_id}/chat`)}
+            onClick={() => nav.openCourseChat(course!.course_id)}
           >
             对话
           </button>
           <button
             type="button"
             className={`header-tab ${activeView === "plan" ? "active" : ""}`}
-            onClick={() => navigate(`/courses/${course!.course_id}/plan`)}
+            onClick={() => nav.openCoursePlan(course!.course_id)}
           >
             学习计划
           </button>

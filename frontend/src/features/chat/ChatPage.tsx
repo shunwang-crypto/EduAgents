@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useOutletContext, useParams, useSearchParams } from "react-router-dom";
 import { BookOpen, X } from "lucide-react";
-import { useApi } from "../../api/ApiProvider";
+import { useApi, ApiError } from "../../api/ApiProvider";
 import type { ChatMessage, Course, PlanStep } from "../../api/types";
 import RichMarkdown from "../../components/content/RichMarkdown";
 import { InlineError } from "../../components/ui/InlineError";
 import { LoadingDots } from "../../components/ui/Loading";
 import { CourseHeader } from "../../layout/CourseHeader";
+import { useLearningNav } from "../../app/useLearningNav";
 import { ChatComposer } from "./ChatComposer";
 import { ChatEmptyState } from "./ChatEmptyState";
 import "./chat.css";
@@ -19,6 +20,7 @@ interface OutletCtx {
  * 只负责页面内容（header 由 CourseHeader 提供，workspace 由 AppShell 提供）。 */
 export function ChatPage() {
   const api = useApi();
+  const nav = useLearningNav();
   const { courseId } = useParams<{ courseId: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
   const stepParam = searchParams.get("step");
@@ -32,7 +34,8 @@ export function ChatPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(true);
-  const [historyError, setHistoryError] = useState(false);
+  // historyError 保存具体错误（ApiError 含 status / dev detail），不再吞掉 404/401/500/网络错误
+  const [historyError, setHistoryError] = useState<ApiError | Error | null>(null);
   const [sendError, setSendError] = useState("");
   const [retryText, setRetryText] = useState("");
   const [retryMsgId, setRetryMsgId] = useState<string | null>(null);
@@ -62,7 +65,10 @@ export function ChatPage() {
     api
       .getChat(courseId ?? null, conversationParam)
       .then((conv) => setMessages(conv.messages))
-      .catch(() => setHistoryError(true))
+      .catch((e) => {
+        if (import.meta.env.DEV) console.error("[chat] getChat failed", e);
+        setHistoryError(e instanceof Error ? e : new Error(String(e)));
+      })
       .finally(() => setHistoryLoading(false));
   }, [courseId, conversationParam, api]);
 
@@ -167,14 +173,27 @@ export function ChatPage() {
   }, [retryText, retryMsgId, loading, runChat]);
 
   const retryHistory = useCallback(() => {
-    setHistoryError(false);
+    setHistoryError(null);
     setHistoryLoading(true);
     api
       .getChat(courseId ?? null, conversationParam)
       .then((conv) => setMessages(conv.messages))
-      .catch(() => setHistoryError(true))
+      .catch((e) => {
+        if (import.meta.env.DEV) console.error("[chat] getChat retry failed", e);
+        setHistoryError(e instanceof Error ? e : new Error(String(e)));
+      })
       .finally(() => setHistoryLoading(false));
   }, [courseId, conversationParam, api]);
+
+  // 失效对话（404）：新建 General Chat 会话并离开当前（可能错配的）路由，避免无限 Retry 同一坏 conversation
+  const startNewChat = useCallback(async () => {
+    try {
+      const conv = await api.createConversation(null);
+      nav.openGeneralChat(conv.conversation_id, true);
+    } catch {
+      // 新建失败则保持现状
+    }
+  }, [api, nav]);
 
   const placeholder = step
     ? `继续问关于 ${step.title} 的问题…`
@@ -193,7 +212,15 @@ export function ChatPage() {
           {stepError && <div className="step-chip step-chip-error">{stepError}</div>}
 
           {historyError && messages.length === 0 && !historyLoading && (
-            <InlineError message="无法加载历史消息" onRetry={retryHistory} />
+            historyError instanceof ApiError && historyError.status === 404 ? (
+              <InlineError
+                message="该对话不存在或已失效"
+                onRetry={startNewChat}
+                retryLabel="开始新对话"
+              />
+            ) : (
+              <InlineError message="无法加载历史消息" onRetry={retryHistory} />
+            )
           )}
           {courseError && (
             <InlineError message="无法加载课程，请重试" onRetry={() => window.location.reload()} />
