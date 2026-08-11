@@ -13,6 +13,11 @@ export function learningAppBase(pathname: string): string {
   return pathname.slice(0, idx);
 }
 
+/** 拼接 base（LearningApp 根，结尾无斜杠或为 "/"）与以 "/" 开头的相对后缀，避免出现双斜杠。 */
+function joinPath(base: string, suffix: string): string {
+  return base === "/" ? suffix : `${base}${suffix}`;
+}
+
 /** General Chat 根路径，可附带 conversation_id。 */
 export function generalChatPath(pathname: string, conversationId?: string | null): string {
   const base = learningAppBase(pathname);
@@ -31,11 +36,11 @@ export function courseChatPath(
   if (opts?.conversationId) params.set("conversation", opts.conversationId);
   if (opts?.stepId) params.set("step", opts.stepId);
   const q = params.toString();
-  return `${base}/courses/${courseId}/chat${q ? `?${q}` : ""}`;
+  return `${joinPath(base, `/courses/${courseId}/chat`)}${q ? `?${q}` : ""}`;
 }
 
 /** 课程 Plan 路径。 */
 export function coursePlanPath(pathname: string, courseId: string): string {
   const base = learningAppBase(pathname);
-  return `${base}/courses/${courseId}/plan`;
+  return joinPath(base, `/courses/${courseId}/plan`);
 }
