@@ -11,6 +11,7 @@ type MockApiClient = {
   getPlan: ReturnType<typeof vi.fn>;
   generatePlan: ReturnType<typeof vi.fn>;
   updateStep: ReturnType<typeof vi.fn>;
+  getLesson: ReturnType<typeof vi.fn>;
   chat: ReturnType<typeof vi.fn>;
   listCourses: ReturnType<typeof vi.fn>;
   getChat: ReturnType<typeof vi.fn>;

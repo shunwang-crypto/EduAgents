@@ -26,6 +26,60 @@ interface LessonCache {
   generatedAt: string | null;
 }
 
+interface PlanSettingsFieldsProps {
+  durationDays: number;
+  dailyMinutes: number;
+  background: string;
+  onChange: (patch: {
+    duration_days?: number;
+    daily_minutes?: number;
+    background?: string;
+  }) => void;
+}
+
+/** 轻量计划设置字段：首次生成与重新生成共用，避免重复两套 input JSX。 */
+function PlanSettingsFields({ durationDays, dailyMinutes, background, onChange }: PlanSettingsFieldsProps) {
+  return (
+    <>
+      <label className="plan-settings-field">
+        <span>学习周期（天）</span>
+        <input
+          type="number"
+          min={1}
+          max={365}
+          value={durationDays}
+          onChange={(e) => {
+            const n = parseInt(e.target.value, 10);
+            if (!Number.isNaN(n)) onChange({ duration_days: Math.min(365, Math.max(1, n)) });
+          }}
+        />
+      </label>
+      <label className="plan-settings-field">
+        <span>每日（分钟）</span>
+        <input
+          type="number"
+          min={5}
+          max={600}
+          value={dailyMinutes}
+          onChange={(e) => {
+            const n = parseInt(e.target.value, 10);
+            if (!Number.isNaN(n)) onChange({ daily_minutes: Math.min(600, Math.max(5, n)) });
+          }}
+        />
+      </label>
+      <label className="plan-settings-field">
+        <span>当前基础（可选）</span>
+        <input
+          type="text"
+          value={background}
+          placeholder="例如：我会基础 Python"
+          onChange={(e) => onChange({ background: e.target.value })}
+        />
+      </label>
+    </>
+  );
+}
+
 /** StudyPlanPage：ChatGPT 文档式三阶段计划（无 Dashboard）。 */
 export function StudyPlanPage() {
   const api = useApi();
@@ -43,10 +97,15 @@ export function StudyPlanPage() {
   const [showMarkdown, setShowMarkdown] = useState(false);
   const [confirmRegenerate, setConfirmRegenerate] = useState(false);
 
-  // 计划设置（周期/每日时长）：首次生成落库，重新生成复用为默认
-  const [settings, setSettings] = useState<{ duration_days: number; daily_minutes: number }>({
+  // 计划设置（周期/每日时长/当前基础）：首次生成落库，重新生成复用为默认
+  const [settings, setSettings] = useState<{
+    duration_days: number;
+    daily_minutes: number;
+    background: string;
+  }>({
     duration_days: 14,
     daily_minutes: 60,
+    background: "",
   });
 
   // 展开的 Lesson 步骤 + Lesson 缓存（懒加载，按 stepId 缓存，避免重复调 LLM）
@@ -54,9 +113,12 @@ export function StudyPlanPage() {
   const [lessonByStep, setLessonByStep] = useState<Record<string, LessonCache>>({});
   const [lessonLoadingStep, setLessonLoadingStep] = useState<string | null>(null);
   const [lessonErrorStep, setLessonErrorStep] = useState<string | null>(null);
+  const [lessonErrorKind, setLessonErrorKind] = useState<"stale" | "error" | null>(null);
 
   //  stale-async 保护：courseId 快速切换时，旧请求的响应不许覆盖新页面
   const loadSeq = useRef(0);
+  //  Lesson 请求级 stale 保护：一次只保留最后一个 Lesson 响应，过期响应丢弃
+  const lessonRequestSeq = useRef(0);
 
   useEffect(() => {
     if (!courseId) return;
@@ -65,11 +127,13 @@ export function StudyPlanPage() {
     setError("");
     setPlanStatus("loading");
     setPlan(null);
-    // 切换课程时清空 Lesson 展开/缓存，避免串课
+    // 切换课程时清空 Lesson 展开/缓存，避免串课；并使进行中的 Lesson 请求失效
     setExpandedStepId(null);
     setLessonByStep({});
     setLessonErrorStep(null);
+    setLessonErrorKind(null);
     setLessonLoadingStep(null);
+    lessonRequestSeq.current++;
     api
       .getCourse(courseId)
       .then((c) => {
@@ -108,20 +172,23 @@ export function StudyPlanPage() {
       setSettings({
         duration_days: course.duration_days || 14,
         daily_minutes: course.daily_minutes || 60,
+        background: "",
       });
     }
   }, [course]);
 
   const generate = useCallback(
-    async (override?: { duration_days?: number; daily_minutes?: number }) => {
+    async (override?: { duration_days?: number; daily_minutes?: number; background?: string }) => {
       if (!courseId) return;
       setGenerating(true);
       setError("");
       try {
-        const p = await api.generatePlan(courseId, {
-          duration_days: override?.duration_days,
-          daily_minutes: override?.daily_minutes,
-        });
+        const body = {
+          duration_days: override?.duration_days ?? settings.duration_days,
+          daily_minutes: override?.daily_minutes ?? settings.daily_minutes,
+          background: override?.background ?? settings.background,
+        };
+        const p = await api.generatePlan(courseId, body);
         setPlan(p);
         setPlanStatus("ready");
         setShowMarkdown(false);
@@ -133,23 +200,27 @@ export function StudyPlanPage() {
         if (p && typeof override?.daily_minutes === "number") {
           setSettings((s) => ({ ...s, daily_minutes: override.daily_minutes! }));
         }
+        // 当前基础（background）是一次性的画像事实，生成后清空输入
+        setSettings((s) => ({ ...s, background: "" }));
       } catch (e) {
         setError(e instanceof Error ? e.message : "生成失败");
       } finally {
         setGenerating(false);
       }
     },
-    [courseId, api]
+    [courseId, api, settings]
   );
 
   const toggleStep = useCallback(
-    async (stepId: string, status: string) => {
-      if (!courseId) return;
+    async (stepId: string, status: string): Promise<boolean> => {
+      if (!courseId) return false;
       try {
         const p = await api.updateStep(courseId, stepId, status);
         setPlan(p);
+        return true;
       } catch (e) {
         setError(e instanceof Error ? e.message : "更新失败");
+        return false;
       }
     },
     [courseId, api]
@@ -159,6 +230,7 @@ export function StudyPlanPage() {
   const openLesson = useCallback(
     async (stepId: string) => {
       if (!courseId) return;
+      const reqSeq = ++lessonRequestSeq.current;
       setExpandedStepId(stepId);
       if (lessonByStep[stepId]?.markdown) return;
       const s = plan?.stages.flatMap((st) => st.steps).find((x) => x.step_id === stepId);
@@ -171,25 +243,36 @@ export function StudyPlanPage() {
       }
       setLessonLoadingStep(stepId);
       setLessonErrorStep((curr) => (curr === stepId ? null : curr));
+      setLessonErrorKind(null);
       try {
         const res = await api.getLesson(courseId, stepId);
+        // stale 保护：过期响应（课程/用户已切换、或已有更新的 Lesson 请求）直接丢弃
+        if (reqSeq !== lessonRequestSeq.current) return;
         setLessonByStep((prev) => ({
           ...prev,
           [stepId]: { markdown: res.lesson_markdown, generatedAt: res.lesson_generated_at },
         }));
-      } catch {
+      } catch (e) {
+        if (reqSeq !== lessonRequestSeq.current) return;
+        const status = e instanceof ApiError ? e.status : 0;
+        setLessonErrorKind(status === 404 ? "stale" : "error");
         setLessonErrorStep(stepId);
       } finally {
-        setLessonLoadingStep((curr) => (curr === stepId ? null : curr));
+        if (reqSeq === lessonRequestSeq.current)
+          setLessonLoadingStep((curr) => (curr === stepId ? null : curr));
       }
     },
     [courseId, api, plan, lessonByStep]
   );
 
   const handleStart = useCallback(
-    (step: PlanStep) => {
-      if (step.status === "not_started") void toggleStep(step.step_id, "in_progress");
-      void openLesson(step.step_id);
+    async (step: PlanStep) => {
+      if (step.status === "not_started") {
+        const ok = await toggleStep(step.step_id, "in_progress");
+        // status 更新本身失败 → 不继续生成 Lesson，避免 not_started + 已展开 lesson 状态冲突
+        if (!ok) return;
+      }
+      await openLesson(step.step_id);
     },
     [toggleStep, openLesson]
   );
@@ -271,7 +354,15 @@ export function StudyPlanPage() {
                 <BookOpen size={22} aria-hidden />
               </span>
               <h2>还没有学习计划</h2>
-              <p>根据课程目标生成三阶段学习计划。</p>
+              <p>设置学习周期与时长，根据课程目标生成三阶段学习计划。</p>
+              <div className="plan-settings plan-settings-empty">
+                <PlanSettingsFields
+                  durationDays={settings.duration_days}
+                  dailyMinutes={settings.daily_minutes}
+                  background={settings.background}
+                  onChange={(patch) => setSettings((s) => ({ ...s, ...patch }))}
+                />
+              </div>
               <button className="ea-button primary" onClick={() => generate()} disabled={generating}>
                 {generating ? (
                   <span className="loading-btn">
@@ -361,7 +452,9 @@ export function StudyPlanPage() {
                               )}
                               {lessonError && !lessonLoading && (
                                 <div className="inline-error" role="alert">
-                                  讲解生成失败
+                                  {lessonErrorKind === "stale"
+                                    ? "该学习步骤已失效，请刷新计划"
+                                    : "讲解生成失败"}
                                   <button
                                     type="button"
                                     className="lesson-retry"
@@ -438,43 +531,15 @@ export function StudyPlanPage() {
                 </section>
               ))}
 
-              {/* 计划设置（周期 / 每日时长）：重新生成时应用 */}
+              {/* 计划设置（周期 / 每日时长 / 当前基础）：重新生成时应用 */}
               <div className="plan-settings">
                 <div className="plan-settings-title">计划设置</div>
-                <label className="plan-settings-field">
-                  <span>学习周期（天）</span>
-                  <input
-                    type="number"
-                    min={1}
-                    max={365}
-                    value={settings.duration_days}
-                    onChange={(e) => {
-                      const n = parseInt(e.target.value, 10);
-                      if (!Number.isNaN(n))
-                        setSettings((s) => ({
-                          ...s,
-                          duration_days: Math.min(365, Math.max(1, n)),
-                        }));
-                    }}
-                  />
-                </label>
-                <label className="plan-settings-field">
-                  <span>每日（分钟）</span>
-                  <input
-                    type="number"
-                    min={5}
-                    max={600}
-                    value={settings.daily_minutes}
-                    onChange={(e) => {
-                      const n = parseInt(e.target.value, 10);
-                      if (!Number.isNaN(n))
-                        setSettings((s) => ({
-                          ...s,
-                          daily_minutes: Math.min(600, Math.max(5, n)),
-                        }));
-                    }}
-                  />
-                </label>
+                <PlanSettingsFields
+                  durationDays={settings.duration_days}
+                  dailyMinutes={settings.daily_minutes}
+                  background={settings.background}
+                  onChange={(patch) => setSettings((s) => ({ ...s, ...patch }))}
+                />
                 <span className="plan-settings-hint">重新生成时应用此设置</span>
               </div>
 

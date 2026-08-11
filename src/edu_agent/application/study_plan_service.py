@@ -333,19 +333,20 @@ def get_or_generate_step_lesson(
     if fresh is None or fresh.get("plan_id") != step.get("plan_id"):
         raise RuntimeError("plan step changed during lesson generation; discard stale lesson")
 
+    generated_at = _now_iso()
     with learner.repo.transaction():
         learner.repo.upsert_plan_step(
-            {**step, "lesson_markdown": markdown, "lesson_generated_at": _now_iso(),
-             "updated_at": _now_iso()}
+            {**step, "lesson_markdown": markdown, "lesson_generated_at": generated_at,
+             "updated_at": generated_at}
         )
-    return _lesson_payload(step, markdown)
+    return _lesson_payload(step, markdown, generated_at)
 
 
-def _lesson_payload(step: dict, markdown: str) -> dict:
+def _lesson_payload(step: dict, markdown: str, generated_at: Optional[str] = None) -> dict:
     return {
         "step_id": step["step_id"],
         "lesson_markdown": markdown,
-        "lesson_generated_at": step.get("lesson_generated_at") or _now_iso(),
+        "lesson_generated_at": generated_at or step.get("lesson_generated_at") or _now_iso(),
         "title": step.get("title", ""),
     }
 
@@ -359,6 +360,9 @@ def _build_lesson_context(
         course_row = learner.repo.get_user_course(user_id, course_id)
         course_title = (course_row or {}).get("display_name") or course_id
         lines.append(f"课程：{course_title}")
+        # 课程已真实保存周期/每日时长 → Lesson 个性化与 Plan 生成使用同一配置
+        resolved_days = int((course_row or {}).get("duration_days") or 14)
+        resolved_minutes = int((course_row or {}).get("daily_minutes") or 60)
         goal = learner.resolve_active_goal(user_id, course_id)
         if goal:
             g = (goal.target or goal.goal_name or "")
@@ -369,7 +373,8 @@ def _build_lesson_context(
         pc = build_plan_context(
             bundle, learner.repo, course,
             goal=(goal.target or goal.goal_name or ""),
-            daily_minutes=60, duration_days=14, user_id=user_id, course_id=course_id,
+            daily_minutes=resolved_minutes, duration_days=resolved_days,
+            user_id=user_id, course_id=course_id,
         )
         if pc.get("background_facts"):
             lines.append("学习者背景：" + "；".join(pc["background_facts"]))

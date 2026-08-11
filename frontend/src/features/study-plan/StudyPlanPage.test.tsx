@@ -247,4 +247,38 @@ describe("StudyPlanPage", () => {
     // 标题出现一次；描述与标题相同则不重复渲染
     expect(screen.getAllByText("相同标题").length).toBe(1);
   });
+
+  it("empty plan shows settings inputs initialized from course and applies them on first generate", async () => {
+    (mockApi.getCourse as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      course_id: "PY",
+      display_name: "Python 数据分析",
+      duration_days: 21,
+      daily_minutes: 45,
+    });
+    (mockApi.getPlan as ReturnType<typeof vi.fn>).mockResolvedValueOnce(null);
+    renderPage();
+    await waitFor(() => expect(screen.getByText("还没有学习计划")).toBeTruthy());
+    // 输入初始值来自课程已保存设置 21/45
+    const dur = screen.getByDisplayValue("21") as HTMLInputElement;
+    const min = screen.getByDisplayValue("45") as HTMLInputElement;
+    expect(dur).toBeTruthy();
+    expect(min).toBeTruthy();
+    // 改为 30/90 并填写当前基础
+    fireEvent.change(dur, { target: { value: "30" } });
+    fireEvent.change(min, { target: { value: "90" } });
+    fireEvent.change(screen.getByPlaceholderText("例如：我会基础 Python"), {
+      target: { value: "我会基础 Python" },
+    });
+    fireEvent.click(screen.getByText("生成学习计划"));
+    await waitFor(() =>
+      expect((mockApi.generatePlan as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith(
+        "PY",
+        expect.objectContaining({
+          duration_days: 30,
+          daily_minutes: 90,
+          background: "我会基础 Python",
+        })
+      )
+    );
+  });
 });

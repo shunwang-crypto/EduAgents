@@ -97,8 +97,11 @@ def test_lesson_generate_then_cache(client, monkeypatch):
 
 
 def test_lesson_ownership_404(client):
-    r = client.post("/api/courses", json={"topic": "Python 数据分析"})
-    assert r.status_code == 200
+    # 创建课程 + 生成计划都用同一 owner USER-A（不依赖 fixture 默认 owner）
+    r = client.post(
+        "/api/courses", json={"topic": "Python 数据分析"}, headers={"X-User-Id": "USER-A"}
+    )
+    assert r.status_code == 200, r.text
     cid = r.json()["course_id"]
     r = client.post(
         f"/api/courses/{cid}/plan/generate", json={}, headers={"X-User-Id": "USER-A"}
@@ -113,12 +116,146 @@ def test_lesson_ownership_404(client):
     )
     assert r.status_code == 404
 
-    # 不存在的 step → 404
+    # 不存在的 step → 404（owner USER-A）
     r = client.post(
         f"/api/courses/{cid}/plan/steps/STEP-NOPE/lesson",
         headers={"X-User-Id": "USER-A"},
     )
     assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Lesson 个性化使用课程保存的周期/每日时长（与 Plan 生成同一配置，绝不 14/60）
+# ---------------------------------------------------------------------------
+
+
+def test_lesson_uses_course_settings(client, monkeypatch):
+    import edu_agent.application.study_plan_service as sps
+
+    captured = {}
+    orig_pc = sps.build_plan_context
+
+    def spy_pc(*args, **kwargs):
+        captured.update(kwargs)
+        return orig_pc(*args, **kwargs)
+
+    monkeypatch.setattr(sps, "build_plan_context", spy_pc)
+
+    def fake_gen(step, context_text):
+        return "## 本节要学什么\n这是讲解内容。"
+
+    monkeypatch.setattr(
+        "edu_agent.application.study_plan_service._generate_lesson_markdown",
+        fake_gen,
+    )
+
+    r = client.post(
+        "/api/courses", json={"topic": "Python 数据分析"}, headers={"X-User-Id": "USER-A"}
+    )
+    assert r.status_code == 200, r.text
+    cid = r.json()["course_id"]
+    r = client.post(
+        f"/api/courses/{cid}/plan/generate",
+        json={"duration_days": 30, "daily_minutes": 90},
+        headers={"X-User-Id": "USER-A"},
+    )
+    assert r.status_code == 200, r.text
+    step = r.json()["steps"][0]
+
+    r = client.post(
+        f"/api/courses/{cid}/plan/steps/{step['step_id']}/lesson",
+        headers={"X-User-Id": "USER-A"},
+    )
+    assert r.status_code == 200, r.text
+    # Lesson 个性化必须使用课程已保存的 30/90，绝不能 14/60
+    assert captured.get("duration_days") == 30
+    assert captured.get("daily_minutes") == 90
+    assert captured.get("duration_days") != 14
+    assert captured.get("daily_minutes") != 60
+
+
+def test_lesson_does_not_change_mastery(client, monkeypatch):
+    def fake_gen(step, context_text):
+        return "## 本节要学什么\n这是讲解内容。"
+
+    monkeypatch.setattr(
+        "edu_agent.application.study_plan_service._generate_lesson_markdown",
+        fake_gen,
+    )
+
+    r = client.post(
+        "/api/courses", json={"topic": "Python 数据分析"}, headers={"X-User-Id": "USER-A"}
+    )
+    assert r.status_code == 200, r.text
+    cid = r.json()["course_id"]
+    r = client.post(
+        f"/api/courses/{cid}/plan/generate", json={}, headers={"X-User-Id": "USER-A"}
+    )
+    assert r.status_code == 200, r.text
+    step = r.json()["steps"][0]
+    kc_id = step["kc_id"]
+
+    learner = LearnerModelService()
+    now = "2026-08-12T00:00:00Z"
+    learner.repo.upsert_kc(
+        {
+            "user_id": "USER-A",
+            "course_id": cid,
+            "kc_id": kc_id,
+            "mastery": 0.5,
+            "confidence": 0.4,
+            "status": "learning",
+            "created_at": now,
+            "updated_at": now,
+        }
+    )
+    before = learner.repo.get_kc("USER-A", cid, kc_id)
+    before_mastery = before.get("mastery") if before else None
+
+    r = client.post(
+        f"/api/courses/{cid}/plan/steps/{step['step_id']}/lesson",
+        headers={"X-User-Id": "USER-A"},
+    )
+    assert r.status_code == 200, r.text
+
+    after = learner.repo.get_kc("USER-A", cid, kc_id)
+    after_mastery = after.get("mastery") if after else None
+    # 生成 Lesson 绝不修改 mastery（UNKNOWN=None 也不应变成 0）
+    assert before_mastery == after_mastery
+
+
+def test_lesson_timestamp_consistent_with_plan(client, monkeypatch):
+    def fake_gen(step, context_text):
+        return "## 本节要学什么\n这是讲解内容。"
+
+    monkeypatch.setattr(
+        "edu_agent.application.study_plan_service._generate_lesson_markdown",
+        fake_gen,
+    )
+
+    r = client.post(
+        "/api/courses", json={"topic": "Python 数据分析"}, headers={"X-User-Id": "USER-A"}
+    )
+    assert r.status_code == 200, r.text
+    cid = r.json()["course_id"]
+    r = client.post(
+        f"/api/courses/{cid}/plan/generate", json={}, headers={"X-User-Id": "USER-A"}
+    )
+    assert r.status_code == 200, r.text
+    step = r.json()["steps"][0]
+
+    r = client.post(
+        f"/api/courses/{cid}/plan/steps/{step['step_id']}/lesson",
+        headers={"X-User-Id": "USER-A"},
+    )
+    assert r.status_code == 200, r.text
+    lesson_ts = r.json()["lesson_generated_at"]
+    assert lesson_ts
+
+    plan = client.get(f"/api/courses/{cid}/plan", headers={"X-User-Id": "USER-A"}).json()
+    persisted = next(s for s in plan["steps"] if s["step_id"] == step["step_id"])
+    # 响应时间戳必须与落库时间戳完全一致（单一 generated_at）
+    assert persisted["lesson_generated_at"] == lesson_ts
 
 
 # ---------------------------------------------------------------------------
