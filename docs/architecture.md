@@ -35,7 +35,7 @@ Core (src/edu_agent/core, domain/learning, adaptive/, workflows/study_plan)
     ├─ Learner Model (learner_model/ — SQLite 唯一画像真值)
     ├─ Plan Context / Chat Context（画像 → 提示词的轻量选择器）
     ├─ Study Plan Workflow（唯一 workflow）
-    ├─ Course Domain Model（domain_courses / kcs / relations）
+    ├─ Course Domain Model（内置只读模板 kc_graph + user_courses）
     └─ LLM / RAG
     ↓
 SQLite（data/learner_model.db）

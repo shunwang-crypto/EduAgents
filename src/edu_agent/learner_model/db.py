@@ -1,13 +1,14 @@
 """SQLite 连接管理 + Dynamic Learner Model Baseline Schema（SCHEMA_VERSION=1）。
 
-范围收缩后的正式 Baseline：
-- 保留：learners / learner_profile_facts / learning_goals / learner_course_states /
+正式 Baseline：
+- 用户课程：user_courses（user-scoped；共享 Built-in Domain 为纯代码模板）
+- 画像：learners / learner_profile_facts / learning_goals / learner_course_states /
   learner_kc_states / learner_preferences / learner_semantic_memories /
   learning_events / profile_change_log
-- 新增：chat_conversations / chat_messages / study_plans / plan_steps /
-  domain_courses / domain_kcs / domain_kc_relations
-- 删除：learner_abilities / learner_misconceptions / learner_evidences /
-  adaptive_decisions / learner_state_snapshots（无消费方）
+- 产品：chat_conversations / chat_messages / study_plans / plan_steps
+- 删除：domain_courses / domain_kcs / domain_kc_relations（个性化 Plan Nodes 只存
+  plan_steps）；learner_abilities / learner_misconceptions / learner_evidences /
+  adaptive_decisions / learner_state_snapshots；global_state_version / state_version
 - 不做旧库迁移：旧开发阶段数据直接弃用，首次启动建干净表。
 """
 
@@ -28,10 +29,23 @@ CREATE TABLE IF NOT EXISTS learners (
     education_level TEXT DEFAULT '',
     language TEXT DEFAULT 'zh',
     background TEXT DEFAULT '',
-    global_state_version INTEGER DEFAULT 1,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+-- 用户课程（User Course = 用户拥有/创建/加入；与共享 Domain Course 严格分离）
+CREATE TABLE IF NOT EXISTS user_courses (
+    user_id TEXT NOT NULL,
+    course_id TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    topic TEXT DEFAULT '',
+    normalized_topic TEXT DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, course_id),
+    UNIQUE (user_id, normalized_topic)
+);
+CREATE INDEX IF NOT EXISTS idx_user_courses_user ON user_courses(user_id);
 
 CREATE TABLE IF NOT EXISTS learner_profile_facts (
     fact_id TEXT PRIMARY KEY,
@@ -71,7 +85,6 @@ CREATE TABLE IF NOT EXISTS learner_course_states (
     current_goal_id TEXT DEFAULT '',
     progress REAL DEFAULT 0.0,
     current_stage TEXT DEFAULT '',
-    state_version INTEGER DEFAULT 1,
     updated_at TEXT NOT NULL,
     PRIMARY KEY (user_id, course_id)
 );
@@ -174,7 +187,8 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     role TEXT NOT NULL,
     content TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    metadata_json TEXT DEFAULT '{}'
+    metadata_json TEXT DEFAULT '{}',
+    FOREIGN KEY (conversation_id) REFERENCES chat_conversations(conversation_id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_msg_conv ON chat_messages(conversation_id, created_at);
 
@@ -210,34 +224,8 @@ CREATE TABLE IF NOT EXISTS plan_steps (
     status TEXT DEFAULT 'not_started',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    UNIQUE (plan_id, seq)
-);
-
--- 自定义课程 Domain Model（学习计划生成时由 KnowledgeMap 构建，跨重启恢复）
-CREATE TABLE IF NOT EXISTS domain_courses (
-    course_id TEXT PRIMARY KEY,
-    title TEXT DEFAULT '',
-    topic TEXT DEFAULT '',
-    created_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS domain_kcs (
-    course_id TEXT NOT NULL,
-    kc_id TEXT NOT NULL,
-    title TEXT DEFAULT '',
-    category TEXT DEFAULT 'core',
-    description TEXT DEFAULT '',
-    difficulty TEXT DEFAULT 'medium',
-    PRIMARY KEY (course_id, kc_id)
-);
-
-CREATE TABLE IF NOT EXISTS domain_kc_relations (
-    course_id TEXT NOT NULL,
-    from_kc TEXT NOT NULL,
-    to_kc TEXT NOT NULL,
-    relation TEXT NOT NULL,
-    weight REAL DEFAULT 1.0,
-    PRIMARY KEY (course_id, from_kc, to_kc, relation)
+    UNIQUE (plan_id, seq),
+    FOREIGN KEY (plan_id) REFERENCES study_plans(plan_id) ON DELETE CASCADE
 );
 """
 

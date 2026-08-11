@@ -84,10 +84,6 @@ def build_knowledge_map(
     prerequisite_titles = [title for title, _ in prerequisite_items]
     core_titles = [title for title, _ in core_items]
 
-    def stage_of(index: int) -> LearningStageSuggestion:
-        """知识分类 → 阶段映射：前置→阶段1，核心→阶段2，应用→阶段3。"""
-        return stages[min(index, STAGE_COUNT - 1)]
-
     def add_node(
         title: str,
         summary: str,
@@ -136,32 +132,60 @@ def build_knowledge_map(
             check="不看资料解释「{title}」，并提交示例运行结果。",
         )
 
-    for index, (title, summary) in enumerate(core_items):
+    for title, summary in core_items:
         add_node(
             title=title,
             summary=summary,
             category="核心知识",
             difficulty="中等",
             minutes=45,
-            stage=stages[min(index + 1, STAGE_COUNT - 1)],
+            stage=stages[1],  # 固定 Stage 2（core 不进 Stage 3）
             prerequisites=prerequisite_titles[:3],
             objective=f"能解释「{title}」的核心原理，并在学习目标场景中正确使用。",
             activity=f"跟随示例代码完成一个直接应用「{title}」的小案例，并记录关键步骤。",
             check="提交案例结果，并说明「{title}」在其中解决了什么问题。",
         )
 
-    for index, (title, summary) in enumerate(application_items):
+    for title, summary in application_items:
         add_node(
             title=title,
             summary=summary,
             category="实践应用",
             difficulty="实践",
             minutes=60,
-            stage=stages[min(index + 1, STAGE_COUNT - 1)],
+            stage=stages[2],  # 固定 Stage 3
             prerequisites=core_titles[:4],
             objective=f"独立完成「{title}」并留下可检查的学习产出。",
             activity=summary,
             check="提交作品、关键步骤说明和一条复盘记录。",
+        )
+
+    # 兜底：保证每个阶段至少一个节点（Stage1 无前置 / Stage3 无应用）
+    if not any(n.stage_order == 1 for n in nodes):
+        add_node(
+            title=f"{student_input.topic} 核心术语与整体认识",
+            summary=f"了解「{student_input.topic}」的核心术语、学习环境与整体知识结构。",
+            category="前置知识",
+            difficulty="入门",
+            minutes=30,
+            stage=stages[0],
+            prerequisites=[],
+            objective=f"能用自己的话说明「{student_input.topic}」的基本概念与用途。",
+            activity=f"阅读「{student_input.topic}」概述资料，整理核心术语表并熟悉学习环境。",
+            check="不看资料解释核心术语，并确认学习环境可用。",
+        )
+    if not any(n.stage_order == 3 for n in nodes):
+        add_node(
+            title=f"{student_input.topic} 综合案例与知识总结",
+            summary=f"通过案例或小项目整合「{student_input.topic}」所学知识并输出总结。",
+            category="实践应用",
+            difficulty="实践",
+            minutes=60,
+            stage=stages[2],
+            prerequisites=core_titles[:4],
+            objective=f"独立完成「{student_input.topic}」的综合案例或小项目并输出复盘总结。",
+            activity=f"完成一个与「{student_input.topic}」相关的综合案例或小项目，整理总结文档。",
+            check="提交案例/项目结果、关键步骤说明和复盘记录。",
         )
 
     if not nodes:

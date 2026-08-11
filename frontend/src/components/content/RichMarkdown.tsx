@@ -19,6 +19,19 @@ export function normalizeMarkdownMath(markdown: string): string {
   const n = markdown.length;
   while (i < n) {
     const ch = markdown[i];
+    // inline code：`...`（保护 \(x\) 原样显示，不转数学）
+    if (ch === "`" && !inFence) {
+      result += ch;
+      i += 1;
+      let codeStart = i;
+      while (i < n && markdown[i] !== "`") i += 1;
+      result += markdown.slice(codeStart, i);
+      if (i < n) {
+        result += "`";
+        i += 1;
+      }
+      continue;
+    }
     // fenced code block：```` / ~~~ 开头行
     if (ch === "`" || ch === "~") {
       let run = 0;
@@ -108,7 +121,9 @@ function CodeBlock(props: React.HTMLAttributes<HTMLPreElement>) {
   const [copied, setCopied] = React.useState(false);
   const children = React.Children.toArray(props.children) as React.ReactElement[];
   const codeEl = children.find((c) => React.isValidElement(c) && c.type === "code");
-  const raw = codeEl && typeof codeEl.props.children === "string" ? codeEl.props.children : "";
+  const raw = React.Children.toArray(codeEl?.props?.children ?? [])
+    .map((node) => (typeof node === "string" || typeof node === "number" ? String(node) : ""))
+    .join("");
   const className = codeEl?.props?.className ?? "";
   const lang = typeof className === "string"
     ? className.replace(/^language-/, "")

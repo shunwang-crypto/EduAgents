@@ -1,11 +1,9 @@
 """ChatService：唯一的普通对话实现（无课程 / 有课程 / 有课程+计划步骤）。
 
-- 保存 chat_conversations / chat_messages（每课程一个主 conversation；无课程 general）。
-- plan_step_id：从「就此提问」进入时，校验 step 属于 user+course+plan，注入 PlanStepContext；
-  仅作用于单次 message/request，不永久绑定 conversation。
-- UserMemoryIntentExtractor：只处理明确画像修改语义（我会/没有基础/以后少举例/忘记做过），
-  禁止每条消息重写画像；skill 类 fact 用 skill:{normalized} 键避免互相覆盖。
-- RAG：有课程且有知识库命中时作为可选参考（query=step.title+message，top_k=3），不做独立 KBQA。
+- Conversation ownership：conversation_id 必须属于当前 user 且 course 匹配，否则拒绝（404）。
+- RAG：真正加载持久化 chunks（load_chunks(course_id)），按课程隔离，不跨课程检索。
+- plan_step_id：校验 step 属于 user+course 的 current plan；事件 kc_id=step.kc_id。
+- 画像意图：explicit intent → targeted mutation（多技能按 和/、/逗号 拆分，互不覆盖）。
 """
 
 from __future__ import annotations
@@ -43,23 +41,23 @@ def _now_iso() -> str:
 
 _PATTERNS: List[Dict[str, Any]] = [
     # 我会 X / 我熟悉 X / 我用过 X / 我做过 X → profile fact（positive）
-    # 键用 skill:{normalized}：会 Python 与会 Java 互不覆盖
-    {"type": "fact_pos", "regex": r"(?:我会|我熟悉|我了解|我用过|我学过|我掌握|我做过)\s*(.+?)(?:项目|东西|事)?(?:[。，,.!?！？]|$)",
-     "fact_key": lambda m: f"skill:{_skill_key(m.group(1))}",
+    # 支持多技能："我会 Python 和 Java" → skill:python + skill:java
+    {"type": "fact_pos", "regex": r"(?:我会|我熟悉|我了解|我用过|我学过|我掌握|我做过)\s*(.+?)(?:[。，,.!?！？]|$)",
      "value": lambda m: m.group(1).strip()},
     # 我没有 X 基础 / 我不懂 X → fact（negative）
-    {"type": "fact_neg", "regex": r"(?:我没有|我没什么|完全不懂|没学过)\s*(.+?)(?:基础)?(?:[。，,.!?！？]|$)",
-     "fact_key": lambda m: f"no_{_slug(m.group(1))}",
+    {"type": "fact_neg", "regex": r"(?:我没有|我没什么|完全不懂|没学过|不会|不熟悉)\s*(.+?)(?:基础)?(?:[。，,.!?！？]|$)",
      "value": lambda m: m.group(1).strip()},
     # 以后少举例 / 简洁一点 → preference（long-term）
     {"type": "pref", "regex": r"(?:以后|之后|今后).{0,6}(?:少举例|不要举例|直接一点|简洁|简短|简单点|别啰嗦)",
      "pref_key": "concise_first", "direction": "pos"},
     {"type": "pref", "regex": r"(?:以后|之后|今后).{0,6}(?:多举例|举例子|给例子|详细一点|讲详细)",
      "pref_key": "worked_example", "direction": "pos"},
-    # 忘记我做过 X → delete fact/memory（按 normalized 匹配已存在的键，而非猜一个不存在的键）
+    # 忘记我做过 X → delete fact/memory（按 normalized 匹配已存在键）
     {"type": "forget", "regex": r"(?:忘记|忘掉|删掉|不再提)\s*(?:我(?:做过|会|学过|用过)?)?\s*(.+?)(?:项目|东西|事)?(?:[。，,.!?！？]|$)",
      "forget_raw": lambda m: m.group(1)},
 ]
+
+_SPLIT_RE = re.compile(r"(?:和|与|、|[,，]|及|\s+)")
 
 
 def _slug(text: str) -> str:
@@ -74,19 +72,28 @@ def _skill_key(value: str) -> str:
     return _slug(head).lower() or _slug(text).lower()
 
 
+def _split_skills(raw: str) -> List[str]:
+    """「Python 和 Java」→ [Python, Java]；无分隔符则整体。"""
+    parts = [p.strip() for p in _SPLIT_RE.split(raw) if p.strip()]
+    # 过滤过短片段（如"基础"、"中"）
+    return [p for p in parts if len(p) >= 2] or ([raw.strip()] if raw.strip() else [])
+
+
 def extract_memory_intents(message: str) -> List[Dict[str, Any]]:
-    """识别用户明确画像修改意图（结构化 mutation）。"""
+    """识别用户明确画像修改意图（结构化 mutation；多技能拆分）。"""
     intents: List[Dict[str, Any]] = []
     for pat in _PATTERNS:
         m = re.search(pat["regex"], message)
         if not m:
             continue
         if pat["type"] == "fact_pos":
-            intents.append({"action": "set_fact", "fact_key": pat["fact_key"](m),
-                            "fact_value": pat["value"](m), "category": "background"})
+            for skill in _split_skills(pat["value"](m)):
+                intents.append({"action": "set_fact", "fact_key": f"skill:{_skill_key(skill)}",
+                                "fact_value": skill, "category": "background"})
         elif pat["type"] == "fact_neg":
-            intents.append({"action": "set_fact", "fact_key": pat["fact_key"](m),
-                            "fact_value": {"level": "none"}, "category": "background"})
+            for skill in _split_skills(pat["value"](m)):
+                intents.append({"action": "set_fact", "fact_key": f"no_{_skill_key(skill)}",
+                                "fact_value": {"level": "none"}, "category": "background"})
         elif pat["type"] == "pref":
             intents.append({"action": "set_preference", "preference_key": pat["pref_key"],
                             "direction": pat["direction"]})
@@ -95,14 +102,10 @@ def extract_memory_intents(message: str) -> List[Dict[str, Any]]:
     return intents
 
 
-def _find_forgettable_keys(user_id: str, raw: str, learner: LearnerModelService) -> List[str]:
-    """按 normalized token 匹配用户已有 fact/memory 键，返回真正存在的可删键。
-
-    例如用户说「忘记我做过 FastAPI 项目」，raw="FastAPI"：
-    - 匹配 fact 键 skill:fastapi / no_fastapi / 含 fastapi 的键；
-    - 匹配 memory content 含 fastapi 的记忆。
-    匹配不到 → 返回空列表（不误删其他事实）。
-    """
+def _find_forgettable_keys(user_id: str, course_id: str, raw: str,
+                           learner: LearnerModelService) -> List[str]:
+    """按 normalized token 匹配用户已有 fact/memory（global + 当前 course），
+    返回真正存在的可删键；匹配不到返回空（不误删）。"""
     target = _slug(raw).lower()
     keys: List[str] = []
     for fact in learner.repo.list_profile_facts(user_id):
@@ -110,14 +113,14 @@ def _find_forgettable_keys(user_id: str, raw: str, learner: LearnerModelService)
         fact_value = str(fact.get("fact_value_json") or "").lower()
         if target and (target in fact_key or target in fact_value):
             keys.append(fact["fact_key"])
-    for mem in learner.repo.list_memories(user_id, ""):
+    for mem in learner.repo.list_effective_memories(user_id, course_id):
         content = str(mem.get("content") or "").lower()
         if target and target in content:
             keys.append(f"memory:{mem['memory_id']}")
-    return list(dict.fromkeys(keys))  # 去重保序
+    return list(dict.fromkeys(keys))
 
 
-def apply_memory_intents(user_id: str, intents: List[Dict[str, Any]],
+def apply_memory_intents(user_id: str, course_id: str, intents: List[Dict[str, Any]],
                          learner: LearnerModelService) -> List[str]:
     """把明确意图写入 Learner Model（结构化 mutation，非 LLM overwrite）。"""
     applied: List[str] = []
@@ -130,11 +133,12 @@ def apply_memory_intents(user_id: str, intents: List[Dict[str, Any]],
                 applied.append(f"fact:{intent['fact_key']}")
             elif action == "set_preference":
                 learner.set_preference(user_id, intent["preference_key"],
-                                       direction=intent.get("direction", "pos"))
+                                       direction=intent.get("direction", "pos"),
+                                       course_id=course_id)
                 applied.append(f"pref:{intent['preference_key']}")
             elif action == "delete_fact":
                 raw = intent.get("forget_raw", "")
-                keys = _find_forgettable_keys(user_id, raw, learner)
+                keys = _find_forgettable_keys(user_id, course_id, raw, learner)
                 for key in keys:
                     if key.startswith("memory:"):
                         learner.delete_memory(user_id, key.split(":", 1)[1])
@@ -157,6 +161,19 @@ class ChatService:
     def __init__(self, learner: Optional[LearnerModelService] = None) -> None:
         self._learner = learner or LearnerModelService()
 
+    def create_conversation(self, user_id: str, course_id: Optional[str] = None) -> dict:
+        """新建一个 conversation（「新对话」用，不再复用已有主会话）。"""
+        learner = self._learner
+        learner.ensure_learner(user_id)
+        if course_id and learner.repo.get_user_course(user_id, course_id) is None:
+            raise KeyError(f"course not found: {course_id}")
+        conv_id = f"CONV-{uuid.uuid4().hex[:12]}"
+        learner.repo.upsert_conversation(
+            {"conversation_id": conv_id, "user_id": user_id, "course_id": course_id or "",
+             "title": None, "created_at": _now_iso(), "updated_at": _now_iso()}
+        )
+        return {"conversation_id": conv_id, "course_id": course_id}
+
     def chat(
         self,
         user_id: str,
@@ -168,20 +185,22 @@ class ChatService:
     ) -> dict:
         """发一条消息并返回 AI 回复。
 
-        plan_step_id：可选；必须属于当前 user+course 的 current plan，
-        否则按无 step 处理（不报错，仅提示）。
+        conversation_id：必须属于当前 user 且 course 匹配，否则拒绝（KeyError → 404）。
+        plan_step_id：必须属于当前 user+course 的 current plan，否则按无 step 处理。
         """
         learner = self._learner
         learner.ensure_learner(user_id)
         if course_id:
             learner.ensure_course(user_id, course_id)
+            if learner.repo.get_user_course(user_id, course_id) is None:
+                raise KeyError(f"course not found: {course_id}")
 
-        # 1) 会话（每课程一个主 conversation；无课程 general）
-        conv = self._get_or_create_conversation(user_id, course_id, conversation_id)
+        # 1) 会话（ownership 校验：user + course 都必须匹配）
+        conv = self._resolve_conversation(user_id, course_id, conversation_id)
 
-        # 2) 画像修改意图（明确语义才写，普通消息不碰画像）
+        # 2) 画像修改意图（明确语义才写；course 级偏好落当前课程）
         intents = extract_memory_intents(message)
-        applied = apply_memory_intents(user_id, intents, learner)
+        applied = apply_memory_intents(user_id, course_id or "", intents, learner)
 
         # 2.5) plan_step 校验（属于 user+course；不属于则忽略并提示）
         step: Optional[dict] = None
@@ -195,7 +214,7 @@ class ChatService:
                                user_id, course_id, plan_step_id)
                 step = None
 
-        # 3) 用户消息落库（metadata 保留 step 上下文，便于追溯）
+        # 3) 用户消息落库（metadata 保留 step 上下文）
         metadata: Dict[str, Any] = {"course_id": course_id}
         if step:
             metadata["plan_step_id"] = step["step_id"]
@@ -208,11 +227,16 @@ class ChatService:
              "role": "user", "content": message, "created_at": _now_iso(),
              "metadata_json": json.dumps(metadata, ensure_ascii=False)}
         )
+        # 事件：有 step 时 kc_id = step.kc_id（真实 KC，不是 PLANSTEP id）
         learner.record_event({"event_type": "CHAT_MESSAGE_SENT", "user_id": user_id,
-                              "course_id": course_id or "", "session_id": conv["conversation_id"],
-                              "payload": {"message": message[:120], "plan_step_id": (step or {}).get("step_id", "")}})
+                              "course_id": course_id or "",
+                              "kc_id": (step or {}).get("kc_id", ""),
+                              "session_id": conv["conversation_id"],
+                              "payload": {"message": message[:120],
+                                          "plan_step_id": (step or {}).get("step_id", ""),
+                                          "step_title": (step or {}).get("title", "")}})
 
-        # 4) 上下文（RAG query = step.title + message）
+        # 4) 上下文（RAG query = step.title + message；真加载持久化 chunks）
         context_text = self._build_context(user_id, course_id, message, step)
         history = self._recent_history(conv["conversation_id"], limit=8)
         reply = self._llm_reply(message, context_text, history, extra_requirement)
@@ -246,7 +270,7 @@ class ChatService:
     def get_conversation(self, user_id: str, course_id: Optional[str] = None,
                          conversation_id: Optional[str] = None) -> dict:
         learner = self._learner
-        conv = self._get_or_create_conversation(user_id, course_id, conversation_id)
+        conv = self._resolve_conversation(user_id, course_id, conversation_id)
         messages = learner.repo.list_messages(conv["conversation_id"])
         return {"conversation_id": conv["conversation_id"], "course_id": course_id,
                 "messages": [{"message_id": m["message_id"], "role": m["role"],
@@ -255,13 +279,17 @@ class ChatService:
                              for m in messages]}
 
     # ------------------------------------------------------------------
-    def _get_or_create_conversation(self, user_id: str, course_id: Optional[str],
-                                    conversation_id: Optional[str]) -> dict:
+    def _resolve_conversation(self, user_id: str, course_id: Optional[str],
+                              conversation_id: Optional[str]) -> dict:
+        """ownership-safe 会话解析：conversation_id 必须 user+course 匹配，否则拒绝。"""
         repo = self._learner.repo
         if conversation_id:
-            conv = repo.get_conversation(conversation_id)
-            if conv is not None:
-                return conv
+            conv = repo.get_conversation_for_user(user_id, conversation_id)
+            if conv is None:
+                raise KeyError(f"conversation not found: {conversation_id}")
+            if (course_id or "") != (conv.get("course_id") or ""):
+                raise KeyError(f"conversation not found: {conversation_id}")
+            return conv
         conv = repo.get_course_conversation(user_id, course_id or "")
         if conv is None:
             conv_id = f"CONV-{uuid.uuid4().hex[:12]}"
@@ -296,13 +324,15 @@ class ChatService:
             return ""
 
     def _rag(self, course_id: str, message: str, top_k: int = 3) -> List[dict]:
-        """课程知识库检索（可选能力，不强制教育化）。"""
+        """课程知识库检索：真加载持久化 chunks（load_chunks(course_id)），不跨课程。"""
         try:
             from edu_agent.tools.course_kb import CourseKnowledgeBase
+            from edu_agent.tools import kb_store
 
-            kb = CourseKnowledgeBase()
-            if not kb.chunks:
+            chunks = kb_store.load_chunks(course_id)
+            if not chunks:
                 return []
+            kb = CourseKnowledgeBase.from_chunks(chunks, course_id=course_id)
             hits = kb.search(message, top_k=top_k)
             return [{"title": h.doc_title, "text": h.text[:400]} for h in hits]
         except Exception:  # noqa: BLE001 - RAG 失败不影响聊天
@@ -335,8 +365,6 @@ class ChatService:
                  "requirement_block": requirement_block, "history": history_text,
                  "message": message}
             )
-            # langchain AIMessage 等对象的 str() 会输出 repr（content='...' additional_kwargs=...），
-            # 必须用归一化函数提取纯文本。
             from edu_agent.core.agent_runner import model_to_text
             return model_to_text(response).strip() or _fallback_reply(message)
         except Exception:  # noqa: BLE001 - 无模型环境降级

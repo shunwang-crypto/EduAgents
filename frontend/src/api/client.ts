@@ -1,4 +1,5 @@
-/** API Client：Fetch 封装。user_id 走 X-User-Id 头（宿主接认证时替换）。 */
+/** API Client：Fetch 封装。user_id 由 LearningApp 注入（setApiUserId），
+ * 业务代码不写死任何用户。 */
 import type {
   ChatResponse,
   Conversation,
@@ -7,15 +8,23 @@ import type {
   StudyPlan,
 } from "./types";
 
-// 开发期默认用户（宿主接入后由宿主注入 userId）
-export const DEV_USER_ID = import.meta.env.VITE_DEV_USER_ID ?? "STU-001";
+let currentUserId = "";
+
+/** 由宿主 LearningApp 注入当前用户（X-User-Id 头）。 */
+export function setApiUserId(userId: string) {
+  currentUserId = userId || "";
+}
+
+export function getApiUserId(): string {
+  return currentUserId;
+}
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const res = await fetch(path, {
     ...options,
     headers: {
       "Content-Type": "application/json",
-      "X-User-Id": DEV_USER_ID,
+      "X-User-Id": currentUserId,
       ...(options.headers ?? {}),
     },
   });
@@ -53,6 +62,11 @@ export const api = {
     request<PlanStep>(`/api/courses/${courseId}/plan/steps/${stepId}`),
 
   // Chat
+  createConversation: (courseId?: string | null) =>
+    request<{ conversation_id: string; course_id: string | null }>("/api/chat/conversations", {
+      method: "POST",
+      body: JSON.stringify({ course_id: courseId ?? null }),
+    }),
   chat: (body: {
     message: string;
     course_id?: string | null;

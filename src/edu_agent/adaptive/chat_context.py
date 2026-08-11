@@ -40,7 +40,8 @@ def build_chat_context(
     context: Dict[str, object] = {
         "course_id": course_id or None,
         "course_title": course_title or (course_id or None),
-        "goal": goal.goal_name if goal else "",
+        "goal_name": goal.goal_name if goal else "",
+        "goal_target": goal.target if goal else "",
         "plan_summary": plan_summary or "",
         "progress": bundle.course_state.progress if course_id else 0.0,
         "plan_step": plan_step or None,
@@ -57,8 +58,9 @@ def chat_context_to_prompt(ctx: Dict[str, object]) -> str:
     lines: List[str] = []
     if ctx.get("course_title"):
         lines.append(f"当前课程：{ctx['course_title']}")
-    if ctx.get("goal"):
-        lines.append(f"学习目标：{ctx['goal']}")
+    goal_text = ctx.get("goal_target") or ctx.get("goal_name") or ""
+    if goal_text:
+        lines.append(f"学习目标：{goal_text}")
     if ctx.get("plan_summary"):
         lines.append(f"学习计划摘要：{str(ctx['plan_summary'])[:300]}")
     step = ctx.get("plan_step")

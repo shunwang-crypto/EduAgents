@@ -20,6 +20,7 @@ export function ChatPage() {
   const { courseId } = useParams<{ courseId: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
   const stepParam = searchParams.get("step");
+  const conversationParam = searchParams.get("conversation");
 
   const [course, setCourse] = useState<Course | null>(null);
   const [step, setStep] = useState<PlanStep | null>(null);
@@ -29,18 +30,24 @@ export function ChatPage() {
   const [error, setError] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // 课程 / 会话加载
+  // 课程 / 会话加载（?conversation= 指定新对话；否则该课程主会话）
   useEffect(() => {
     setMessages([]);
     setError("");
     if (courseId) {
       api.getCourse(courseId).then(setCourse).catch(() => setCourse(null));
-      api.getChat(courseId).then((conv) => setMessages(conv.messages)).catch(() => undefined);
+      api
+        .getChat(courseId, conversationParam)
+        .then((conv) => setMessages(conv.messages))
+        .catch(() => undefined);
     } else {
       setCourse(null);
-      api.getChat(null).then((conv) => setMessages(conv.messages)).catch(() => undefined);
+      api
+        .getChat(null, conversationParam)
+        .then((conv) => setMessages(conv.messages))
+        .catch(() => undefined);
     }
-  }, [courseId]);
+  }, [courseId, conversationParam]);
 
   // ?step= 加载计划步骤（校验归属在 backend；无效则提示并忽略）
   useEffect(() => {
@@ -86,6 +93,7 @@ export function ChatPage() {
         const reply = await api.chat({
           message: text,
           course_id: courseId ?? null,
+          conversation_id: conversationParam ?? null,
           plan_step_id: step?.step_id ?? null,
         });
         const aiMsg: ChatMessage = {
@@ -101,7 +109,7 @@ export function ChatPage() {
         setLoading(false);
       }
     },
-    [courseId, loading, step]
+    [courseId, loading, step, conversationParam]
   );
 
   const placeholder = step

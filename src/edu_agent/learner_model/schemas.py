@@ -88,7 +88,6 @@ class CourseLearnerState(BaseModel):
     progress: float = Field(default=0.0, ge=0.0, le=1.0)
     knowledge: List[KnowledgeItem] = Field(default_factory=list)
     metadata: Dict[str, object] = Field(default_factory=dict)
-    state_version: Optional[int] = Field(default=None)
     updated_at: Optional[str] = Field(default=None)
     freshness: str = Field(default="fresh")
 
@@ -105,12 +104,6 @@ class LearnerStateBundle(BaseModel):
     global_state: GlobalLearnerState = Field(default_factory=GlobalLearnerState)
     course_state: CourseLearnerState = Field(default_factory=CourseLearnerState)
     active_goal: Optional[Goal] = Field(default=None)
-    global_state_version: Optional[int] = Field(default=None)
-    course_state_version: Optional[int] = Field(default=None)
-
-    @property
-    def bundle_version(self) -> dict:
-        return {"global": self.global_state_version, "course": self.course_state_version}
 
 
 class LearningContext(BaseModel):

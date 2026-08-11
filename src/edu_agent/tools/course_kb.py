@@ -4,8 +4,8 @@
 职责：
 - 把 Markdown 教材文本按标题层级切分成带定位的块（doc_title + heading_path）。
 - 用纯 Python 关键词检索（无第三方依赖：英文 token + 中文 2-gram）返回命中的块。
-- 供对话问答工作流（kb_qa）作为"知识库依据"使用；后续可替换为向量检索实现，
-  接口保持不变（search / chunks）。
+- 供普通 ChatService 可选课程 RAG 使用（按 course_id 隔离，不跨课程检索）；
+  后续可替换为向量检索实现，接口保持不变（search / chunks）。
 
 设计约束：
 - 不引入 jieba / numpy / 向量库，保证原型在任何 Python 3.10+ 环境开箱即用。
@@ -25,6 +25,7 @@ from edu_agent.tools.github_importer import import_github_repo
 class KbChunk(BaseModel):
     """知识库中的一个可引用块。"""
 
+    course_id: str = Field(default="", description="所属课程 id（RAG 按课程隔离）")
     doc_title: str = Field(description="来源文档标题")
     heading_path: str = Field(description="标题定位路径，例如『第3章 二叉树 > 3.2 遍历』")
     text: str = Field(description="块正文")
@@ -59,7 +60,7 @@ def _tokenize(text: str) -> List[str]:
     return [token for token in tokens if token not in _STOPWORDS]
 
 
-def _split_markdown_blocks(name: str, text: str) -> List[KbChunk]:
+def _split_markdown_blocks(name: str, text: str, course_id: str = "") -> List[KbChunk]:
     """按 Markdown 标题层级把文本切成带 heading_path 的块。"""
     blocks: List[KbChunk] = []
     heading_stack: List[tuple[int, str]] = []
@@ -70,6 +71,7 @@ def _split_markdown_blocks(name: str, text: str) -> List[KbChunk]:
         if body and heading_stack:
             blocks.append(
                 KbChunk(
+                    course_id=course_id,
                     doc_title=name,
                     heading_path=" > ".join(title for _, title in heading_stack),
                     text=body,
@@ -96,29 +98,30 @@ def _split_markdown_blocks(name: str, text: str) -> List[KbChunk]:
 
     # 没有任何标题时，把全文作为单块，用文档名作为定位
     if not blocks and text.strip():
-        blocks.append(KbChunk(doc_title=name, heading_path=name, text=text.strip()))
+        blocks.append(KbChunk(course_id=course_id, doc_title=name, heading_path=name, text=text.strip()))
     return blocks
 
 
 class CourseKnowledgeBase:
     """内存中的最小课程知识库。"""
 
-    def __init__(self, sources: dict[str, str] | None = None) -> None:
+    def __init__(self, course_id: str = "", sources: dict[str, str] | None = None) -> None:
+        self._course_id = course_id
         self._chunks: List[KbChunk] = []
         if sources:
             for name, text in sources.items():
                 self.load_markdown(name, text)
 
     def load_markdown(self, name: str, text: str) -> int:
-        """加载一份 Markdown 教材，返回新增块数。"""
-        blocks = _split_markdown_blocks(name, text)
+        """加载一份 Markdown 教材，返回新增块数（chunk 归属 self._course_id）。"""
+        blocks = _split_markdown_blocks(name, text, self._course_id)
         self._chunks.extend(blocks)
         return len(blocks)
 
     @classmethod
-    def from_chunks(cls, chunks: List["KbChunk"]) -> "CourseKnowledgeBase":
-        """用已存在的块列表重建一个知识库实例（用于持久化加载）。"""
-        obj = cls()
+    def from_chunks(cls, chunks: List["KbChunk"], course_id: str = "") -> "CourseKnowledgeBase":
+        """用已存在的块列表重建一个知识库实例（course_id 供后续 load 归属）。"""
+        obj = cls(course_id=course_id)
         obj._chunks = list(chunks)
         return obj
 

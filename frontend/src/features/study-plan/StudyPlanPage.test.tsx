@@ -113,6 +113,24 @@ describe("StudyPlanPage", () => {
     await waitFor(() => expect(screen.getAllByText("就此提问").length).toBe(3));
   });
 
+  it("three-state step buttons: not_started shows 开始学习", async () => {
+    renderPage();
+    await waitFor(() => expect(screen.getAllByText("开始学习").length).toBe(3));
+  });
+
+  it("clicking 开始学习 calls updateStep with in_progress", async () => {
+    const { api } = await import("../../api/client");
+    renderPage();
+    await waitFor(() => expect(screen.getAllByText("开始学习").length).toBe(3));
+    const btn = screen.getAllByText("开始学习")[0];
+    fireEvent.click(btn);
+    await waitFor(() =>
+      expect((api.updateStep as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith(
+        "PY", "S1", "in_progress"
+      )
+    );
+  });
+
   it("expands full markdown plan via 查看完整计划", async () => {
     renderPage();
     await waitFor(() => expect(screen.getByText("查看完整计划")).toBeTruthy());

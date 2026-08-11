@@ -4,18 +4,36 @@ import { api } from "../api/client";
 import type { Course } from "../api/types";
 import { CreateCourseModal } from "../features/courses/CreateCourseModal";
 
-/** Sidebar：EduAgents + 新对话 + 我的课程 + 新建课程（ChatGPT 极简风格）。 */
-export function Sidebar() {
+interface SidebarProps {
+  open: boolean;
+  collapsed: boolean;
+  onClose: () => void;
+  onToggleCollapse: () => void;
+}
+
+/** Sidebar：EduAgents + 新对话（真新建 conversation）+ 我的课程 + 新建课程。
+ * 移动端由 AppShell 控制 open（Drawer），点击课程/新对话后自动关闭。 */
+export function Sidebar({ open, collapsed, onClose, onToggleCollapse }: SidebarProps) {
   const [courses, setCourses] = useState<Course[]>([]);
-  const [collapsed, setCollapsed] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
-  const [mobileOpen, setMobileOpen] = useState(false);
   const navigate = useNavigate();
 
   const load = () => api.listCourses().then(setCourses).catch(() => setCourses([]));
   useEffect(() => {
     load();
   }, []);
+
+  // 「新对话」：真正创建新 conversation，跳转到 /?conversation=CONV-xxx
+  const newChat = async () => {
+    try {
+      const conv = await api.createConversation(null);
+      onClose();
+      navigate(`/?conversation=${conv.conversation_id}`);
+    } catch {
+      onClose();
+      navigate("/");
+    }
+  };
 
   const onCreated = async () => {
     setShowCreate(false);
@@ -24,25 +42,21 @@ export function Sidebar() {
 
   return (
     <>
-      <aside className={`sidebar ${collapsed ? "collapsed" : ""} ${mobileOpen ? "open" : ""}`}>
+      <aside className={`sidebar ${collapsed ? "collapsed" : ""} ${open ? "open" : ""}`}>
         <div className="sidebar-header">
           <span className="sidebar-brand">EduAgents</span>
-          <button
-            className="sidebar-collapse-btn"
-            onClick={() => setCollapsed((v) => !v)}
-            title={collapsed ? "展开" : "收起"}
-          >
+          <button className="sidebar-collapse-btn" onClick={onToggleCollapse} title={collapsed ? "展开" : "收起"}>
             {collapsed ? "»" : "«"}
           </button>
         </div>
 
-        <NavLink
-          to="/"
-          className={({ isActive }) => `sidebar-item ${isActive && !window.location.pathname.includes("/courses/") ? "active" : ""}`}
-          onClick={() => setMobileOpen(false)}
+        <button
+          type="button"
+          className={`sidebar-item sidebar-new-chat ${!window.location.pathname.includes("/courses/") ? "active" : ""}`}
+          onClick={newChat}
         >
           <span className="icon">+</span> <span>新对话</span>
-        </NavLink>
+        </button>
 
         <div className="sidebar-section">
           <span>我的课程</span>
@@ -56,7 +70,7 @@ export function Sidebar() {
             key={course.course_id}
             to={`/courses/${course.course_id}/chat`}
             className={({ isActive }) => `sidebar-item ${isActive ? "active" : ""}`}
-            onClick={() => setMobileOpen(false)}
+            onClick={onClose}
           >
             <span className="icon">📚</span> <span>{course.display_name}</span>
           </NavLink>
@@ -69,15 +83,11 @@ export function Sidebar() {
         </div>
       </aside>
 
-      {mobileOpen && (
+      {open && (
         <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.3)",
-            zIndex: 40,
-          }}
-          onClick={() => setMobileOpen(false)}
+          className="sidebar-backdrop"
+          onClick={onClose}
+          aria-label="关闭侧边栏"
         />
       )}
 
@@ -86,6 +96,7 @@ export function Sidebar() {
           onClose={() => setShowCreate(false)}
           onCreated={(course) => {
             onCreated();
+            onClose();
             navigate(`/courses/${course.course_id}/chat`);
           }}
         />

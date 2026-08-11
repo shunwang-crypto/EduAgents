@@ -24,8 +24,21 @@ class LearnerRepository(ABC):
     @abstractmethod
     def get_learner(self, user_id: str) -> Optional[dict]: ...
 
+    # ---- user courses（User Course = 用户拥有；与共享 Domain 严格分离）----
     @abstractmethod
-    def bump_global_version(self, user_id: str) -> int: ...
+    def upsert_user_course(self, course: Dict[str, Any]) -> None: ...
+
+    @abstractmethod
+    def get_user_course(self, user_id: str, course_id: str) -> Optional[dict]: ...
+
+    @abstractmethod
+    def list_user_courses(self, user_id: str) -> List[dict]: ...
+
+    @abstractmethod
+    def delete_user_course(self, user_id: str, course_id: str) -> None: ...
+
+    @abstractmethod
+    def delete_user_course_data(self, user_id: str, course_id: str) -> None: ...
 
     # ---- profile facts ----------------------------------------------------
     @abstractmethod
@@ -56,9 +69,6 @@ class LearnerRepository(ABC):
 
     @abstractmethod
     def get_course_state(self, user_id: str, course_id: str) -> Optional[dict]: ...
-
-    @abstractmethod
-    def bump_state_version(self, user_id: str, course_id: str) -> int: ...
 
     # ---- kc states --------------------------------------------------------
     @abstractmethod
@@ -124,6 +134,9 @@ class LearnerRepository(ABC):
     def get_conversation(self, conversation_id: str) -> Optional[dict]: ...
 
     @abstractmethod
+    def get_conversation_for_user(self, user_id: str, conversation_id: str) -> Optional[dict]: ...
+
+    @abstractmethod
     def get_course_conversation(self, user_id: str, course_id: str) -> Optional[dict]: ...
 
     @abstractmethod
@@ -156,28 +169,3 @@ class LearnerRepository(ABC):
 
     @abstractmethod
     def get_plan_step_by_id(self, user_id: str, course_id: str, step_id: str) -> Optional[dict]: ...
-
-    # ---- domain courses ---------------------------------------------------
-    @abstractmethod
-    def upsert_domain_course(self, course: Dict[str, Any]) -> None: ...
-
-    @abstractmethod
-    def get_domain_course(self, course_id: str) -> Optional[dict]: ...
-
-    @abstractmethod
-    def list_domain_courses(self) -> List[dict]: ...
-
-    @abstractmethod
-    def delete_domain_course(self, course_id: str) -> None: ...
-
-    @abstractmethod
-    def upsert_domain_kc(self, kc: Dict[str, Any]) -> None: ...
-
-    @abstractmethod
-    def list_domain_kcs(self, course_id: str) -> List[dict]: ...
-
-    @abstractmethod
-    def upsert_domain_relation(self, rel: Dict[str, Any]) -> None: ...
-
-    @abstractmethod
-    def list_domain_relations(self, course_id: str) -> List[dict]: ...

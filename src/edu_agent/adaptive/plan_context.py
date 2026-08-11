@@ -2,13 +2,17 @@
 
 不暴露 mastery 原始值 / reason_codes / policy JSON；
 只输出计划生成需要的高层结论（known / unknown / review / background / style）。
+
+background 必须读取 active profile facts（skill:* / background:{course} / no_*），
+转换成人类可读摘要（background_facts），禁止把 fact_value_json 原样堆给 LLM。
 """
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from edu_agent.domain.learning.course import Course
+from edu_agent.learner_model.repository import LearnerRepository
 from edu_agent.learner_model.schemas import LearnerStateBundle
 
 MASTERED_THRESHOLD = 0.7
@@ -26,12 +30,27 @@ def _kc_status(mastery: Optional[float], confidence: Optional[float]) -> str:
     return "unknown"
 
 
+def _readable_fact_value(raw: Any) -> str:
+    """把 fact_value_json 转人类可读摘要（字符串/对象/列表）。"""
+    if raw is None:
+        return ""
+    if isinstance(raw, dict):
+        level = raw.get("level")
+        return str(level) if level is not None else ""
+    if isinstance(raw, list):
+        return "、".join(str(i) for i in raw[:5])
+    return str(raw)
+
+
 def build_plan_context(
     bundle: LearnerStateBundle,
+    repo: LearnerRepository,
     course: Optional[Course] = None,
     goal: str = "",
     daily_minutes: int = 60,
     duration_days: int = 14,
+    user_id: str = "",
+    course_id: str = "",
 ) -> Dict[str, object]:
     """构建 PlanContext（只含必要信息，不塞整份 Learner Model）。"""
     known: List[str] = []
@@ -64,7 +83,22 @@ def build_plan_context(
             else:
                 unknown.append(name)
 
-    facts = bundle.global_state.profile.background or ""
+    # Profile Facts → 人类可读 background_facts（skill:* / background:{course} / no_*）
+    background_facts: List[str] = []
+    if user_id and repo is not None:
+        for f in repo.list_profile_facts(user_id):
+            if f.get("status") != "active":
+                continue
+            key = f.get("fact_key", "")
+            value = _readable_fact_value(f.get("fact_value_json"))
+            if key.startswith("skill:"):
+                background_facts.append(f"已掌握 {key.split(':', 1)[1]}" + (f"（{value}）" if value else ""))
+            elif key.startswith("no_"):
+                background_facts.append(f"无 {key[3:]} 基础")
+            elif key == f"background:{course_id}":
+                if value:
+                    background_facts.append(value)
+    # 课程级 background fact 优先展示，global 无重复
     prefs = bundle.global_state.preferences
     preferred_style = prefs.preferred_mode or ""
     memories = [m.content for m in bundle.global_state.semantic_memory[:3]]
@@ -74,17 +108,21 @@ def build_plan_context(
         "known_topics": known[:10],
         "unknown_topics": unknown[:10],
         "topics_needing_review": review[:10],
-        "background": facts,
+        "background": "；".join(background_facts),
+        "background_facts": background_facts,
         "preferred_style": preferred_style,
         "semantic_memories": memories,
         "daily_minutes": daily_minutes,
         "duration_days": duration_days,
-        "personalization_note": _personalization_note(known, unknown, review),
+        "personalization_note": _personalization_note(known, unknown, review, background_facts),
     }
 
 
-def _personalization_note(known: List[str], unknown: List[str], review: List[str]) -> str:
+def _personalization_note(known: List[str], unknown: List[str], review: List[str],
+                          background_facts: List[str]) -> str:
     parts = []
+    if background_facts:
+        parts.append(f"已根据你的背景（{'、'.join(background_facts[:3])}）调整基础内容")
     if known:
         parts.append(f"已根据你的背景跳过/压缩「{'、'.join(known[:3])}」的基础入门")
     if review:

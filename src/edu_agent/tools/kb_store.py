@@ -1,12 +1,12 @@
 """知识库持久化存储（JSON 文件）。
 
 把知识库块落盘到 ``data/knowledge_base.json``，使导入的教材 / GitHub 仓库在
-Streamlit 重启后不丢失（取代原来只存在 ``session_state`` 的内存态）。
+应用重启 / Backend restart 后不丢失（取代只存在内存态的实现）。
 
 设计要点：
 - 纯标准库（json / pathlib），零第三方依赖，保证原型开箱即用；
-- 存储的是 ``KbChunk`` 的序列化（doc_title / heading_path / text），
-  与 ``CourseKnowledgeBase`` 的检索接口解耦；
+- 存储的是 ``KbChunk`` 的序列化（course_id / doc_title / heading_path / text），
+  与 ``CourseKnowledgeBase`` 的检索接口解耦；按 course_id 隔离加载；
 - 读写都做容错：文件缺失或损坏时回退为空库，不抛异常。
 """
 
@@ -27,8 +27,8 @@ def _ensure_dir() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def load_chunks() -> List[KbChunk]:
-    """从磁盘加载知识库块；文件不存在或损坏时返回空列表。"""
+def load_chunks(course_id: str | None = None) -> List[KbChunk]:
+    """从磁盘加载知识库块；course_id 给定时只返回该课程块；文件损坏返回空列表。"""
     if not STORE_PATH.exists():
         return []
     try:
@@ -40,9 +40,11 @@ def load_chunks() -> List[KbChunk]:
     chunks: List[KbChunk] = []
     for item in raw:
         try:
-            chunks.append(KbChunk(**item))
+            chunk = KbChunk(**item)
         except Exception:  # noqa: BLE001 - 跳过单条损坏记录
             continue
+        if course_id is None or chunk.course_id == course_id:
+            chunks.append(chunk)
     return chunks
 
 
@@ -62,17 +64,17 @@ def clear() -> None:
     STORE_PATH.write_text("[]", encoding="utf-8")
 
 
-def add_markdown(name: str, text: str) -> int:
-    """追加一份 Markdown 教材并落盘，返回新增块数。"""
-    kb = CourseKnowledgeBase.from_chunks(load_chunks())
+def add_markdown(course_id: str, name: str, text: str) -> int:
+    """为指定课程追加一份 Markdown 教材并落盘，返回新增块数。"""
+    kb = CourseKnowledgeBase.from_chunks(load_chunks(), course_id=course_id)
     added = kb.load_markdown(name, text)
     save_chunks(kb.chunks)
     return added
 
 
-def add_github_repo(url: str, **kwargs) -> int:
-    """从 GitHub 仓库导入文档并落盘，返回新增块数。"""
-    kb = CourseKnowledgeBase.from_chunks(load_chunks())
+def add_github_repo(course_id: str, url: str, **kwargs) -> int:
+    """为指定课程从 GitHub 仓库导入文档并落盘，返回新增块数。"""
+    kb = CourseKnowledgeBase.from_chunks(load_chunks(), course_id=course_id)
     added = kb.load_github_repo(url, **kwargs)
     save_chunks(kb.chunks)
     return added

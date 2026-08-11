@@ -118,7 +118,7 @@ class LearnerModelService:
         if self._repo.get_course_state(user_id, course_id) is None:
             self._repo.upsert_course_state(
                 {"user_id": user_id, "course_id": course_id, "current_goal_id": "",
-                 "progress": 0.0, "current_stage": "", "state_version": 1,
+                 "progress": 0.0, "current_stage": "",
                  "updated_at": _now_iso()}
             )
 
@@ -188,13 +188,6 @@ class LearnerModelService:
             if change.get("operation") != "NONE":
                 changes.append(change)
                 self._log_change(event, change)
-
-            bump_course = change.get("scope") == "course" and course_id
-            bump_global = change.get("scope") == "global"
-            if bump_course:
-                self._repo.bump_state_version(user_id, course_id)
-            if bump_global:
-                self._repo.bump_global_version(user_id)
 
         return changes
 
@@ -303,7 +296,6 @@ class LearnerModelService:
 
         result = memory_updater.add_memory(self._repo, user_id, content, course_id, category)
         if result.get("operation") != "NONE":
-            self._repo.bump_global_version(user_id)
             from edu_agent.learner_model.change_log import log_change
 
             log_change(self._repo, user_id, entity_type="semantic_memory",
@@ -319,7 +311,6 @@ class LearnerModelService:
 
         result = memory_updater.delete_memory_direct(self._repo, user_id, memory_id)
         if result.get("operation") == "DELETE":
-            self._repo.bump_global_version(user_id)
             from edu_agent.learner_model.change_log import log_change
 
             log_change(self._repo, user_id, entity_type="semantic_memory",
@@ -344,8 +335,6 @@ class LearnerModelService:
                        entity_id=result.get("entity", ""), operation=result["operation"],
                        course_id=course_id, reason=result.get("reason", ""),
                        before=result.get("before"), after=result.get("after"))
-            if course_id:
-                self._repo.bump_state_version(user_id, course_id)
             self.record_event({"event_type": "GOAL_CREATED" if result["operation"] == "CREATE" else "GOAL_UPDATED",
                                "user_id": user_id, "course_id": course_id,
                                "payload": {"goal_id": goal_id, "name": name}})
@@ -367,7 +356,6 @@ class LearnerModelService:
              "current_goal_id": existing.get("current_goal_id", ""),
              "progress": max(0.0, min(1.0, progress)),
              "current_stage": stage or existing.get("current_stage", ""),
-             "state_version": existing.get("state_version", 1),
              "updated_at": _now_iso()}
         )
 
@@ -379,7 +367,6 @@ class LearnerModelService:
             {"user_id": user_id, "course_id": course_id, "current_goal_id": goal_id,
              "progress": existing.get("progress", 0.0),
              "current_stage": existing.get("current_stage", ""),
-             "state_version": existing.get("state_version", 1),
              "updated_at": _now_iso()}
         )
 
@@ -401,7 +388,7 @@ class LearnerModelService:
             preferences=self._build_preferences(user_id, course_id),
             semantic_memory=[
                 SemanticMemoryItem(content=m.get("content", ""), created_at=m.get("updated_at", ""))
-                for m in self._repo.list_global_memories(user_id)
+                for m in self._repo.list_effective_memories(user_id, course_id)
                 if m.get("status") in ("active", "candidate")
             ],
         )
@@ -423,23 +410,33 @@ class LearnerModelService:
             goal_id=(course_row or {}).get("current_goal_id", ""),
             progress=float((course_row or {}).get("progress", 0.0)),
             knowledge=knowledge,
-            state_version=(course_row or {}).get("state_version"),
             updated_at=(course_row or {}).get("updated_at"),
             freshness="fresh",
         )
 
-        active_goal = None
-        for g in self._repo.list_goals(user_id, status="active"):
-            if not course_id or g.get("course_id") in ("", course_id):
-                active_goal = Goal(**self._goal_row(g))
-                break
+        active_goal = self._resolve_active_goal(user_id, course_id, course_row)
 
         return LearnerStateBundle(
             user_id=user_id, course_id=course_id,
             global_state=global_state, course_state=course_state, active_goal=active_goal,
-            global_state_version=learner.get("global_state_version"),
-            course_state_version=(course_row or {}).get("state_version"),
         )
+
+    def _resolve_active_goal(self, user_id: str, course_id: str, course_row: Optional[dict]):
+        """current_goal_id 优先（存在且 active）；无效回退同 course active goals。"""
+        current_goal_id = (course_row or {}).get("current_goal_id", "")
+        if current_goal_id:
+            goal = self._repo.get_goal(user_id, current_goal_id)
+            if goal and goal.get("status") == "active":
+                return Goal(**self._goal_row(goal))
+        candidates = [
+            g for g in self._repo.list_goals(user_id, status="active")
+            if not course_id or g.get("course_id") in ("", course_id)
+        ]
+        if not candidates:
+            return None
+        # priority 升序（数字小优先）→ updated_at 降序（新优先）
+        candidates.sort(key=lambda g: (g.get("priority", 1), g.get("updated_at") or ""))
+        return Goal(**self._goal_row(candidates[-1]))
 
     def _goal_row(self, row: dict) -> dict:
         try:

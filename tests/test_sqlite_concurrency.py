@@ -35,7 +35,7 @@ def test_shared_service_concurrent_read_write(lm_db_path):
     svc.repo.upsert_course_state(
         {
             "user_id": "STU-001", "course_id": "PY", "current_goal_id": "",
-            "progress": 0.0, "current_stage": "", "state_version": 1,
+            "progress": 0.0, "current_stage": "",
             "updated_at": "2026-08-11T00:00:00Z",
         }
     )
@@ -76,7 +76,7 @@ def test_concurrent_transaction_rollback_isolation(lm_db_path):
             svc.repo.upsert_course_state(
                 {
                     "user_id": "STU-002", "course_id": "BAD", "current_goal_id": "",
-                    "progress": 0.0, "current_stage": "", "state_version": 1,
+                    "progress": 0.0, "current_stage": "",
                     "updated_at": "2026-08-11T00:00:00Z",
                 }
             )
@@ -87,7 +87,7 @@ def test_concurrent_transaction_rollback_isolation(lm_db_path):
             svc.repo.upsert_course_state(
                 {
                     "user_id": "STU-002", "course_id": "GOOD", "current_goal_id": "",
-                    "progress": 0.0, "current_stage": "", "state_version": 1,
+                    "progress": 0.0, "current_stage": "",
                     "updated_at": "2026-08-11T00:00:00Z",
                 }
             )

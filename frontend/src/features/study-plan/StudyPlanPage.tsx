@@ -4,18 +4,6 @@ import { api } from "../../api/client";
 import type { Course, StudyPlan } from "../../api/types";
 import RichMarkdown from "../../components/content/RichMarkdown";
 
-const STATUS_LABEL: Record<string, string> = {
-  not_started: "未开始",
-  in_progress: "进行中",
-  completed: "已完成",
-};
-
-const STATUS_ICON: Record<string, string> = {
-  not_started: "○",
-  in_progress: "◐",
-  completed: "✓",
-};
-
 /** StudyPlanPage：ChatGPT 文档式三阶段计划视图（无 Dashboard）。
  * 每个 Step：状态 + 就此提问；「查看完整计划」展开 RichMarkdown。
  */
@@ -124,13 +112,19 @@ export function StudyPlanPage() {
                         </button>
                       </div>
                       <div className={`plan-step-status status-${step.status}`}>
-                        {step.status === "completed" ? (
-                          <button className="btn" onClick={() => toggleStep(step.step_id, "not_started")}>
-                            ✓ 已完成
+                        {step.status === "not_started" && (
+                          <button className="btn" onClick={() => toggleStep(step.step_id, "in_progress")}>
+                            ○ 开始学习
                           </button>
-                        ) : (
+                        )}
+                        {step.status === "in_progress" && (
                           <button className="btn" onClick={() => toggleStep(step.step_id, "completed")}>
-                            {STATUS_ICON[step.status]} {STATUS_LABEL[step.status]}
+                            ◐ 标记完成
+                          </button>
+                        )}
+                        {step.status === "completed" && (
+                          <button className="btn" onClick={() => toggleStep(step.step_id, "not_started")}>
+                            ✓ 已完成（重置）
                           </button>
                         )}
                       </div>

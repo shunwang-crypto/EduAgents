@@ -59,11 +59,12 @@ def generate_plan(
         learner.set_profile_fact(user_id, f"background:{course_id}", optional_background.strip(),
                                  category="background")
 
-    # PlanContext：画像在计划生成前生效（跳过/复习/顺序）
+    # PlanContext：画像在计划生成前生效（跳过/复习/顺序；读取 active profile facts）
     bundle, course = resolve_bundle_and_course(user_id, course_id, learner)
     plan_context = build_plan_context(
-        bundle, course, goal=goal_text,
+        bundle, learner.repo, course, goal=goal_text,
         daily_minutes=int(daily_minutes), duration_days=int(duration_days),
+        user_id=user_id, course_id=course_id,
     )
 
     student_input = StudentInput(
@@ -114,19 +115,9 @@ def generate_plan(
     # 说明：learning_activity 与 check_method 随 node 保留在知识地图/计划文档中，
     # plan_steps 持久化核心展示字段（title/objective/prerequisites/difficulty 已完整保存）。
 
-    # 目标 target_kcs + 课程 Domain 注册
+    # 个性化 Plan Nodes 只保存在 plan_steps（user-scoped），不写共享 domain_kcs。
+    # target_kcs 记入 active goal 供上下文参考。
     if nodes:
-        from edu_agent.domain.learning.course_builder import (
-            build_course_from_nodes,
-            load_course_from_repo,
-            persist_course,
-        )
-        from edu_agent.domain.learning.kc_graph import register_course
-
-        course_obj = build_course_from_nodes(course_id, course_info.get("display_name", course_id),
-                                             nodes, topic=course_info.get("topic", ""))
-        register_course(course_obj)
-        persist_course(learner.repo, course_obj, topic=course_info.get("topic", ""))
         learner.upsert_goal(user_id, goal_id, course_id,
                             name=course_info.get("display_name", course_id), target=goal_text,
                             target_kcs=[n.get("id") for n in nodes if n.get("id")][:8] or None)
@@ -219,10 +210,16 @@ def update_step_status(
     user_id: str, course_id: str, step_id: str, status: str,
     learner: Optional[LearnerModelService] = None,
 ) -> dict:
-    """更新计划步骤状态 → 重算进度（不修改 mastery）。"""
+    """更新计划步骤状态 → 同事务同步 plan/course/goal progress + 事件（不修改 mastery）。
+
+    - kc_id = step.kc_id（不是 step_id）；
+    - completed 只更新进度与 exposure，绝不提升 mastery。
+    """
     learner = learner or LearnerModelService()
     if status not in ("not_started", "in_progress", "completed"):
         raise ValueError(f"invalid step status: {status}")
+    if learner.repo.get_user_course(user_id, course_id) is None:
+        raise KeyError(f"course not found: {course_id}")
     plan = learner.repo.get_plan(user_id, course_id)
     if plan is None:
         raise KeyError("no plan for course")
@@ -230,22 +227,29 @@ def update_step_status(
     if step is None:
         raise KeyError(f"step not found: {step_id}")
     old_status = step.get("status")
-    learner.repo.upsert_plan_step({**step, "status": status, "updated_at": _now_iso()})
+    kc_id = step.get("kc_id") or ""
 
-    steps = learner.repo.list_plan_steps(plan["plan_id"])
-    completed = sum(1 for s in steps if s.get("status") == "completed")
-    progress = round(completed / len(steps), 3) if steps else 0.0
-    learner.repo.update_plan_progress(plan["plan_id"], progress)
-    learner.update_course_progress(user_id, course_id, progress)
+    with learner.repo.transaction():
+        learner.repo.upsert_plan_step({**step, "status": status, "updated_at": _now_iso()})
+        steps = learner.repo.list_plan_steps(plan["plan_id"])
+        completed = sum(1 for s in steps if s.get("status") == "completed")
+        progress = round(completed / len(steps), 3) if steps else 0.0
+        learner.repo.update_plan_progress(plan["plan_id"], progress)
+        learner.update_course_progress(user_id, course_id, progress)
+        # active goal progress 同步（唯一来源：plan steps）
+        bundle = learner.build_bundle(user_id, course_id)
+        if bundle.active_goal:
+            learner.update_goal_progress(user_id, bundle.active_goal.goal_id, progress)
 
-    if status == "completed" and old_status != "completed":
-        learner.record_event({"event_type": "PLAN_STEP_COMPLETED", "user_id": user_id,
-                              "course_id": course_id, "kc_id": step_id,
-                              "payload": {"step_id": step_id, "progress": progress}})
-    elif status == "in_progress" and old_status != "in_progress":
-        learner.record_event({"event_type": "PLAN_STEP_STARTED", "user_id": user_id,
-                              "course_id": course_id, "kc_id": step_id,
-                              "payload": {"step_id": step_id}})
+        if status == "completed" and old_status != "completed":
+            learner.record_event({"event_type": "PLAN_STEP_COMPLETED", "user_id": user_id,
+                                  "course_id": course_id, "kc_id": kc_id,
+                                  "payload": {"step_id": step_id, "plan_id": plan["plan_id"],
+                                              "progress": progress}})
+        elif status == "in_progress" and old_status != "in_progress":
+            learner.record_event({"event_type": "PLAN_STEP_STARTED", "user_id": user_id,
+                                  "course_id": course_id, "kc_id": kc_id,
+                                  "payload": {"step_id": step_id, "plan_id": plan["plan_id"]}})
     return get_plan(user_id, course_id, learner)
 
 

@@ -1,6 +1,6 @@
 from typing import List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 STAGE_COUNT = 3
 """学习计划一级结构固定为 3 个阶段（基础准备 / 核心学习 / 综合应用，标题可自定义）。"""
@@ -52,6 +52,26 @@ class DecompositionResult(BaseModel):
     difficulty_points: List[str] = Field(description="学习难点")
     stages: List[LearningStageSuggestion] = Field(description="固定 3 个阶段，按 order 1→2→3")
     application_directions: List[str] = Field(description="推荐应用/产出方向（案例、项目等）")
+
+    @model_validator(mode="after")
+    def _normalize_stages(self) -> "DecompositionResult":
+        """强制 stage order 恰好为 1,2,3（LLM 输出错误时补默认，不抛异常）。"""
+        defaults = [
+            ("stage-1", "基础准备", "补齐必要背景、前置知识与环境"),
+            ("stage-2", "核心学习", "掌握核心概念、方法与原理"),
+            ("stage-3", "综合应用", "通过案例、小项目整合知识并总结"),
+        ]
+        ordered = sorted(self.stages or [], key=lambda s: s.order)
+        result: List[LearningStageSuggestion] = []
+        for order in range(1, STAGE_COUNT + 1):
+            stage = next((s for s in ordered if s.order == order), None)
+            if stage is None or not (stage.title or "").strip():
+                stage_id, title, objective = defaults[order - 1]
+                stage = LearningStageSuggestion(stage_id=stage_id, title=title,
+                                                objective=objective, order=order)
+            result.append(stage)
+        self.stages = result
+        return self
 
 
 class KnowledgeNode(BaseModel):

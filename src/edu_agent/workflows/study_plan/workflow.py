@@ -376,14 +376,15 @@ def _plan_context_to_text(plan_context: Dict[str, object]) -> str:
     known = plan_context.get("known_topics") or []
     unknown = plan_context.get("unknown_topics") or []
     review = plan_context.get("topics_needing_review") or []
+    background_facts = plan_context.get("background_facts") or []
+    if background_facts:
+        lines.append(f"- 背景：{'；'.join(background_facts[:6])}")
     if known:
         lines.append(f"- 已了解/可跳过基础：{'、'.join(known[:6])}")
     if unknown:
         lines.append(f"- 新内容（按顺序学）：{'、'.join(unknown[:6])}")
     if review:
         lines.append(f"- 需要复习：{'、'.join(review[:6])}")
-    if plan_context.get("background"):
-        lines.append(f"- 背景：{plan_context['background']}")
     if plan_context.get("preferred_style"):
         lines.append(f"- 偏好：{plan_context['preferred_style']}")
     if plan_context.get("semantic_memories"):

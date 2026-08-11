@@ -44,4 +44,12 @@ describe("ChatPage plan step context", () => {
     await waitFor(() => expect(screen.getByPlaceholderText(/继续问关于 Python 数据分析/)).toBeTruthy());
     expect(screen.queryByText(/学习计划 ·/)).toBeNull();
   });
+
+  it("loads conversation from ?conversation= query", async () => {
+    const { api } = await import("../../api/client");
+    renderChat("/courses/PY/chat?conversation=CONV-NEW");
+    await waitFor(() =>
+      expect(api.getChat as ReturnType<typeof vi.fn>).toHaveBeenCalledWith("PY", "CONV-NEW")
+    );
+  });
 });

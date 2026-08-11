@@ -159,23 +159,44 @@ def get_step(course_id: str, step_id: str, user_id: str = Depends(_user_id)) -> 
 # ---------------------------------------------------------------------------
 
 
+class CreateConversationRequest(BaseModel):
+    course_id: Optional[str] = Field(default=None, description="课程（可为空=普通对话）")
+
+
+@router.post("/chat/conversations")
+def create_conversation(req: CreateConversationRequest, user_id: str = Depends(_user_id),
+                        service: ChatService = Depends(_chat_service)) -> dict:
+    """「新对话」：真正创建新 conversation（不再复用已有主会话）。"""
+    try:
+        return service.create_conversation(user_id, req.course_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @router.post("/chat")
 def chat(req: ChatRequest, user_id: str = Depends(_user_id),
          service: ChatService = Depends(_chat_service)) -> dict:
-    return service.chat(
-        user_id=user_id,
-        message=req.message,
-        course_id=req.course_id,
-        conversation_id=req.conversation_id,
-        plan_step_id=req.plan_step_id,
-    )
+    try:
+        return service.chat(
+            user_id=user_id,
+            message=req.message,
+            course_id=req.course_id,
+            conversation_id=req.conversation_id,
+            plan_step_id=req.plan_step_id,
+        )
+    except KeyError as exc:
+        # conversation / course ownership 错误：404（信息隐藏）
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.get("/chat")
 def get_chat(course_id: Optional[str] = None, conversation_id: Optional[str] = None,
              user_id: str = Depends(_user_id),
              service: ChatService = Depends(_chat_service)) -> dict:
-    return service.get_conversation(user_id, course_id=course_id, conversation_id=conversation_id)
+    try:
+        return service.get_conversation(user_id, course_id=course_id, conversation_id=conversation_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.get("/health")

@@ -117,15 +117,15 @@ def test_chat_with_course_no_step_is_course_context(seeded):
     assert reply["context"]["type"] == "course"
 
 
-def test_chat_step_belongs_to_other_course_falls_back_to_course(seeded):
-    """把 course B 的 step 传给 course A 的 chat → 不报错，降级为 course 上下文。"""
+def test_chat_course_not_owned_by_user_rejected(seeded):
+    """STU-001 没有 java course（STU-002 的）→ chat 拒绝（KeyError → 404）。"""
     from edu_agent.application.chat_service import ChatService
 
     step = seeded["plan"]["steps"][0]
     java_course = seeded["java"]["course_id"]
     svc = ChatService(learner=seeded["learner"])
-    reply = svc.chat("STU-001", "你好", course_id=java_course, plan_step_id=step["step_id"])
-    assert reply["context"]["type"] in ("course", "general")
+    with pytest.raises(KeyError):
+        svc.chat("STU-001", "你好", course_id=java_course, plan_step_id=step["step_id"])
 
 
 def test_rag_query_uses_message_not_empty(seeded, monkeypatch):

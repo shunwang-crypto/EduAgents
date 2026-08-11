@@ -22,6 +22,15 @@ describe("normalizeMarkdownMath", () => {
     const md = "你好 **加粗** 世界";
     expect(normalizeMarkdownMath(md)).toBe(md);
   });
+
+  it("protects inline code from math normalization", () => {
+    // `\(x\)` 是代码文本，必须原样保留，不能变成 $x$
+    const md = "示例：`\\(x\\)` 是一种 LaTeX 写法";
+    const out = normalizeMarkdownMath(md);
+    expect(out).toContain("\\(");
+    expect(out).toContain("\\)");
+    expect(out).not.toContain("$x$");
+  });
 });
 
 describe("RichMarkdown", () => {

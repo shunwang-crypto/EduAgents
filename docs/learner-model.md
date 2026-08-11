@@ -25,7 +25,7 @@
 | `profile_change_log` | 画像变更记录（before/after 数值） |
 | `chat_conversations` / `chat_messages` | 对话历史（按 user + course 隔离） |
 | `study_plans` / `plan_steps` | 学习计划与步骤（progress 正式来源） |
-| `domain_courses` / `domain_kcs` / `domain_kc_relations` | 课程 Domain Model 持久化（跨重启） |
+| `user_courses` | 用户课程（user-scoped；共享 Built-in Domain 为纯代码模板） |
 
 ## 事件 → 状态更新（统一事务）
 
@@ -66,5 +66,8 @@ PROFILE_FACT_DELETED / MEMORY_CREATED / MEMORY_DELETED / FEEDBACK_GIVEN`
 
 ## 多课程
 
-- `domain_courses` 持久化自定义课程；`course_resolver.py` 将 topic 稳定映射到 `CUSTOM-{slug}-{hash8}`。
-- Java 课程的状态 / 计划 / 记忆不会进入 Python 课程的上下文。
+- `user_courses`（user_id, course_id, display_name, topic, normalized_topic）持久化用户课程；
+  `course_resolver.py` 将 topic 稳定映射到 `CUSTOM-{slug}-{hash8}`，但 ownership 由 user_courses membership 决定。
+- Java 课程的状态 / 计划 / 记忆不会进入 Python 课程的上下文；不同用户的同名课程完全隔离。
+- 删除用户课程 = 级联删除该用户在该课程的全部数据（user_courses / states / goals / plans /
+  steps / conversations / messages / kc_states / preferences / memories），共享模板不受影响。

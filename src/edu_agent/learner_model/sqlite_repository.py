@@ -101,7 +101,7 @@ class SQLiteLearnerRepository(LearnerRepository):
             self._insert_or_update(
                 "learners",
                 {"user_id": user_id, "display_name": display_name, "education_level": "",
-                 "language": "zh", "background": "", "global_state_version": 1,
+                 "language": "zh", "background": "",
                  "created_at": now, "updated_at": now},
                 ["user_id"],
             )
@@ -115,16 +115,49 @@ class SQLiteLearnerRepository(LearnerRepository):
     def get_learner(self, user_id: str) -> Optional[dict]:
         return self._fetchone("SELECT * FROM learners WHERE user_id=?", (user_id,))
 
-    def bump_global_version(self, user_id: str) -> int:
-        cur = self._fetchone("SELECT global_state_version FROM learners WHERE user_id=?", (user_id,))
-        new_version = (cur["global_state_version"] + 1) if cur else 1
+    # ---- user courses -----------------------------------------------------
+    def upsert_user_course(self, course: Dict[str, Any]) -> None:
+        self._insert_or_update("user_courses", course, ["user_id", "course_id"])
+
+    def get_user_course(self, user_id: str, course_id: str) -> Optional[dict]:
+        return self._fetchone(
+            "SELECT * FROM user_courses WHERE user_id=? AND course_id=?", (user_id, course_id)
+        )
+
+    def list_user_courses(self, user_id: str) -> List[dict]:
+        return self._fetchall(
+            "SELECT * FROM user_courses WHERE user_id=? ORDER BY updated_at DESC", (user_id,)
+        )
+
+    def delete_user_course(self, user_id: str, course_id: str) -> None:
         self._conn().execute(
-            "INSERT INTO learners (user_id, global_state_version, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET global_state_version=?, updated_at=?",
-            (user_id, new_version, _now_iso(), _now_iso(), new_version, _now_iso()),
+            "DELETE FROM user_courses WHERE user_id=? AND course_id=?", (user_id, course_id)
         )
         self._commit()
-        return new_version
+
+    def delete_user_course_data(self, user_id: str, course_id: str) -> None:
+        """删除当前用户在当前课程的全部 user-scoped 数据（单事务，共享 Domain 不碰）。"""
+        self._conn().execute("DELETE FROM user_courses WHERE user_id=? AND course_id=?", (user_id, course_id))
+        self._conn().execute("DELETE FROM learner_course_states WHERE user_id=? AND course_id=?", (user_id, course_id))
+        self._conn().execute("DELETE FROM learning_goals WHERE user_id=? AND course_id=?", (user_id, course_id))
+        self._conn().execute(
+            "DELETE FROM plan_steps WHERE plan_id IN (SELECT plan_id FROM study_plans WHERE user_id=? AND course_id=?)",
+            (user_id, course_id),
+        )
+        self._conn().execute("DELETE FROM study_plans WHERE user_id=? AND course_id=?", (user_id, course_id))
+        self._conn().execute(
+            "DELETE FROM chat_messages WHERE conversation_id IN "
+            "(SELECT conversation_id FROM chat_conversations WHERE user_id=? AND course_id=?)",
+            (user_id, course_id),
+        )
+        self._conn().execute("DELETE FROM chat_conversations WHERE user_id=? AND course_id=?", (user_id, course_id))
+        self._conn().execute("DELETE FROM learner_kc_states WHERE user_id=? AND course_id=?", (user_id, course_id))
+        self._conn().execute("DELETE FROM learner_preferences WHERE user_id=? AND course_id=?", (user_id, course_id))
+        self._conn().execute("DELETE FROM learner_semantic_memories WHERE user_id=? AND course_id=?", (user_id, course_id))
+        self._conn().execute(
+            "DELETE FROM profile_change_log WHERE user_id=? AND course_id=?", (user_id, course_id)
+        )
+        self._commit()
 
     # ---- profile facts ----------------------------------------------------
     def upsert_profile_fact(self, fact: Dict[str, Any]) -> None:
@@ -176,21 +209,6 @@ class SQLiteLearnerRepository(LearnerRepository):
             "SELECT * FROM learner_course_states WHERE user_id=? AND course_id=?",
             (user_id, course_id),
         )
-
-    def bump_state_version(self, user_id: str, course_id: str) -> int:
-        cur = self._fetchone(
-            "SELECT state_version FROM learner_course_states WHERE user_id=? AND course_id=?",
-            (user_id, course_id),
-        )
-        new_version = (cur["state_version"] + 1) if cur else 1
-        self._conn().execute(
-            "INSERT INTO learner_course_states (user_id, course_id, state_version, progress, current_stage, current_goal_id, updated_at) "
-            "VALUES (?, ?, ?, 0.0, '', '', ?) ON CONFLICT(user_id, course_id) "
-            "DO UPDATE SET state_version=?, updated_at=?",
-            (user_id, course_id, new_version, _now_iso(), new_version, _now_iso()),
-        )
-        self._commit()
-        return new_version
 
     # ---- kc states --------------------------------------------------------
     def upsert_kc(self, kc: Dict[str, Any]) -> None:
@@ -337,6 +355,13 @@ class SQLiteLearnerRepository(LearnerRepository):
             "SELECT * FROM chat_conversations WHERE conversation_id=?", (conversation_id,)
         )
 
+    def get_conversation_for_user(self, user_id: str, conversation_id: str) -> Optional[dict]:
+        """按 conversation_id 定位，并校验属于该 user（ownership-safe）。"""
+        return self._fetchone(
+            "SELECT * FROM chat_conversations WHERE conversation_id=? AND user_id=?",
+            (conversation_id, user_id),
+        )
+
     def get_course_conversation(self, user_id: str, course_id: str) -> Optional[dict]:
         return self._fetchone(
             "SELECT * FROM chat_conversations WHERE user_id=? AND course_id=? "
@@ -407,38 +432,6 @@ class SQLiteLearnerRepository(LearnerRepository):
             "WHERE ps.step_id=? AND p.user_id=? AND p.course_id=?",
             (step_id, user_id, course_id),
         )
-
-    # ---- domain courses ---------------------------------------------------
-    def upsert_domain_course(self, course: Dict[str, Any]) -> None:
-        self._insert_or_update("domain_courses", course, ["course_id"])
-
-    def get_domain_course(self, course_id: str) -> Optional[dict]:
-        return self._fetchone("SELECT * FROM domain_courses WHERE course_id=?", (course_id,))
-
-    def list_domain_courses(self) -> List[dict]:
-        return self._fetchall("SELECT * FROM domain_courses ORDER BY created_at DESC")
-
-    def delete_domain_course(self, course_id: str) -> None:
-        self._conn().execute("DELETE FROM domain_courses WHERE course_id=?", (course_id,))
-        self._conn().execute("DELETE FROM domain_kcs WHERE course_id=?", (course_id,))
-        self._conn().execute("DELETE FROM domain_kc_relations WHERE course_id=?", (course_id,))
-        self._commit()
-
-    def upsert_domain_kc(self, kc: Dict[str, Any]) -> None:
-        self._insert_or_update("domain_kcs", kc, ["course_id", "kc_id"])
-
-    def list_domain_kcs(self, course_id: str) -> List[dict]:
-        return self._fetchall(
-            "SELECT * FROM domain_kcs WHERE course_id=? ORDER BY kc_id", (course_id,)
-        )
-
-    def upsert_domain_relation(self, rel: Dict[str, Any]) -> None:
-        self._insert_or_update(
-            "domain_kc_relations", rel, ["course_id", "from_kc", "to_kc", "relation"]
-        )
-
-    def list_domain_relations(self, course_id: str) -> List[dict]:
-        return self._fetchall("SELECT * FROM domain_kc_relations WHERE course_id=?", (course_id,))
 
 
 def _now_iso() -> str:
