@@ -29,7 +29,7 @@
 }
 
 .rich-markdown h1 { font-size: 1.5em; }
-.rich-markdown h2 { font-size: 1.3em; border-bottom: 1px solid var(--border, #e5e5e5); padding-bottom: 0.25em; }
+.rich-markdown h2 { font-size: 1.3em; padding-bottom: 0.2em; }
 .rich-markdown h3 { font-size: 1.15em; }
 .rich-markdown h4 { font-size: 1.02em; }
 
@@ -153,14 +153,15 @@
 
 .md-table-wrap th,
 .md-table-wrap td {
-  border: 1px solid var(--border, #e5e5e5);
+  border: none;
+  border-bottom: 1px solid #e8e8e8;
   padding: 0.45rem 0.75rem;
   text-align: left;
   vertical-align: top;
 }
 
 .md-table-wrap th {
-  background: var(--bg-surface, #f6f6f6);
+  background: #f7f8f9;
   font-weight: 600;
   white-space: nowrap;
 }

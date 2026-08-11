@@ -87,12 +87,12 @@ describe("StudyPlanPage", () => {
 
   it("renders exactly 3 stage sections", async () => {
     renderPage();
-    await waitFor(() => expect(screen.getByText(/学习计划/)).toBeTruthy());
-    const titles = screen.getAllByText(/基础准备|核心学习|综合应用/);
-    expect(titles.length).toBeGreaterThanOrEqual(3);
-    expect(screen.getByText("1. 基础准备")).toBeTruthy();
-    expect(screen.getByText("2. 核心学习")).toBeTruthy();
-    expect(screen.getByText("3. 综合应用")).toBeTruthy();
+    await waitFor(() => expect(screen.getByText("阶段 1")).toBeTruthy());
+    expect(screen.getByText("阶段 2")).toBeTruthy();
+    expect(screen.getByText("阶段 3")).toBeTruthy();
+    expect(screen.getByText("基础准备")).toBeTruthy();
+    expect(screen.getByText("核心学习")).toBeTruthy();
+    expect(screen.getByText("综合应用")).toBeTruthy();
   });
 
   it("every stage has at least one step", async () => {
@@ -131,15 +131,15 @@ describe("StudyPlanPage", () => {
     );
   });
 
-  it("expands full markdown plan via 查看完整计划", async () => {
+  it("expands full markdown plan via 查看完整说明", async () => {
     renderPage();
-    await waitFor(() => expect(screen.getByText("查看完整计划")).toBeTruthy());
-    fireEvent.click(screen.getByText("查看完整计划"));
+    await waitFor(() => expect(screen.getByText("查看完整说明")).toBeTruthy());
+    fireEvent.click(screen.getByText("查看完整说明"));
     // RichMarkdown 渲染 markdown 的 h2「完整计划」
     await waitFor(() =>
       expect(screen.getByRole("heading", { name: "完整计划" })).toBeTruthy()
     );
-    expect(screen.getByText("收起完整计划")).toBeTruthy();
+    expect(screen.getByText("收起完整说明")).toBeTruthy();
   });
 
   it("shows empty state when no plan", async () => {

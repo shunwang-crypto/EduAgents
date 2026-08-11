@@ -1,26 +1,40 @@
 import { useState } from "react";
-import { Outlet } from "react-router-dom";
+import { Outlet, useNavigate } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
-import { MainLayout } from "./MainLayout";
+import { api } from "../api/client";
+import "./shell.css";
 
-/** ChatGPT 式外壳：Sidebar + 单一 Main Content（无第三栏）。
- * sidebarOpen/collapsed 由 AppShell 管理，供移动端 hamburger 与桌面折叠使用。
+/** AppShell：ChatGPT 式外壳。唯一结构：
+ * .eduagents-app > Sidebar + .workspace > Outlet
+ * sidebarCollapsed（桌面）与 mobileSidebarOpen（抽屉）由 AppShell 统一管理。
  */
 export function AppShell() {
-  const [sidebarOpen, setSidebarOpen] = useState(false); // mobile drawer
-  const [collapsed, setCollapsed] = useState(false); // desktop collapse
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const navigate = useNavigate();
+
+  const newChat = async () => {
+    try {
+      const conv = await api.createConversation(null);
+      navigate(`/?conversation=${conv.conversation_id}`);
+    } catch {
+      navigate("/");
+    }
+  };
 
   return (
-    <div className="eduagents-app" style={{ display: "flex", height: "100%" }}>
+    <div className="eduagents-app">
       <Sidebar
-        open={sidebarOpen}
-        collapsed={collapsed}
-        onClose={() => setSidebarOpen(false)}
-        onToggleCollapse={() => setCollapsed((v) => !v)}
+        open={mobileSidebarOpen}
+        collapsed={sidebarCollapsed}
+        onClose={() => setMobileSidebarOpen(false)}
+        onToggleCollapse={() => setSidebarCollapsed((v) => !v)}
+        newChat={newChat}
+        navigateToCourse={(id) => navigate(`/courses/${id}/chat`)}
       />
-      <MainLayout onOpenSidebar={() => setSidebarOpen(true)}>
-        <Outlet />
-      </MainLayout>
+      <main className="workspace">
+        <Outlet context={{ openMobileSidebar: () => setMobileSidebarOpen(true) }} />
+      </main>
     </div>
   );
 }

@@ -1,55 +1,61 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Link, useParams, useSearchParams } from "react-router-dom";
+import { useOutletContext, useParams, useSearchParams } from "react-router-dom";
+import { BookOpen, X } from "lucide-react";
 import { api } from "../../api/client";
 import type { ChatMessage, Course, PlanStep } from "../../api/types";
 import RichMarkdown from "../../components/content/RichMarkdown";
+import { InlineError } from "../../components/ui/InlineError";
+import { LoadingDots } from "../../components/ui/Loading";
+import { CourseHeader } from "../../layout/CourseHeader";
 import { ChatComposer } from "./ChatComposer";
 import { ChatEmptyState } from "./ChatEmptyState";
+import "./chat.css";
 
-const SUGGESTIONS = [
-  "我想学习 Python",
-  "我准备学习 Java 面向对象",
-  "我想学习 Transformer",
-];
+interface OutletCtx {
+  openMobileSidebar: () => void;
+}
 
-/** ChatPage：GPT 风格主聊天。
- * 三种上下文：无课程（普通）/ 有课程 / 有课程+计划步骤（?step=）。
- * plan_step 仅作用于当前请求上下文，可随时移除，不永久绑定会话。
- */
+/** ChatPage：GPT 风格主聊天（无课程 / 有课程 / 有课程+计划步骤）。
+ * 只负责页面内容（header 由 CourseHeader 提供，workspace 由 AppShell 提供）。 */
 export function ChatPage() {
   const { courseId } = useParams<{ courseId: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
   const stepParam = searchParams.get("step");
   const conversationParam = searchParams.get("conversation");
+  const { openMobileSidebar = () => {} } = (useOutletContext<OutletCtx>() ?? {});
 
   const [course, setCourse] = useState<Course | null>(null);
+  const [courseError, setCourseError] = useState(false);
   const [step, setStep] = useState<PlanStep | null>(null);
   const [stepError, setStepError] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
+  const [historyError, setHistoryError] = useState(false);
+  const [sendError, setSendError] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
+  const stickToBottom = useRef(true);
 
-  // 课程 / 会话加载（?conversation= 指定新对话；否则该课程主会话）
+  // 课程 / 会话加载
   useEffect(() => {
     setMessages([]);
-    setError("");
+    setCourseError(false);
+    setHistoryError(false);
     if (courseId) {
-      api.getCourse(courseId).then(setCourse).catch(() => setCourse(null));
+      api.getCourse(courseId).then(setCourse).catch(() => setCourseError(true));
       api
         .getChat(courseId, conversationParam)
         .then((conv) => setMessages(conv.messages))
-        .catch(() => undefined);
+        .catch(() => setHistoryError(true));
     } else {
       setCourse(null);
       api
         .getChat(null, conversationParam)
         .then((conv) => setMessages(conv.messages))
-        .catch(() => undefined);
+        .catch(() => setHistoryError(true));
     }
   }, [courseId, conversationParam]);
 
-  // ?step= 加载计划步骤（校验归属在 backend；无效则提示并忽略）
+  // ?step= 加载计划步骤
   useEffect(() => {
     setStep(null);
     setStepError("");
@@ -64,12 +70,19 @@ export function ChatPage() {
     }
   }, [courseId, stepParam]);
 
+  // 滚动：新消息时贴底；用户上滚查看历史时不强制拉回
   useEffect(() => {
     const el = scrollRef.current;
-    if (el && typeof el.scrollTo === "function") {
+    if (el && stickToBottom.current && typeof el.scrollTo === "function") {
       el.scrollTo({ top: el.scrollHeight });
     }
   }, [messages, loading]);
+
+  const onScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+  }, []);
 
   const removeStep = useCallback(() => {
     const next = new URLSearchParams(searchParams);
@@ -88,7 +101,8 @@ export function ChatPage() {
       };
       setMessages((prev) => [...prev, userMsg]);
       setLoading(true);
-      setError("");
+      setSendError("");
+      stickToBottom.current = true;
       try {
         const reply = await api.chat({
           message: text,
@@ -104,13 +118,22 @@ export function ChatPage() {
         };
         setMessages((prev) => [...prev, aiMsg]);
       } catch (e) {
-        setError(e instanceof Error ? e.message : "发送失败");
+        setSendError(e instanceof Error ? e.message : "发送失败，请重试");
       } finally {
         setLoading(false);
       }
     },
     [courseId, loading, step, conversationParam]
   );
+
+  const retryHistory = useCallback(() => {
+    setHistoryError(false);
+    if (courseId) {
+      api.getChat(courseId, conversationParam).then((conv) => setMessages(conv.messages)).catch(() => setHistoryError(true));
+    } else {
+      api.getChat(null, conversationParam).then((conv) => setMessages(conv.messages)).catch(() => setHistoryError(true));
+    }
+  }, [courseId, conversationParam]);
 
   const placeholder = step
     ? `继续问关于 ${step.title} 的问题…`
@@ -119,33 +142,33 @@ export function ChatPage() {
       : "有什么我可以帮你的？";
 
   return (
-    <div className="main">
-      <header className="main-header">
-        <h1>{course?.display_name ?? "新对话"}</h1>
-        {courseId && (
-          <Link to={`/courses/${courseId}/plan`} className="btn">
-            学习计划
-          </Link>
-        )}
-      </header>
+    <>
+      <CourseHeader course={course} activeView={courseId ? "chat" : "general"} onOpenMobileSidebar={openMobileSidebar} />
 
-      <div className="main-content" ref={scrollRef}>
-        <div className="content-center">
-          {/* 计划步骤上下文 Chip（可移除，不永久绑定会话） */}
+      <div className="chat-scroll" ref={scrollRef} onScroll={onScroll}>
+        <div className="chat-content">
           {step && (
             <div className="step-chip">
+              <span className="step-chip-icon">
+                <BookOpen size={13} aria-hidden />
+              </span>
               <span>学习计划 · {step.title}</span>
               <button type="button" className="step-chip-x" onClick={removeStep} aria-label="移除计划上下文">
-                ×
+                <X size={14} aria-hidden />
               </button>
             </div>
           )}
-          {stepError && (
-            <div className="step-chip step-chip-error">{stepError}</div>
+          {stepError && <div className="step-chip step-chip-error">{stepError}</div>}
+
+          {historyError && messages.length === 0 && (
+            <InlineError message="无法加载历史消息" onRetry={retryHistory} />
+          )}
+          {courseError && (
+            <InlineError message="无法加载课程" onRetry={() => window.location.reload()} />
           )}
 
-          {messages.length === 0 && !loading ? (
-            <ChatEmptyState suggestions={SUGGESTIONS} onPick={send} />
+          {messages.length === 0 && !loading && !historyError ? (
+            <ChatEmptyState onPick={send} />
           ) : (
             messages.map((m) => (
               <div key={m.message_id} className={`chat-message ${m.role}`}>
@@ -157,18 +180,19 @@ export function ChatPage() {
               </div>
             ))
           )}
-          {loading && <div className="chat-message assistant">…</div>}
-          {error && (
-            <div className="chat-message assistant" style={{ color: "var(--danger)" }}>
-              {error}
+
+          {loading && (
+            <div className="chat-message assistant">
+              <LoadingDots />
             </div>
           )}
+          {sendError && <InlineError message={sendError} />}
         </div>
       </div>
 
       <div className="composer-wrap">
         <ChatComposer placeholder={placeholder} disabled={loading} onSend={send} />
       </div>
-    </div>
+    </>
   );
 }

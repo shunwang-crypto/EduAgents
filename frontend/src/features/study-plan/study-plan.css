@@ -1,0 +1,320 @@
+/* Study Plan 特性样式 */
+
+.plan-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.plan-doc {
+  max-width: var(--plan-width);
+  margin: 0 auto;
+  padding: 28px 24px 48px;
+}
+
+/* ---------- Hero ---------- */
+.plan-hero {
+  margin-bottom: 28px;
+}
+
+.plan-hero h1 {
+  font-size: 24px;
+  font-weight: 700;
+  margin: 0 0 6px;
+  color: var(--text-primary);
+}
+
+.plan-hero-meta {
+  font-size: 14px;
+  color: var(--text-secondary);
+  margin-bottom: 18px;
+}
+
+.plan-progress {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.plan-progress-bar {
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background: #ecefed;
+  overflow: hidden;
+}
+
+.plan-progress-fill {
+  height: 100%;
+  background: var(--primary);
+  border-radius: 2px;
+  transition: width 200ms ease;
+}
+
+.plan-progress-label {
+  font-size: 13px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+/* ---------- Stage ---------- */
+.plan-stage {
+  margin-bottom: 32px;
+}
+
+.plan-stage-head {
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+}
+
+.plan-stage-eyebrow {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  letter-spacing: 0.03em;
+}
+
+.plan-stage-title {
+  font-size: 19px;
+  font-weight: 650;
+  margin: 2px 0 0;
+  color: var(--text-primary);
+}
+
+/* ---------- Step ---------- */
+.plan-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 12px;
+  border-radius: 10px;
+  transition: background 150ms ease;
+}
+
+.plan-step:hover {
+  background: var(--bg-hover);
+}
+
+.plan-step-index {
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  color: var(--text-muted);
+  font-weight: 600;
+  min-width: 24px;
+  padding-top: 2px;
+}
+
+.plan-step-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.plan-step-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.plan-step-desc {
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+
+.plan-step-metas {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 6px;
+}
+
+.plan-step-meta-row {
+  display: flex;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.meta-label {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.plan-step-footer {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 6px;
+}
+
+.plan-step-time {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.step-ask-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: none;
+  background: transparent;
+  color: var(--primary);
+  font-size: 13px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 7px;
+  transition: background 150ms ease;
+}
+
+.step-ask-btn:hover {
+  background: var(--primary-soft);
+}
+
+.plan-step-status {
+  flex-shrink: 0;
+  padding-top: 2px;
+}
+
+/* 三态 status control */
+.step-status-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 13px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 5px 12px;
+  cursor: pointer;
+  transition: background 150ms ease, border-color 150ms ease;
+  white-space: nowrap;
+}
+
+.status-not-started {
+  color: var(--text-secondary);
+  background: var(--bg-hover);
+  border-color: var(--border);
+}
+
+.status-not-started:hover {
+  background: #eceef0;
+}
+
+.status-in-progress {
+  color: #9a6700;
+  background: var(--amber-soft);
+  border-color: #f3e3c3;
+}
+
+.status-in-progress:hover {
+  background: #faeed8;
+}
+
+.status-completed {
+  color: var(--primary);
+  background: var(--primary-soft);
+  border-color: #d7e9df;
+}
+
+.status-completed:hover {
+  background: #dff0e6;
+}
+
+/* ---------- Actions ---------- */
+.plan-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 24px;
+}
+
+.plan-regen-confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.plan-regen-text {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.plan-markdown-full {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+/* ---------- Empty / Skeleton ---------- */
+.plan-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 64px 16px;
+}
+
+.plan-empty-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
+  background: var(--primary-soft);
+  color: var(--primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 14px;
+}
+
+.plan-empty h2 {
+  font-size: 18px;
+  font-weight: 650;
+  margin: 0 0 6px;
+}
+
+.plan-empty p {
+  font-size: 14px;
+  color: var(--text-secondary);
+  margin: 0 0 18px;
+}
+
+.plan-generating-note {
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.plan-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 20px 0;
+}
+
+.plan-skeleton-block {
+  border-radius: 8px;
+  background: linear-gradient(90deg, #eceef0 25%, #f4f5f6 50%, #eceef0 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s infinite;
+}
+
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+@media (max-width: 768px) {
+  .plan-doc {
+    padding: 18px 16px 40px;
+  }
+  .plan-step {
+    gap: 8px;
+    padding: 12px 8px;
+  }
+  .plan-step-status {
+    display: block; /* 三态按钮移动端保留 */
+  }
+}
