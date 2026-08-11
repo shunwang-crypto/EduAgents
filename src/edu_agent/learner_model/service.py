@@ -43,7 +43,6 @@ from edu_agent.learner_model.updaters import (
     profile_fact as profile_fact_updater,
 )
 
-DEFAULT_USER_ID = "STU-001"
 
 
 def _now_iso() -> str:
@@ -107,7 +106,8 @@ class LearnerModelService:
     # ------------------------------------------------------------------
     # 基础
     # ------------------------------------------------------------------
-    def ensure_learner(self, user_id: str = DEFAULT_USER_ID, display_name: str = "") -> None:
+    def ensure_learner(self, user_id: str, display_name: str = "") -> None:
+        """显式 user_id 必填（LearnerModelService 不知道默认用户）。"""
         self._repo.ensure_learner(user_id, display_name)
 
     def ensure_course(self, user_id: str, course_id: str) -> None:
@@ -153,25 +153,27 @@ class LearnerModelService:
         return event_id
 
     def apply_event(self, event: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """记录事件并更新画像（单事务 + 幂等）。"""
+        """记录事件并更新画像（单事务 + 并发安全幂等）。
+
+        幂等实现：INSERT OR IGNORE 返回 inserted；只有真正插入才 apply mutation，
+        不依赖事务外 event_exists（避免 check→insert 竞态）。
+        """
         event_id = event.get("event_id") or _new_event_id()
         event = {**event, "event_id": event_id}
         if not event.get("timestamp"):
             event["timestamp"] = _now_iso()
 
-        if self._repo.event_exists(event_id):
-            return []  # 幂等
-
         user_id = event.get("user_id", "")
         course_id = event.get("course_id", "")
-        if course_id:
-            self.ensure_course(user_id, course_id)
-        else:
-            self.ensure_learner(user_id)
 
         changes: List[Dict[str, Any]] = []
         with self._repo.transaction():
-            self._repo.insert_event(
+            # ensure learner/course 也进事务（失败整体回滚）
+            if course_id:
+                self.ensure_course(user_id, course_id)
+            else:
+                self.ensure_learner(user_id)
+            inserted = self._repo.insert_event(
                 {"event_id": event_id, "schema_version": 1,
                  "event_type": event.get("event_type", ""),
                  "user_id": user_id, "course_id": course_id,
@@ -184,6 +186,8 @@ class LearnerModelService:
                  "payload_json": json.dumps(event.get("payload", {}), ensure_ascii=False, default=str),
                  "created_at": event["timestamp"]}
             )
+            if not inserted:
+                return []  # 幂等：事件已存在，不重复 apply
             change = self._apply_event(event)
             if change.get("operation") != "NONE":
                 changes.append(change)
@@ -294,29 +298,31 @@ class LearnerModelService:
                    category: str = "experience") -> Dict[str, Any]:
         from edu_agent.learner_model.updaters import semantic_memory as memory_updater
 
-        result = memory_updater.add_memory(self._repo, user_id, content, course_id, category)
-        if result.get("operation") != "NONE":
-            from edu_agent.learner_model.change_log import log_change
+        with self._repo.transaction():
+            result = memory_updater.add_memory(self._repo, user_id, content, course_id, category)
+            if result.get("operation") != "NONE":
+                from edu_agent.learner_model.change_log import log_change
 
-            log_change(self._repo, user_id, entity_type="semantic_memory",
-                       entity_id=result.get("entity", ""), operation=result["operation"],
-                       course_id=course_id, reason=result.get("reason", ""),
-                       before=result.get("before"), after=result.get("after"))
-            self.record_event({"event_type": "MEMORY_CREATED", "user_id": user_id,
-                               "course_id": course_id, "payload": {"content": content[:80]}})
+                log_change(self._repo, user_id, entity_type="semantic_memory",
+                           entity_id=result.get("entity", ""), operation=result["operation"],
+                           course_id=course_id, reason=result.get("reason", ""),
+                           before=result.get("before"), after=result.get("after"))
+                self.record_event({"event_type": "MEMORY_CREATED", "user_id": user_id,
+                                   "course_id": course_id, "payload": {"content": content[:80]}})
         return result
 
     def delete_memory(self, user_id: str, memory_id: str) -> Dict[str, Any]:
         from edu_agent.learner_model.updaters import semantic_memory as memory_updater
 
-        result = memory_updater.delete_memory_direct(self._repo, user_id, memory_id)
-        if result.get("operation") == "DELETE":
-            from edu_agent.learner_model.change_log import log_change
+        with self._repo.transaction():
+            result = memory_updater.delete_memory_direct(self._repo, user_id, memory_id)
+            if result.get("operation") == "DELETE":
+                from edu_agent.learner_model.change_log import log_change
 
-            log_change(self._repo, user_id, entity_type="semantic_memory",
-                       entity_id=memory_id, operation="DELETE", reason="user requested")
-            self.record_event({"event_type": "MEMORY_DELETED", "user_id": user_id,
-                               "payload": {"memory_id": memory_id}})
+                log_change(self._repo, user_id, entity_type="semantic_memory",
+                           entity_id=memory_id, operation="DELETE", reason="user requested")
+                self.record_event({"event_type": "MEMORY_DELETED", "user_id": user_id,
+                                   "payload": {"memory_id": memory_id}})
         return result
 
     def upsert_goal(self, user_id: str, goal_id: str, course_id: str, name: str,
@@ -350,25 +356,27 @@ class LearnerModelService:
                                stage: str = "") -> None:
         if not course_id:
             return
-        existing = self._repo.get_course_state(user_id, course_id) or {}
-        self._repo.upsert_course_state(
-            {"user_id": user_id, "course_id": course_id,
-             "current_goal_id": existing.get("current_goal_id", ""),
-             "progress": max(0.0, min(1.0, progress)),
-             "current_stage": stage or existing.get("current_stage", ""),
-             "updated_at": _now_iso()}
-        )
+        with self._repo.transaction():
+            existing = self._repo.get_course_state(user_id, course_id) or {}
+            self._repo.upsert_course_state(
+                {"user_id": user_id, "course_id": course_id,
+                 "current_goal_id": existing.get("current_goal_id", ""),
+                 "progress": max(0.0, min(1.0, progress)),
+                 "current_stage": stage or existing.get("current_stage", ""),
+                 "updated_at": _now_iso()}
+            )
 
     def set_current_goal(self, user_id: str, course_id: str, goal_id: str) -> None:
         if not course_id:
             return
-        existing = self._repo.get_course_state(user_id, course_id) or {}
-        self._repo.upsert_course_state(
-            {"user_id": user_id, "course_id": course_id, "current_goal_id": goal_id,
-             "progress": existing.get("progress", 0.0),
-             "current_stage": existing.get("current_stage", ""),
-             "updated_at": _now_iso()}
-        )
+        with self._repo.transaction():
+            existing = self._repo.get_course_state(user_id, course_id) or {}
+            self._repo.upsert_course_state(
+                {"user_id": user_id, "course_id": course_id, "current_goal_id": goal_id,
+                 "progress": existing.get("progress", 0.0),
+                 "current_stage": existing.get("current_stage", ""),
+                 "updated_at": _now_iso()}
+            )
 
     # ------------------------------------------------------------------
     # 查询
@@ -421,7 +429,15 @@ class LearnerModelService:
             global_state=global_state, course_state=course_state, active_goal=active_goal,
         )
 
-    def _resolve_active_goal(self, user_id: str, course_id: str, course_row: Optional[dict]):
+    def resolve_active_goal(self, user_id: str, course_id: str = "") -> Optional[Goal]:
+        """current_goal_id 优先（存在且 active）；无效回退同 course active goals。
+
+        fallback：priority 数字小优先；同 priority 取 updated_at 新的。
+        """
+        course_row = self._repo.get_course_state(user_id, course_id) if course_id else None
+        return self._resolve_active_goal(user_id, course_id, course_row)
+
+    def _resolve_active_goal(self, user_id: str, course_id: str, course_row: Optional[dict]) -> Optional[Goal]:
         """current_goal_id 优先（存在且 active）；无效回退同 course active goals。"""
         current_goal_id = (course_row or {}).get("current_goal_id", "")
         if current_goal_id:
@@ -434,9 +450,10 @@ class LearnerModelService:
         ]
         if not candidates:
             return None
-        # priority 升序（数字小优先）→ updated_at 降序（新优先）
-        candidates.sort(key=lambda g: (g.get("priority", 1), g.get("updated_at") or ""))
-        return Goal(**self._goal_row(candidates[-1]))
+        # 稳定两段排序：先 updated_at 降序（同 priority 新优先），再 priority 升序（数字小优先）
+        candidates.sort(key=lambda g: g.get("updated_at") or "", reverse=True)
+        candidates.sort(key=lambda g: g.get("priority", 1))
+        return Goal(**self._goal_row(candidates[0]))
 
     def _goal_row(self, row: dict) -> dict:
         try:

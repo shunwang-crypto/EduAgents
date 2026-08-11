@@ -22,7 +22,9 @@ def _user_id(x_user_id: Optional[str] = Header(default=None)) -> str:
     if x_user_id:
         return x_user_id
     settings = get_settings()
-    return settings.learner_model_user_id
+    if settings.learner_model_user_id:
+        return settings.learner_model_user_id
+    raise HTTPException(status_code=401, detail="missing X-User-Id header")
 
 
 def _chat_service() -> ChatService:
@@ -50,7 +52,6 @@ class GeneratePlanRequest(BaseModel):
     duration_days: int = Field(default=14, ge=1, le=365)
     daily_minutes: int = Field(default=60, ge=5, le=600)
     background: str = Field(default="", description="补充背景（可选，写为 Profile Fact）")
-    extra_requirement: str = Field(default="", description="本次特殊要求（可选）")
 
 
 class UpdateStepRequest(BaseModel):
@@ -58,7 +59,7 @@ class UpdateStepRequest(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    message: str = Field(description="用户消息")
+    message: str = Field(min_length=1, max_length=8000, description="用户消息")
     course_id: Optional[str] = Field(default=None, description="当前课程（无课程为普通对话）")
     conversation_id: Optional[str] = Field(default=None)
     plan_step_id: Optional[str] = Field(default=None, description="当前计划步骤（就此提问进入，可空）")
@@ -81,7 +82,7 @@ def create_course(req: CreateCourseRequest, user_id: str = Depends(_user_id)) ->
             user_id, req.topic, goal=req.goal,
             duration_days=req.duration_days, daily_minutes=req.daily_minutes,
         )
-    except Exception as exc:  # noqa: BLE001
+    except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
@@ -104,7 +105,10 @@ def rename_course(course_id: str, req: UpdateCourseRequest,
 
 @router.delete("/courses/{course_id}", status_code=204)
 def delete_course(course_id: str, user_id: str = Depends(_user_id)) -> None:
-    course_service.delete_course(user_id, course_id)
+    try:
+        course_service.delete_course(user_id, course_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -120,9 +124,10 @@ def generate_plan(course_id: str, req: GeneratePlanRequest,
             user_id, course_id, goal=req.goal,
             duration_days=req.duration_days, daily_minutes=req.daily_minutes,
             optional_background=req.background,
-            optional_extra_requirement=req.extra_requirement,
         )
-    except Exception as exc:  # noqa: BLE001
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 

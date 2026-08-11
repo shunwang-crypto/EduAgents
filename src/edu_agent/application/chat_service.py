@@ -57,7 +57,7 @@ _PATTERNS: List[Dict[str, Any]] = [
      "forget_raw": lambda m: m.group(1)},
 ]
 
-_SPLIT_RE = re.compile(r"(?:和|与|、|[,，]|及|\s+)")
+_SPLIT_RE = re.compile(r"(?:以及|和|与|、|[,，]|及)")  # 只按明确连接词拆分，绝不按空格
 
 
 def _slug(text: str) -> str:
@@ -108,14 +108,22 @@ def _find_forgettable_keys(user_id: str, course_id: str, raw: str,
     返回真正存在的可删键；匹配不到返回空（不误删）。"""
     target = _slug(raw).lower()
     keys: List[str] = []
+    if not target:
+        return keys
+    # normalized exact：skill:java 只匹配 skill:java / no_java，不匹配 skill:javascript
     for fact in learner.repo.list_profile_facts(user_id):
         fact_key = (fact.get("fact_key") or "").lower()
-        fact_value = str(fact.get("fact_value_json") or "").lower()
-        if target and (target in fact_key or target in fact_value):
+        if fact_key == f"skill:{target}" or fact_key == f"no_{target}":
             keys.append(fact["fact_key"])
+            continue
+        # value 用 token boundary 匹配（避免 Java 命中 JavaScript）
+        fact_value = str(fact.get("fact_value_json") or "").lower()
+        if re.search(rf"(^|[^a-z0-9\u4e00-\u9fff]){re.escape(target)}(?=[^a-z0-9\u4e00-\u9fff]|$)", fact_value):
+            keys.append(fact["fact_key"])
+    # memory 同样 token boundary（global + 当前 course）
     for mem in learner.repo.list_effective_memories(user_id, course_id):
         content = str(mem.get("content") or "").lower()
-        if target and target in content:
+        if re.search(rf"(^|[^a-z0-9\u4e00-\u9fff]){re.escape(target)}(?=[^a-z0-9\u4e00-\u9fff]|$)", content):
             keys.append(f"memory:{mem['memory_id']}")
     return list(dict.fromkeys(keys))
 
@@ -181,12 +189,16 @@ class ChatService:
         course_id: Optional[str] = None,
         conversation_id: Optional[str] = None,
         plan_step_id: Optional[str] = None,
-        extra_requirement: str = "",
     ) -> dict:
         """发一条消息并返回 AI 回复。
 
+        顺序（保证当前消息在 LLM Prompt 中只出现一次）：
+        resolve conversation → 画像意图 → plan_step 校验 → 加载 PRIOR history
+        → 落库当前用户消息 → 事件 → 构建上下文 → LLM(prior history, message)
+        → 落库 AI 回复 → 事件。
+
         conversation_id：必须属于当前 user 且 course 匹配，否则拒绝（KeyError → 404）。
-        plan_step_id：必须属于当前 user+course 的 current plan，否则按无 step 处理。
+        plan_step_id：显式传入但不存在/不属于当前 user+course → KeyError → 404（不静默降级）。
         """
         learner = self._learner
         learner.ensure_learner(user_id)
@@ -202,19 +214,17 @@ class ChatService:
         intents = extract_memory_intents(message)
         applied = apply_memory_intents(user_id, course_id or "", intents, learner)
 
-        # 2.5) plan_step 校验（属于 user+course；不属于则忽略并提示）
+        # 3) plan_step 校验：显式传入必须有效，否则 404（绝不静默降级）
         step: Optional[dict] = None
         if course_id and plan_step_id:
-            try:
-                from edu_agent.application.study_plan_service import get_step
+            from edu_agent.application.study_plan_service import get_step
 
-                step = get_step(user_id, course_id, plan_step_id, learner)
-            except KeyError:
-                logger.warning("[chat] plan_step not owned: user=%s course=%s step=%s",
-                               user_id, course_id, plan_step_id)
-                step = None
+            step = get_step(user_id, course_id, plan_step_id, learner)  # KeyError → 404
 
-        # 3) 用户消息落库（metadata 保留 step 上下文）
+        # 4) 先加载 PRIOR history（不含当前消息）→ Prompt 中当前消息只出现一次
+        history = self._recent_history(conv["conversation_id"], limit=8)
+
+        # 5) 用户消息落库（metadata 保留 step 上下文）
         metadata: Dict[str, Any] = {"course_id": course_id}
         if step:
             metadata["plan_step_id"] = step["step_id"]
@@ -236,10 +246,9 @@ class ChatService:
                                           "plan_step_id": (step or {}).get("step_id", ""),
                                           "step_title": (step or {}).get("title", "")}})
 
-        # 4) 上下文（RAG query = step.title + message；真加载持久化 chunks）
+        # 6) 上下文（RAG query = step.title + message；真加载持久化 chunks）
         context_text = self._build_context(user_id, course_id, message, step)
-        history = self._recent_history(conv["conversation_id"], limit=8)
-        reply = self._llm_reply(message, context_text, history, extra_requirement)
+        reply = self._llm_reply(message, context_text, history)
 
         # 5) AI 回复落库
         ai_msg_id = f"MSG-{uuid.uuid4().hex[:12]}"
@@ -304,24 +313,48 @@ class ChatService:
                        message: str, plan_step: Optional[dict] = None) -> str:
         if not course_id:
             return ""  # 普通聊天不加载课程画像
+        # 最低保障：课程显示名 + 目标 + 计划摘要（个性化失败也保留，绝不变普通聊天）
+        repo = self._learner.repo
+        course_row = repo.get_user_course(user_id, course_id)
+        course_title = (course_row or {}).get("display_name") or course_id
         try:
             bundle, course = resolve_bundle_and_course(user_id, course_id, self._learner)
-            course_title = (course.title if course else "") or course_id
-            plan = self._learner.repo.get_plan(user_id, course_id)
+            if course and course.title:
+                course_title = course.title
+            plan = repo.get_plan(user_id, course_id)
             plan_summary = (plan or {}).get("summary", "")
             # RAG query：step.title + message 提升相关性；正式路径必须用真实问题
             query = message
             if plan_step and plan_step.get("title"):
                 query = f"{plan_step['title']} {message}".strip()
             rag_hits = self._rag(course_id, query, top_k=3)
-            ctx = build_chat_context(bundle, self._learner.repo, course_id,
+            ctx = build_chat_context(bundle, repo, course_id,
                                      course_title=course_title,
                                      plan_summary=plan_summary or "",
                                      plan_step=plan_step, rag_hits=rag_hits)
             return chat_context_to_prompt(ctx)
-        except Exception:  # noqa: BLE001 - 上下文失败走普通聊天
-            logger.warning("[chat] build context failed: user=%s course=%s", user_id, course_id, exc_info=True)
-            return ""
+        except Exception:  # noqa: BLE001 - 个性化失败只丢个性化字段
+            logger.warning("[chat] build context degraded: user=%s course=%s", user_id, course_id, exc_info=True)
+            lines = [f"当前课程：{course_title}"]
+            goal = self._current_goal_summary(user_id, course_id)
+            if goal:
+                lines.append(f"学习目标：{goal}")
+            plan = repo.get_plan(user_id, course_id)
+            if plan and plan.get("summary"):
+                lines.append(f"计划摘要：{plan['summary']}")
+            return "\n".join(lines)
+
+    def _current_goal_summary(self, user_id: str, course_id: str) -> str:
+        """复用 LearnerModelService 的 active goal 解析（course_state.current_goal_id 优先）。"""
+        try:
+            goal = self._learner.resolve_active_goal(user_id, course_id)
+            if goal:
+                target = goal.get("target") or ""
+                name = goal.get("name") or ""
+                return target or name
+        except Exception:  # noqa: BLE001
+            logger.warning("[chat] resolve active goal failed", exc_info=True)
+        return ""
 
     def _rag(self, course_id: str, message: str, top_k: int = 3) -> List[dict]:
         """课程知识库检索：真加载持久化 chunks（load_chunks(course_id)），不跨课程。"""
@@ -340,11 +373,11 @@ class ChatService:
             return []
 
     def _recent_history(self, conversation_id: str, limit: int = 8) -> List[Dict[str, str]]:
-        messages = self._learner.repo.list_messages(conversation_id, limit=limit)
+        """最近 N 条历史（chronological 旧→新）；在插入当前消息前调用。"""
+        messages = self._learner.repo.list_recent_messages(conversation_id, limit=limit)
         return [{"role": m["role"], "content": m["content"]} for m in messages]
 
-    def _llm_reply(self, message: str, context_text: str, history: List[Dict[str, str]],
-                   extra_requirement: str = "") -> str:
+    def _llm_reply(self, message: str, context_text: str, history: List[Dict[str, str]]) -> str:
         """调用 LLM；无模型/失败时降级为可用的基础回复。"""
         try:
             from langchain_core.prompts import ChatPromptTemplate
@@ -352,11 +385,9 @@ class ChatService:
             from edu_agent.core.llm import get_kb_llm
 
             context_block = f"\n课程与学习者上下文：\n{context_text}\n" if context_text else ""
-            requirement_block = f"\n额外要求：{extra_requirement}\n" if extra_requirement else ""
             prompt = ChatPromptTemplate.from_template(
                 "{system}"
                 "{context_block}"
-                "{requirement_block}"
                 "历史对话：\n{history}\n\n用户：{message}\n\n助手："
             )
             history_text = "\n".join(f"{h['role']}: {h['content']}" for h in history[-6:]) or "（无）"

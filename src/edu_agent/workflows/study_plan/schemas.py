@@ -87,8 +87,6 @@ class KnowledgeNode(BaseModel):
     stage_title: str = Field(description="所属阶段标题")
     stage_order: int = Field(ge=1, le=3, description="所属阶段顺序")
     learning_objective: str = Field(description="可检查的学习目标")
-    learning_activity: str = Field(description="建议学习活动（阅读/代码演示/案例观察/小功能实现/笔记整理/项目应用/资料查阅/总结）")
-    check_method: str = Field(description="完成检查方式（如何确认步骤已完成，如完成阅读/运行示例/写出总结）")
 
 
 class KnowledgeMap(BaseModel):

@@ -63,27 +63,29 @@ def create_course(
     existing = learner.repo.list_user_courses(user_id)
     dup = next((c for c in existing if c.get("normalized_topic") == normalized), None)
 
-    if dup is not None:
-        course_id = dup["course_id"]
-    else:
-        course_id = resolve_course_id(topic, [c["course_id"] for c in existing])
-        learner.repo.upsert_user_course(
-            {"user_id": user_id, "course_id": course_id, "display_name": topic,
-             "topic": topic, "normalized_topic": normalized,
-             "created_at": _now_iso(), "updated_at": _now_iso()}
-        )
-    learner.ensure_course(user_id, course_id)
+    # 全部 DB 写在一个事务（失败整体回滚，不留下半创建的课程状态）
+    with learner.repo.transaction():
+        if dup is not None:
+            course_id = dup["course_id"]
+        else:
+            course_id = resolve_course_id(topic, [c["course_id"] for c in existing])
+            learner.repo.upsert_user_course(
+                {"user_id": user_id, "course_id": course_id, "display_name": topic,
+                 "topic": topic, "normalized_topic": normalized,
+                 "created_at": _now_iso(), "updated_at": _now_iso()}
+            )
+        learner.ensure_course(user_id, course_id)
 
-    # 一个课程一个 active goal（旧 active → completed）
-    for g in learner.repo.list_goals(user_id, status="active"):
-        if g.get("course_id") == course_id and g["goal_id"] != resolve_goal_id(user_id, course_id):
-            learner.set_goal_status(user_id, g["goal_id"], "completed")
+        # 一个课程一个 active goal（旧 active → completed）
+        goal_id = resolve_goal_id(user_id, course_id)
+        for g in learner.repo.list_goals(user_id, status="active"):
+            if g.get("course_id") == course_id and g["goal_id"] != goal_id:
+                learner.set_goal_status(user_id, g["goal_id"], "completed")
 
-    goal_id = resolve_goal_id(user_id, course_id)
-    learner.upsert_goal(user_id, goal_id, course_id, name=topic, target=goal or "")
-    learner.set_current_goal(user_id, course_id, goal_id)
-    learner.record_event({"event_type": "COURSE_CREATED", "user_id": user_id,
-                          "course_id": course_id, "payload": {"topic": topic}})
+        learner.upsert_goal(user_id, goal_id, course_id, name=topic, target=goal or "")
+        learner.set_current_goal(user_id, course_id, goal_id)
+        learner.record_event({"event_type": "COURSE_CREATED", "user_id": user_id,
+                              "course_id": course_id, "payload": {"topic": topic}})
 
     return get_course(user_id, course_id, learner)
 
@@ -106,9 +108,10 @@ def rename_course(user_id: str, course_id: str, new_title: str,
     if row is None:
         raise KeyError(f"course not found: {course_id}")
     title = (new_title or "").strip() or row["display_name"]
-    learner.repo.upsert_user_course({**row, "display_name": title, "updated_at": _now_iso()})
-    learner.record_event({"event_type": "COURSE_UPDATED", "user_id": user_id,
-                          "course_id": course_id, "payload": {"title": title}})
+    with learner.repo.transaction():
+        learner.repo.upsert_user_course({**row, "display_name": title, "updated_at": _now_iso()})
+        learner.record_event({"event_type": "COURSE_UPDATED", "user_id": user_id,
+                              "course_id": course_id, "payload": {"title": title}})
     return get_course(user_id, course_id, learner)
 
 
@@ -120,24 +123,26 @@ def delete_course(user_id: str, course_id: str,
         raise KeyError(f"course not found: {course_id}")
     with learner.repo.transaction():
         learner.repo.delete_user_course_data(user_id, course_id)
-    learner.record_event({"event_type": "COURSE_DELETED", "user_id": user_id,
-                          "course_id": course_id, "payload": {}})
+        # 审计事件在删除之后写入；delete_user_course_data 不删 events，事件留存
+        learner.record_event({"event_type": "COURSE_DELETED", "user_id": user_id,
+                              "course_id": course_id, "payload": {}})
 
 
 def _compose_course(user_id: str, course_id: str, row: dict,
                     learner: LearnerModelService) -> dict:
     state = learner.repo.get_course_state(user_id, course_id) or {}
+    # 复用唯一 active goal 解析（current_goal_id 优先 → priority fallback），
+    # 与 Chat / Plan 看到同一个 current goal
+    active_goal = learner.resolve_active_goal(user_id, course_id)
     goal = None
-    for g in learner.repo.list_goals(user_id, status="active"):
-        if g.get("course_id") == course_id:
-            try:
-                target_kcs = json.loads(g.get("target_kcs_json") or "[]")
-            except (ValueError, TypeError):
-                target_kcs = []
-            goal = {"goal_id": g["goal_id"], "name": g.get("name"),
-                    "target": g.get("target", ""), "progress": float(g.get("progress", 0.0)),
-                    "target_kcs": target_kcs}
-            break
+    if active_goal is not None:
+        try:
+            target_kcs = list(active_goal.target_kcs or [])
+        except Exception:  # noqa: BLE001
+            target_kcs = []
+        goal = {"goal_id": active_goal.goal_id, "name": active_goal.goal_name,
+                "target": active_goal.target, "progress": float(active_goal.progress or 0.0),
+                "target_kcs": target_kcs}
     plan = learner.repo.get_plan(user_id, course_id)
     return {
         "course_id": course_id,

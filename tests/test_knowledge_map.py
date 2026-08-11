@@ -78,11 +78,14 @@ def test_build_knowledge_map_uses_compact_titles_and_keeps_full_summary():
         application_directions=[],
     )
 
-    node = build_knowledge_map(student_input, decomposition).nodes[0]
+    km = build_knowledge_map(student_input, decomposition)
+    # 三阶段分桶生成：Stage1（兜底）在前，核心知识在 Stage2
+    node = next(n for n in km.nodes if n.category == "核心知识")
 
     assert len(node.title) <= 24
     assert node.title == "向量数据库的索引构建、相似度检索"
     assert node.summary == long_concept
+    assert node.stage_order == 2
 
 
 def test_knowledge_map_always_has_exactly_three_stages():

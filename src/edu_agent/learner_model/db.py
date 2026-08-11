@@ -76,7 +76,8 @@ CREATE TABLE IF NOT EXISTS learning_goals (
     deadline TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    PRIMARY KEY (user_id, goal_id)
+    PRIMARY KEY (user_id, goal_id),
+    CHECK (progress >= 0 AND progress <= 1)
 );
 
 CREATE TABLE IF NOT EXISTS learner_course_states (
@@ -86,7 +87,8 @@ CREATE TABLE IF NOT EXISTS learner_course_states (
     progress REAL DEFAULT 0.0,
     current_stage TEXT DEFAULT '',
     updated_at TEXT NOT NULL,
-    PRIMARY KEY (user_id, course_id)
+    PRIMARY KEY (user_id, course_id),
+    CHECK (progress >= 0 AND progress <= 1)
 );
 
 CREATE TABLE IF NOT EXISTS learner_kc_states (
@@ -104,7 +106,9 @@ CREATE TABLE IF NOT EXISTS learner_kc_states (
     is_estimated INTEGER DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    PRIMARY KEY (user_id, course_id, kc_id)
+    PRIMARY KEY (user_id, course_id, kc_id),
+    CHECK (mastery IS NULL OR (mastery >= 0 AND mastery <= 1)),
+    CHECK (confidence IS NULL OR (confidence >= 0 AND confidence <= 1))
 );
 
 CREATE TABLE IF NOT EXISTS learner_preferences (
@@ -203,7 +207,9 @@ CREATE TABLE IF NOT EXISTS study_plans (
     plan_markdown TEXT NOT NULL,
     progress REAL DEFAULT 0.0,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    UNIQUE (user_id, course_id),  -- 每 User Course 只有一个 current plan
+    CHECK (progress >= 0 AND progress <= 1)
 );
 CREATE INDEX IF NOT EXISTS idx_plans_course ON study_plans(user_id, course_id);
 
@@ -225,7 +231,10 @@ CREATE TABLE IF NOT EXISTS plan_steps (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     UNIQUE (plan_id, seq),
-    FOREIGN KEY (plan_id) REFERENCES study_plans(plan_id) ON DELETE CASCADE
+    FOREIGN KEY (plan_id) REFERENCES study_plans(plan_id) ON DELETE CASCADE,
+    CHECK (status IN ('not_started', 'in_progress', 'completed')),
+    CHECK (stage_order BETWEEN 1 AND 3),
+    CHECK (minutes > 0)
 );
 """
 
@@ -233,10 +242,10 @@ CREATE TABLE IF NOT EXISTS plan_steps (
 def connect(db_path: Optional[str | Path] = None) -> sqlite3.Connection:
     path = Path(db_path) if db_path else DEFAULT_DB_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
-    # check_same_thread=False：LearnerModelService 进程级共享连接（单例避免 WAL 多连接锁），
-    # 而 FastAPI 同步路由在线程池执行，连接会被不同线程复用。
-    # SQLite threadsafety=SERIALIZED + WAL + busy_timeout + 短事务（transaction()）下跨线程安全。
-    conn = sqlite3.connect(str(path), timeout=10, check_same_thread=False)
+    # 每线程一条连接（SQLiteLearnerRepository 用 threading.local），
+    # 连接只在创建它的线程内使用 → 保持 SQLite 默认 check_same_thread=True（更安全）。
+    # WAL + busy_timeout + 短事务（transaction()）保证多线程并发安全。
+    conn = sqlite3.connect(str(path), timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")

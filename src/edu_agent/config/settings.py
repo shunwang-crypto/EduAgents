@@ -26,8 +26,13 @@ class Settings(BaseModel):
     # 本地 Dynamic Learner Model（SQLite）
     learner_model_db_path: str = Field(default="", alias="LEARNER_MODEL_DB_PATH")
     learner_model_auto_update: bool = Field(default=True, alias="LEARNER_MODEL_AUTO_UPDATE")
-    # 开发期默认用户（宿主接入认证后由 Router 注入）
-    learner_model_user_id: str = Field(default="STU-001", alias="LEARNER_MODEL_USER_ID")
+    # 开发期默认用户（默认空=必须由 X-User-Id 头提供；开发 .env 显式配置）
+    learner_model_user_id: str = Field(default="", alias="LEARNER_MODEL_USER_ID")
+    # CORS：逗号分隔的允许 origin（开发默认本地 Vite）
+    cors_origins: str = Field(
+        default="http://localhost:5173,http://127.0.0.1:5173",
+        alias="CORS_ORIGINS",
+    )
 
 
 @lru_cache
@@ -47,6 +52,6 @@ def get_settings() -> Settings:
         XINGCHEN_MODEL=os.getenv("XINGCHEN_MODEL") or os.getenv("OPENCODE_ZEN_MODEL", ""),
         LEARNER_MODEL_DB_PATH=os.getenv("LEARNER_MODEL_DB_PATH", "").strip(),
         LEARNER_MODEL_AUTO_UPDATE=auto_update,
-        LEARNER_MODEL_USER_ID=os.getenv("LEARNER_MODEL_USER_ID", "STU-001").strip()
-        or "STU-001",
+        LEARNER_MODEL_USER_ID=os.getenv("LEARNER_MODEL_USER_ID", "").strip(),
+        CORS_ORIGINS=os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").strip(),
     )

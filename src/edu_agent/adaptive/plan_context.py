@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from edu_agent.domain.learning.course import Course
+from edu_agent.learner_model.fact_text import humanize_profile_fact
 from edu_agent.learner_model.repository import LearnerRepository
 from edu_agent.learner_model.schemas import LearnerStateBundle
 
@@ -28,18 +29,6 @@ def _kc_status(mastery: Optional[float], confidence: Optional[float]) -> str:
     if confidence is not None and confidence >= 0.5:
         return "weak"  # 已知低掌握
     return "unknown"
-
-
-def _readable_fact_value(raw: Any) -> str:
-    """把 fact_value_json 转人类可读摘要（字符串/对象/列表）。"""
-    if raw is None:
-        return ""
-    if isinstance(raw, dict):
-        level = raw.get("level")
-        return str(level) if level is not None else ""
-    if isinstance(raw, list):
-        return "、".join(str(i) for i in raw[:5])
-    return str(raw)
 
 
 def build_plan_context(
@@ -83,21 +72,19 @@ def build_plan_context(
             else:
                 unknown.append(name)
 
-    # Profile Facts → 人类可读 background_facts（skill:* / background:{course} / no_*）
+    # Profile Facts → 人类可读 background_facts（共享 helper，不把内部键/JSON 给 LLM）
     background_facts: List[str] = []
     if user_id and repo is not None:
         for f in repo.list_profile_facts(user_id):
             if f.get("status") != "active":
                 continue
             key = f.get("fact_key", "")
-            value = _readable_fact_value(f.get("fact_value_json"))
-            if key.startswith("skill:"):
-                background_facts.append(f"已掌握 {key.split(':', 1)[1]}" + (f"（{value}）" if value else ""))
-            elif key.startswith("no_"):
-                background_facts.append(f"无 {key[3:]} 基础")
-            elif key == f"background:{course_id}":
-                if value:
-                    background_facts.append(value)
+            if not key:
+                continue
+            # 课程级 background 只进对应课程；其他课程 background 不污染
+            if key.startswith("background:") and key != f"background:{course_id}":
+                continue
+            background_facts.append(humanize_profile_fact(key, f.get("fact_value_json")))
     # 课程级 background fact 优先展示，global 无重复
     prefs = bundle.global_state.preferences
     preferred_style = prefs.preferred_mode or ""

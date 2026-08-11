@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+from edu_agent.learner_model.fact_text import humanize_profile_fact
 from edu_agent.learner_model.schemas import LearnerStateBundle
 from edu_agent.learner_model.repository import LearnerRepository
 
@@ -37,6 +38,12 @@ def build_chat_context(
     prefs = bundle.global_state.preferences.mode_effectiveness
     memories = [m.content for m in bundle.global_state.semantic_memory[:3]]
 
+    # facts → 人类可读短语（不把 fact_key / raw fact_value_json 塞给 LLM）
+    humanized_facts = [
+        humanize_profile_fact(f["fact_key"], f.get("fact_value_json"))
+        for f in facts[:6]
+        if humanize_profile_fact(f["fact_key"], f.get("fact_value_json"))
+    ]
     context: Dict[str, object] = {
         "course_id": course_id or None,
         "course_title": course_title or (course_id or None),
@@ -45,7 +52,7 @@ def build_chat_context(
         "plan_summary": plan_summary or "",
         "progress": bundle.course_state.progress if course_id else 0.0,
         "plan_step": plan_step or None,
-        "facts": [{"key": f["fact_key"], "value": f["fact_value_json"]} for f in facts[:6]],
+        "facts": humanized_facts,
         "preferences": [k for k, v in prefs.items() if v.confidence >= 0.5 and v.score >= 0.6],
         "memories": memories,
         "rag_hits": rag_hits or [],
@@ -77,8 +84,7 @@ def chat_context_to_prompt(ctx: Dict[str, object]) -> str:
         if step.get("difficulty"):
             lines.append(f"难度：{step['difficulty']}")
     if ctx.get("facts"):
-        fact_text = "；".join(f"{f['key']}={f['value']}" for f in ctx["facts"])
-        lines.append(f"学生背景：{fact_text}")
+        lines.append("学生背景：" + "；".join(ctx["facts"]))
     if ctx.get("preferences"):
         lines.append("偏好：希望" + "、".join(ctx["preferences"]))
     if ctx.get("memories"):

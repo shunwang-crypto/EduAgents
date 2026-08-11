@@ -39,6 +39,17 @@ def apply_profile_fact_evidence(
 
     existing = repo.get_profile_fact(user_id, fact_key)
 
+    # 正负冲突互消（同一事务内，由 apply_event 包裹）：skill:x ↔ no_x 不能同时 active
+    conflict_key = None
+    if fact_key.startswith("skill:"):
+        conflict_key = "no_" + fact_key[len("skill:"):]  # skill:python → no_python
+    elif fact_key.startswith("no_"):
+        conflict_key = "skill:" + fact_key[len("no_"):]  # no_python → skill:python
+    if conflict_key:
+        conflict = repo.get_profile_fact(user_id, conflict_key)
+        if conflict and conflict.get("status") == "active":
+            repo.delete_profile_fact(user_id, conflict["fact_id"])
+
     if evidence.event_type == "PROFILE_FACT_DELETED":
         if existing:
             repo.delete_profile_fact(user_id, existing["fact_id"])

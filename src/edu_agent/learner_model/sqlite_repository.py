@@ -269,12 +269,19 @@ class SQLiteLearnerRepository(LearnerRepository):
         )
 
     def list_effective_memories(self, user_id: str, course_id: str) -> List[dict]:
-        return self.list_global_memories(user_id) + self.list_course_memories(user_id, course_id)
+        """有效记忆：当前课程优先于 global（course memories 不被 global 挤掉）。"""
+        return self.list_course_memories(user_id, course_id) + self.list_global_memories(user_id)
 
     def list_memories(self, user_id: str, course_id: str = "") -> List[dict]:
         if course_id:
             return self.list_effective_memories(user_id, course_id)
         return self.list_global_memories(user_id)
+
+    def get_memory(self, user_id: str, memory_id: str) -> Optional[dict]:
+        return self._fetchone(
+            "SELECT * FROM learner_semantic_memories WHERE user_id=? AND memory_id=?",
+            (user_id, memory_id),
+        )
 
     def delete_memory(self, user_id: str, memory_id: str) -> None:
         self._conn().execute(
@@ -382,10 +389,24 @@ class SQLiteLearnerRepository(LearnerRepository):
         self._commit()
 
     def list_messages(self, conversation_id: str, limit: int = 100) -> List[dict]:
+        """全部消息（旧→新，最多 limit 条）。"""
         return self._fetchall(
             "SELECT * FROM chat_messages WHERE conversation_id=? ORDER BY created_at ASC LIMIT ?",
             (conversation_id, limit),
         )
+
+    def list_recent_messages(self, conversation_id: str, limit: int = 8) -> List[dict]:
+        """最近 N 条消息（chronological 旧→新）。
+
+        实现：ORDER BY created_at DESC LIMIT N 取最新，再 reverse。
+        切勿用 ASC LIMIT（那是最早 N 条）。
+        """
+        rows = self._fetchall(
+            "SELECT * FROM chat_messages WHERE conversation_id=? "
+            "ORDER BY created_at DESC LIMIT ?",
+            (conversation_id, limit),
+        )
+        return list(reversed(rows))
 
     # ---- study plans ------------------------------------------------------
     def upsert_plan(self, plan: Dict[str, Any]) -> None:

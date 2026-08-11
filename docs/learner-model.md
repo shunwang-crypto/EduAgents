@@ -14,10 +14,10 @@
 
 | 表 | 用途 |
 |---|---|
-| `learners` | 用户身份 + `global_state_version` |
+| `learners` | 用户身份 |
 | `learner_profile_facts` | 背景事实（同 `user_id+fact_key` 唯一，可 UPDATE；保留 False/0/"" 值） |
 | `learning_goals` | 学习目标（`(user_id, goal_id)` 联合主键，多用户隔离；一课程一个 active goal） |
-| `learner_course_states` | 课程状态（progress / current_goal_id / state_version） |
+| `learner_course_states` | 课程状态（progress / current_goal_id） |
 | `learner_kc_states` | 知识点掌握度（mastery 可 NULL；confidence 分离） |
 | `learner_preferences` | 偏好（`(user_id, course_id, key)`；course_id='' = 全局；完整生命周期） |
 | `learner_semantic_memories` | 长期记忆（course_id='' = 全局，否则课程隔离） |
@@ -37,7 +37,6 @@ BEGIN
 ├─ 提取 LightEvidence（确定性规则，无 LLM 重写画像）
 ├─ 定向 Updater（knowledge / preference / profile_fact / goal / semantic_memory）
 ├─ before / after → change log
-├─ version bump（global 或 course）
 └─ COMMIT（任何异常 ROLLBACK，无半写状态）
 ```
 
@@ -57,12 +56,6 @@ PROFILE_FACT_DELETED / MEMORY_CREATED / MEMORY_DELETED / FEEDBACK_GIVEN`
 - Preference：`candidate → active → weakening → inactive → reactivate`（USER_EXPLICIT 最高优先级）。
 - Profile Fact：同 key 冲突 UPDATE；用户修正时 confidence 重设（不是永远取 max）。
 - Memory：`add_memory`（同内容去重 REINFORCE）/ `delete_memory`（真正删除）。
-
-## 版本
-
-- `learners.global_state_version`：Profile Fact / 全局 Preference / 全局 Memory 变化时 +1。
-- `learner_course_states.state_version`：课程级状态变化时 +1。
-- 全局事件**不**创建 `course_id=''` 的课程状态。
 
 ## 多课程
 

@@ -23,6 +23,10 @@ def client(tmp_path, monkeypatch):
     db = str(tmp_path / "lm.db")
     monkeypatch.setenv("LEARNER_MODEL_DB_PATH", db)
     monkeypatch.setenv("LEARNER_MODEL_USER_ID", USER)
+    # get_settings 是 lru_cache：必须清除缓存让新 env 生效
+    from edu_agent.config.settings import get_settings
+
+    get_settings.cache_clear()
     LearnerModelService._shared_default = None  # 重置共享实例
     with TestClient(app) as c:
         yield c

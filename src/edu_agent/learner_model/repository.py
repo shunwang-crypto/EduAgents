@@ -104,6 +104,10 @@ class LearnerRepository(ABC):
     def list_effective_memories(self, user_id: str, course_id: str) -> List[dict]: ...
 
     @abstractmethod
+    @abstractmethod
+    def get_memory(self, user_id: str, memory_id: str) -> Optional[dict]: ...
+
+    @abstractmethod
     def delete_memory(self, user_id: str, memory_id: str) -> None: ...
 
     # ---- events（append-only + 幂等）--------------------------------------
@@ -144,6 +148,9 @@ class LearnerRepository(ABC):
 
     @abstractmethod
     def list_messages(self, conversation_id: str, limit: int = 100) -> List[dict]: ...
+
+    @abstractmethod
+    def list_recent_messages(self, conversation_id: str, limit: int = 8) -> List[dict]: ...
 
     # ---- study plans ------------------------------------------------------
     @abstractmethod

@@ -1,5 +1,5 @@
 import re
-from typing import Iterable
+from typing import Iterable, List
 
 from edu_agent.workflows.study_plan.schemas import (
     DecompositionResult,
@@ -69,12 +69,13 @@ def build_knowledge_map(
     """Build a stable, UI-friendly knowledge map without another LLM call.
 
     - 一级结构固定 3 个阶段（stage_id/stage_title/stage_order）。
-    - node.id 即 kc_id（课程内稳定）。
+    - **按阶段分桶生成**：stage1_nodes + stage2_nodes + stage3_nodes 顺序拼接，
+      node.id（=kc_id）严格按 1..N 连续编号，与 stage 顺序一致；
+      每个阶段即使输入为空也有兜底节点（Stage2 缺 core 同样补）。
+    - 阶段映射：prerequisite→Stage1 / core→Stage2 / application→Stage3。
     - 不允许出现练习/题目语义；活动类型限定为学习活动（阅读/案例/项目等）。
     """
 
-    nodes: list[KnowledgeNode] = []
-    path: list[str] = []
     node_index = 1
     stages = _normalize_stages(decomposition.stages)
 
@@ -84,7 +85,7 @@ def build_knowledge_map(
     prerequisite_titles = [title for title, _ in prerequisite_items]
     core_titles = [title for title, _ in core_items]
 
-    def add_node(
+    def make(
         title: str,
         summary: str,
         category: str,
@@ -93,117 +94,80 @@ def build_knowledge_map(
         stage: LearningStageSuggestion,
         prerequisites: list[str],
         objective: str,
-        activity: str,
-        check: str,
-    ) -> None:
+    ) -> KnowledgeNode:
         nonlocal node_index
-        node_id = f"knowledge-{node_index}"
+        node = KnowledgeNode(
+            id=f"knowledge-{node_index}",
+            title=title,
+            category=category,
+            summary=summary,
+            prerequisites=prerequisites,
+            difficulty=difficulty,
+            estimated_minutes=minutes,
+            stage_id=stage.stage_id,
+            stage_title=stage.title,
+            stage_order=stage.order,
+            learning_objective=objective,
+        )
         node_index += 1
-        nodes.append(
-            KnowledgeNode(
-                id=node_id,
-                title=title,
-                category=category,
-                summary=summary,
-                prerequisites=prerequisites,
-                difficulty=difficulty,
-                estimated_minutes=minutes,
-                stage_id=stage.stage_id,
-                stage_title=stage.title,
-                stage_order=stage.order,
-                learning_objective=objective,
-                learning_activity=activity,
-                check_method=check,
-            )
-        )
-        path.append(node_id)
+        return node
 
+    topic = student_input.topic
+
+    # ---- Stage 1：前置知识（无则补学习准备节点） ----
+    stage1_nodes: List[KnowledgeNode] = []
     for title, summary in prerequisite_items:
-        add_node(
-            title=title,
-            summary=summary,
-            category="前置知识",
-            difficulty="入门",
-            minutes=30,
-            stage=stages[0],
-            prerequisites=[],
-            objective=f"能用自己的话说明「{title}」并完成一个最小示例。",
-            activity=f"阅读「{title}」入门资料，运行一个最小示例并整理 3 条笔记。",
-            check="不看资料解释「{title}」，并提交示例运行结果。",
-        )
+        stage1_nodes.append(make(
+            title=title, summary=summary, category="前置知识", difficulty="入门", minutes=30,
+            stage=stages[0], prerequisites=[],
+            objective=f"能用自己的话说明「{title}」并完成一个最小示例。"
+        ))
+    if not stage1_nodes:
+        stage1_nodes.append(make(
+            title=f"{topic} 核心术语与整体认识",
+            summary=f"了解「{topic}」的核心术语、学习环境与整体知识结构。",
+            category="前置知识", difficulty="入门", minutes=30,
+            stage=stages[0], prerequisites=[],
+            objective=f"能用自己的话说明「{topic}」的基本概念与用途。"
+        ))
 
+    # ---- Stage 2：核心知识（无则补主线方法节点，这是关键兜底） ----
+    stage2_nodes: List[KnowledgeNode] = []
     for title, summary in core_items:
-        add_node(
-            title=title,
-            summary=summary,
-            category="核心知识",
-            difficulty="中等",
-            minutes=45,
-            stage=stages[1],  # 固定 Stage 2（core 不进 Stage 3）
-            prerequisites=prerequisite_titles[:3],
-            objective=f"能解释「{title}」的核心原理，并在学习目标场景中正确使用。",
-            activity=f"跟随示例代码完成一个直接应用「{title}」的小案例，并记录关键步骤。",
-            check="提交案例结果，并说明「{title}」在其中解决了什么问题。",
-        )
+        stage2_nodes.append(make(
+            title=title, summary=summary, category="核心知识", difficulty="中等", minutes=45,
+            stage=stages[1], prerequisites=prerequisite_titles[:3],
+            objective=f"能解释「{title}」的核心原理，并在学习目标场景中正确使用。"
+        ))
+    if not stage2_nodes:
+        stage2_nodes.append(make(
+            title=f"{topic} 核心概念与主线方法",
+            summary=f"掌握「{topic}」的核心概念、关键方法与主流程。",
+            category="核心知识", difficulty="中等", minutes=45,
+            stage=stages[1], prerequisites=prerequisite_titles[:3],
+            objective=f"能解释「{topic}」的核心概念，并在学习目标场景中应用主线方法。"
+        ))
 
+    # ---- Stage 3：综合应用（无则补综合案例与总结节点） ----
+    stage3_nodes: List[KnowledgeNode] = []
     for title, summary in application_items:
-        add_node(
-            title=title,
-            summary=summary,
-            category="实践应用",
-            difficulty="实践",
-            minutes=60,
-            stage=stages[2],  # 固定 Stage 3
-            prerequisites=core_titles[:4],
-            objective=f"独立完成「{title}」并留下可检查的学习产出。",
-            activity=summary,
-            check="提交作品、关键步骤说明和一条复盘记录。",
-        )
+        stage3_nodes.append(make(
+            title=title, summary=summary, category="实践应用", difficulty="实践", minutes=60,
+            stage=stages[2], prerequisites=core_titles[:4],
+            objective=f"独立完成「{title}」并留下可检查的学习产出。"
+        ))
+    if not stage3_nodes:
+        stage3_nodes.append(make(
+            title=f"{topic} 综合案例与知识总结",
+            summary=f"通过案例或小项目整合「{topic}」所学知识并输出总结。",
+            category="实践应用", difficulty="实践", minutes=60,
+            stage=stages[2], prerequisites=core_titles[:4],
+            objective=f"独立完成「{topic}」的综合案例或小项目并输出复盘总结。"
+        ))
 
-    # 兜底：保证每个阶段至少一个节点（Stage1 无前置 / Stage3 无应用）
-    if not any(n.stage_order == 1 for n in nodes):
-        add_node(
-            title=f"{student_input.topic} 核心术语与整体认识",
-            summary=f"了解「{student_input.topic}」的核心术语、学习环境与整体知识结构。",
-            category="前置知识",
-            difficulty="入门",
-            minutes=30,
-            stage=stages[0],
-            prerequisites=[],
-            objective=f"能用自己的话说明「{student_input.topic}」的基本概念与用途。",
-            activity=f"阅读「{student_input.topic}」概述资料，整理核心术语表并熟悉学习环境。",
-            check="不看资料解释核心术语，并确认学习环境可用。",
-        )
-    if not any(n.stage_order == 3 for n in nodes):
-        add_node(
-            title=f"{student_input.topic} 综合案例与知识总结",
-            summary=f"通过案例或小项目整合「{student_input.topic}」所学知识并输出总结。",
-            category="实践应用",
-            difficulty="实践",
-            minutes=60,
-            stage=stages[2],
-            prerequisites=core_titles[:4],
-            objective=f"独立完成「{student_input.topic}」的综合案例或小项目并输出复盘总结。",
-            activity=f"完成一个与「{student_input.topic}」相关的综合案例或小项目，整理总结文档。",
-            check="提交案例/项目结果、关键步骤说明和复盘记录。",
-        )
-
-    if not nodes:
-        add_node(
-            title=student_input.topic,
-            summary=f"围绕「{student_input.topic}」建立概念、方法和应用之间的联系。",
-            category="核心知识",
-            difficulty="入门",
-            minutes=45,
-            stage=stages[1],
-            prerequisites=[],
-            objective=f"能说明 {student_input.topic} 的核心概念和使用场景。",
-            activity=f"完成一个与 {student_input.topic} 直接相关的小案例并整理笔记。",
-            check="提交案例结果并说明关键步骤。",
-        )
-
+    nodes = stage1_nodes + stage2_nodes + stage3_nodes
     return KnowledgeMap(
-        topic=student_input.topic,
+        topic=topic,
         nodes=nodes,
-        recommended_path=path,
+        recommended_path=[n.id for n in nodes],
     )

@@ -40,7 +40,7 @@ SQLite（data/learner_model.db）
 
 - **SQLite 是唯一画像真值**，前端不维护第二套画像；Router 不组织业务流程。
 - **UNKNOWN ≠ 0**：无证据的 mastery 是 NULL，绝不当作 0；弱证据绝不自动抬高 mastery。
-- **统一事务**：一切画像变更经 `LearnerModelService`（BEGIN → mutation → change log → version → COMMIT，异常 ROLLBACK；event 幂等）。
+- **统一事务**：一切画像变更经 `LearnerModelService`（BEGIN → mutation → change log → event → COMMIT，异常 ROLLBACK；INSERT OR IGNORE 保证事件幂等）。
 - **多课程隔离**：任意主题建立独立 course_id（`CUSTOM-{slug}-{hash8}`），Java 状态不污染 Python。
 - **用户显式声明 > 推断**：聊天中"我会 Python"→ Profile Fact；"以后简洁一点"→ 偏好；"忘记我做过 FastAPI"→ 真正删除。
 
@@ -58,7 +58,7 @@ npm install
 npm run dev                 # Vite 代理 /api → :8000
 ```
 
-打开 http://localhost:5173 → 首次进入 Empty State，说"我想两周学习 Python 数据分析，每天一小时"即可创建课程并生成计划。
+打开 http://localhost:5173 → 普通对话直接聊天；点侧边栏「+」按课程主题创建课程；进入课程后点「学习计划」生成三阶段计划。
 
 ## 目录
 

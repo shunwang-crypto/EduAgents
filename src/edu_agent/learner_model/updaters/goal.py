@@ -30,32 +30,51 @@ def upsert_goal(
     user_id: str,
     goal_id: str,
     course_id: str,
-    name: str,
+    name: str = "",
     target: str = "",
     priority: Optional[int] = None,
     target_kcs: Optional[List[str]] = None,
     deadline: str = "",
-    status: str = "active",
+    status: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """创建或更新目标。未提供的字段保留旧值。"""
+    """创建或更新目标。
+
+    - 未提供的字段保留旧值；status=None 时已有 goal 不被无意复活。
+    - 任何实际字段变化都更新 updated_at；完全无变化返回 NONE。
+    """
     now = _now_iso()
     existing = repo.get_goal(user_id, goal_id)
     if existing:
         row = dict(existing)
-        if name:
+        changed = False
+        if name and row.get("name") != name:
             row["name"] = name
-        if target:
+            changed = True
+        if target and row.get("target") != target:
             row["target"] = target
-        if priority is not None:
+            changed = True
+        if priority is not None and row.get("priority") != priority:
             row["priority"] = priority
+            changed = True
         if target_kcs is not None:  # 显式提供才覆盖（含清空）
-            row["target_kcs_json"] = json.dumps(target_kcs, ensure_ascii=False)
-        if deadline:
+            new_kcs = json.dumps(target_kcs, ensure_ascii=False)
+            if row.get("target_kcs_json") != new_kcs:
+                row["target_kcs_json"] = new_kcs
+                changed = True
+        if deadline and row.get("deadline") != deadline:
             row["deadline"] = deadline
-        if status:
+            changed = True
+        if status is not None and row.get("status") != status:
             row["status"] = status
-        if target_kcs is not None:
-            row["updated_at"] = now
+            changed = True
+        if not changed:
+            return {
+                "operation": "NONE", "entity": f"goal:{goal_id}",
+                "before": {"status": existing.get("status")},
+                "after": {"status": existing.get("status")},
+                "reason": "no change", "scope": "course",
+            }
+        row["updated_at"] = now
         repo.upsert_goal(row)
         return {
             "operation": "UPDATE",
@@ -73,7 +92,7 @@ def upsert_goal(
             "name": name,
             "target": target,
             "priority": priority if priority is not None else 1,
-            "status": status,
+            "status": status or "active",
             "progress": 0.0,
             "target_kcs_json": json.dumps(target_kcs or [], ensure_ascii=False),
             "deadline": deadline,
@@ -97,6 +116,8 @@ def set_goal_status(
     existing = repo.get_goal(user_id, goal_id)
     if existing is None:
         return {"operation": "NONE", "reason": "not exists", "scope": "course"}
+    if existing.get("status") == status:
+        return {"operation": "NONE", "reason": "no change", "scope": "course"}
     repo.upsert_goal({**existing, "status": status, "updated_at": _now_iso()})
     op = {"completed": "RESOLVE", "cancelled": "DEACTIVATE"}.get(status, "UPDATE")
     return {
@@ -119,6 +140,8 @@ def update_goal_progress(
     status = existing.get("status")
     if progress >= 1.0 and status != "completed":
         status = "completed"
+    if existing.get("progress") == progress and existing.get("status") == status:
+        return {"operation": "NONE", "reason": "no change", "scope": "course"}
     repo.upsert_goal({**existing, "progress": progress, "status": status, "updated_at": _now_iso()})
     return {
         "operation": "RESOLVE" if status == "completed" else "UPDATE",

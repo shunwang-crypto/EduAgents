@@ -1,7 +1,7 @@
 """StudyPlanService：唯一的正式学习计划实现。
 
 generate_plan 输入：user_id / course_id / goal / duration_days / daily_minutes /
-optional_background / optional_extra_requirement。
+optional_background。
 流程：确保课程+active goal → 构建 PlanContext（画像在计划生成前生效）→
 run_study_plan_workflow → 持久化 study_plans + plan_steps → 更新目标/进度 → PLAN_CREATED。
 """
@@ -33,7 +33,6 @@ def generate_plan(
     duration_days: int = 14,
     daily_minutes: int = 60,
     optional_background: str = "",
-    optional_extra_requirement: str = "",
     learner: Optional[LearnerModelService] = None,
 ) -> dict:
     """生成学习计划并持久化。"""
@@ -87,7 +86,10 @@ def generate_plan(
     nodes = [n.model_dump() for n in (km.nodes if km and hasattr(km, "nodes") else [])]
     summary = _plan_summary(plan_context, nodes)
 
-    # 每课程一个 current plan：重新生成 = 事务替换旧 plan+steps，失败旧 plan 仍可用
+    # Finalize 单事务（用户要求：LLM workflow 在事务外，返回后写入必须一个事务）：
+    # delete/replace 旧 plan → insert study_plan → insert plan_steps →
+    # goal target_kcs → PLAN_CREATED event。任一失败整体回滚，旧 plan 继续可用。
+    # 个性化 Plan Nodes 只保存在 plan_steps（user-scoped），不写共享 domain_kcs。
     with learner.repo.transaction():
         old_plan = learner.repo.get_plan(user_id, course_id)
         if old_plan is not None:
@@ -112,17 +114,14 @@ def generate_plan(
                  "minutes": int(node.get("estimated_minutes", 30) or 30),
                  "status": "not_started", "created_at": _now_iso(), "updated_at": _now_iso()}
             )
-    # 说明：learning_activity 与 check_method 随 node 保留在知识地图/计划文档中，
-    # plan_steps 持久化核心展示字段（title/objective/prerequisites/difficulty 已完整保存）。
-
-    # 个性化 Plan Nodes 只保存在 plan_steps（user-scoped），不写共享 domain_kcs。
-    # target_kcs 记入 active goal 供上下文参考。
-    if nodes:
-        learner.upsert_goal(user_id, goal_id, course_id,
-                            name=course_info.get("display_name", course_id), target=goal_text,
-                            target_kcs=[n.get("id") for n in nodes if n.get("id")][:8] or None)
-    learner.record_event({"event_type": "PLAN_CREATED", "user_id": user_id,
-                          "course_id": course_id, "payload": {"plan_id": plan_id, "goal_id": goal_id}})
+        # plan_steps 持久化核心展示字段（title/objective/prerequisites/difficulty 已完整保存）。
+        # target_kcs 记入 active goal 供上下文参考。
+        if nodes:
+            learner.upsert_goal(user_id, goal_id, course_id,
+                                name=course_info.get("display_name", course_id), target=goal_text,
+                                target_kcs=[n.get("id") for n in nodes if n.get("id")][:8] or None)
+        learner.record_event({"event_type": "PLAN_CREATED", "user_id": user_id,
+                              "course_id": course_id, "payload": {"plan_id": plan_id, "goal_id": goal_id}})
 
     return get_plan(user_id, course_id, learner)
 

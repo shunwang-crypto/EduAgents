@@ -10,12 +10,16 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from edu_agent.api.router import router
+from edu_agent.config.settings import get_settings
 
 app = FastAPI(title="EduAgents API", version="1.0.0")
 
+_settings = get_settings()
+_origins = [o.strip() for o in _settings.cors_origins.split(",") if o.strip()] or ["*"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 开发期全开；上线由宿主网关限制
+    allow_origins=_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )

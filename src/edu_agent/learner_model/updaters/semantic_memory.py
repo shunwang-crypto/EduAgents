@@ -28,11 +28,12 @@ def _normalize(content: str) -> str:
 def _find_memory(
     repo: LearnerRepository, user_id: str, content: str, course_id: str = ""
 ) -> Optional[dict]:
+    """scope 内去重：course memory 只和同 course memory 去重，绝不强化 global。"""
     norm = _normalize(content)
     candidates = (
         repo.list_global_memories(user_id)
         if not course_id
-        else repo.list_effective_memories(user_id, course_id)
+        else repo.list_course_memories(user_id, course_id)
     )
     for m in candidates:
         if _normalize(m.get("content") or "") == norm:
@@ -103,13 +104,17 @@ def add_memory(
 def delete_memory_direct(
     repo: LearnerRepository, user_id: str, memory_id: str
 ) -> Dict[str, Any]:
-    """用户明确删除：真正 DELETE。"""
+    """用户明确删除：先读真实记录（判断存在性与 scope），再真正 DELETE。"""
+    existing = repo.get_memory(user_id, memory_id)
+    if existing is None:
+        return {"operation": "NONE", "reason": "not exists", "scope": "global"}
+    scope = "course" if existing.get("course_id") else "global"
     repo.delete_memory(user_id, memory_id)
     return {
         "operation": "DELETE",
         "entity": f"memory:{memory_id}",
-        "before": None,
+        "before": {"content": (existing.get("content") or "")[:40], "scope": scope},
         "after": None,
         "reason": "user requested",
-        "scope": "global",
+        "scope": scope,
     }
