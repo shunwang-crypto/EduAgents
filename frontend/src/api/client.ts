@@ -8,6 +8,19 @@ import type {
   StudyPlan,
 } from "./types";
 
+/** API 错误：优先解析后端 JSON detail/message，不把 {"detail":...} 原文直接给用户。 */
+export class ApiError extends Error {
+  status: number;
+  detail?: string;
+
+  constructor(status: number, message: string, detail?: string) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.detail = detail;
+  }
+}
+
 export interface ApiClient {
   // Courses
   listCourses: () => Promise<Course[]>;
@@ -48,8 +61,21 @@ export function createApiClient(userId: string): ApiClient {
       headers: headers(options.headers as Record<string, string> | undefined),
     });
     if (!res.ok) {
-      const detail = await res.text();
-      throw new Error(detail || `HTTP ${res.status}`);
+      let detail: string | undefined;
+      let message = `请求失败（${res.status}）`;
+      try {
+        const body = await res.json();
+        if (typeof body?.detail === "string") {
+          detail = body.detail;
+          message = body.detail;
+        } else if (typeof body?.message === "string") {
+          detail = body.message;
+          message = body.message;
+        }
+      } catch {
+        // 非 JSON 错误体：保留通用消息
+      }
+      throw new ApiError(res.status, message, detail);
     }
     if (res.status === 204) {
       return undefined as T;
@@ -87,9 +113,11 @@ export function createApiClient(userId: string): ApiClient {
         body: JSON.stringify({ course_id: courseId ?? null }),
       }),
     chat: (body) => request<ChatResponse>("/api/chat", { method: "POST", body: JSON.stringify(body) }),
-    getChat: (courseId, conversationId) =>
-      request<Conversation>(
-        `/api/chat?course_id=${courseId ?? ""}&conversation_id=${conversationId ?? ""}`
-      ),
+    getChat: (courseId, conversationId) => {
+      const params = new URLSearchParams();
+      if (courseId) params.set("course_id", courseId);
+      if (conversationId) params.set("conversation_id", conversationId);
+      return request<Conversation>(`/api/chat?${params.toString()}`);
+    },
   };
 }

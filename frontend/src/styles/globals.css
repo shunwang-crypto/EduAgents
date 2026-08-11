@@ -4,50 +4,34 @@
  * Modal → features/courses/courses.css；Markdown → components/content/RichMarkdown.css
  */
 @import "./tokens.css";
-
-* {
+.eduagents-app,
+.eduagents-app * {
   box-sizing: border-box;
 }
 
-html,
-body,
-#root {
-  height: 100%;
-  margin: 0;
-  padding: 0;
-}
-
-body {
-  font-family:
-    Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
-    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
-  background: var(--ea-bg-app);
-  color: var(--ea-text-primary);
-  font-size: 15px;
-  line-height: 1.6;
-  -webkit-font-smoothing: antialiased;
-}
-
-button,
-input,
-textarea {
+.eduagents-app button,
+.eduagents-app input,
+.eduagents-app textarea {
   font-family: inherit;
 }
 
-h1, h2, h3, h4 {
+.eduagents-app h1,
+.eduagents-app h2,
+.eduagents-app h3,
+.eduagents-app h4 {
   margin: 0;
 }
 
-a {
+.eduagents-app a {
   color: var(--ea-primary);
   text-decoration: none;
 }
 
-/* ---------- Focus Visible ---------- */
-button:focus-visible,
-a:focus-visible,
-input:focus-visible,
-textarea:focus-visible {
+/* ---------- Focus Visible（scope 到 eduagents-app，不污染宿主） ---------- */
+.eduagents-app button:focus-visible,
+.eduagents-app a:focus-visible,
+.eduagents-app input:focus-visible,
+.eduagents-app textarea:focus-visible {
   outline: 2px solid var(--ea-primary);
   outline-offset: 2px;
   border-radius: 4px;

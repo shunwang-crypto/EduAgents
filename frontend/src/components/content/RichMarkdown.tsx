@@ -6,86 +6,6 @@ import rehypeKatex from "rehype-katex";
 import "katex/dist/katex.min.css";
 import "./RichMarkdown.css";
 
-/**
- * 把模型产出的 \(...\) / \[...\] LaTeX 括法统一为 $...$ / $$...$$，
- * 供 remark-math + rehype-katex 正确解析。绝不修改 fenced code block 内内容。
- */
-export function normalizeMarkdownMath(markdown: string): string {
-  if (!markdown) return markdown;
-  let result = "";
-  let inFence = false;
-  let fenceChar = "";
-  let i = 0;
-  const n = markdown.length;
-  while (i < n) {
-    const ch = markdown[i];
-    // inline code：`...`（保护 \(x\) 原样显示，不转数学）
-    if (ch === "`" && !inFence) {
-      result += ch;
-      i += 1;
-      let codeStart = i;
-      while (i < n && markdown[i] !== "`") i += 1;
-      result += markdown.slice(codeStart, i);
-      if (i < n) {
-        result += "`";
-        i += 1;
-      }
-      continue;
-    }
-    // fenced code block：```` / ~~~ 开头行
-    if (ch === "`" || ch === "~") {
-      let run = 0;
-      while (i + run < n && markdown[i + run] === ch) run += 1;
-      if (!inFence && run >= 3 && (i === 0 || markdown[i - 1] === "\n")) {
-        inFence = true;
-        fenceChar = ch;
-        result += markdown.slice(i, i + run);
-        i += run;
-        continue;
-      }
-      if (inFence && ch === fenceChar && run >= 3) {
-        // 检查是否到闭合行尾
-        let j = i + run;
-        while (j < n && markdown[j] !== "\n") j += 1;
-        if (j === n || /^\s*$/.test(markdown.slice(i + run, j))) {
-          inFence = false;
-        }
-        result += markdown.slice(i, j);
-        i = j;
-        continue;
-      }
-      result += ch;
-      i += 1;
-      continue;
-    }
-    if (!inFence) {
-      if (markdown.startsWith("\\[", i)) {
-        result += "$$";
-        i += 2;
-        continue;
-      }
-      if (markdown.startsWith("\\]", i)) {
-        result += "$$";
-        i += 2;
-        continue;
-      }
-      if (markdown.startsWith("\\(", i)) {
-        result += "$";
-        i += 2;
-        continue;
-      }
-      if (markdown.startsWith("\\)", i)) {
-        result += "$";
-        i += 2;
-        continue;
-      }
-    }
-    result += ch;
-    i += 1;
-  }
-  return result;
-}
-
 interface RichMarkdownProps {
   content: string;
 }
@@ -110,7 +30,7 @@ export default function RichMarkdown({ content }: RichMarkdownProps) {
           pre: (props) => <CodeBlock {...props} />,
         }}
       >
-        {normalizeMarkdownMath(content)}
+        {content}
       </ReactMarkdown>
     </div>
   );
@@ -143,9 +63,10 @@ function CodeBlock(props: React.HTMLAttributes<HTMLPreElement>) {
     <div className="md-code-block">
       <div className="md-code-head">
         <span className="md-code-lang">{lang || "code"}</span>
-        <button type="button" className="md-copy-btn" onClick={copy}>
+        <button type="button" className="md-copy-btn" onClick={copy} aria-label={copied ? "代码已复制" : "复制代码"}>
           {copied ? "已复制" : "复制"}
         </button>
+        <span className="md-copy-live" role="status" aria-live="polite">{copied ? "已复制" : ""}</span>
       </div>
       <pre {...props}>{codeEl}</pre>
     </div>

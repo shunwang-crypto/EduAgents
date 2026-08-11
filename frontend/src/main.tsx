@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import { LearningApp } from "./app/router";
 import "./styles/globals.css";
+import "./styles/standalone.css";
 
 /** Standalone Development Shell：
  * 仅这里允许使用 DEV_USER_ID；宿主系统直接 <LearningApp userId={真实用户} />。 */

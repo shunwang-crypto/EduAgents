@@ -1,87 +1,88 @@
-import { describe, expect, it } from "vitest";
-import { render } from "@testing-library/react";
-import RichMarkdown, { normalizeMarkdownMath } from "./RichMarkdown";
+import { describe, expect, it, vi, beforeEach } from "vitest";
+import { render, screen, waitFor } from "@testing-library/react";
+import RichMarkdown from "./RichMarkdown";
 
-describe("normalizeMarkdownMath", () => {
-  it("converts \\(...\\) to $...$", () => {
-    expect(normalizeMarkdownMath("行内 \\(E = mc^2\\) 公式")).toContain("$E = mc^2$");
-  });
-
-  it("converts \\[...\\] to $$...$$", () => {
-    expect(normalizeMarkdownMath("块级 \\[x^2 + y^2\\] 公式")).toContain("$$x^2 + y^2$$");
-  });
-
-  it("does not touch fenced code block content", () => {
-    const md = "```python\n# \\( not math \\)\nprint(1)\n```";
-    const out = normalizeMarkdownMath(md);
-    expect(out).toContain("\\(");
-    expect(out).toContain("\\)");
-  });
-
-  it("leaves plain text unchanged", () => {
-    const md = "你好 **加粗** 世界";
-    expect(normalizeMarkdownMath(md)).toBe(md);
-  });
-
-  it("protects inline code from math normalization", () => {
-    // `\(x\)` 是代码文本，必须原样保留，不能变成 $x$
-    const md = "示例：`\\(x\\)` 是一种 LaTeX 写法";
-    const out = normalizeMarkdownMath(md);
-    expect(out).toContain("\\(");
-    expect(out).toContain("\\)");
-    expect(out).not.toContain("$x$");
-  });
-});
+/** RichMarkdown 行为测试（不依赖手写 lexer；remark-math 原生处理 $ / $$）。 */
+function renderMd(md: string) {
+  return render(<RichMarkdown content={md} />);
+}
 
 describe("RichMarkdown", () => {
-  it("renders bold text", () => {
-    render(<RichMarkdown content={"**重点**内容"} />);
-    const strong = document.querySelector("strong");
-    expect(strong?.textContent).toBe("重点");
+  beforeEach(() => {
+    // jsdom 无 clipboard：mock 掉复制
+    Object.assign(navigator, {
+      clipboard: { writeText: vi.fn().mockResolvedValue(undefined) },
+    });
   });
 
-  it("renders markdown table", () => {
-    render(
-      <RichMarkdown
-        content={"| a | b |\n| -- | -- |\n| 1 | 2 |"}
-      />
-    );
-    const table = document.querySelector("table");
-    expect(table).toBeTruthy();
-    expect(table?.textContent).toContain("1");
-    expect(table?.textContent).toContain("2");
+  it("renders bold", () => {
+    renderMd("你好 **加粗** 世界");
+    expect(screen.getByText("加粗").tagName).toBe("STRONG");
   });
 
-  it("renders inline math with katex", () => {
-    render(<RichMarkdown content={"公式 $E = mc^2$ 很好"} />);
-    const math = document.querySelector(".katex");
-    expect(math).toBeTruthy();
+  it("renders GFM table", () => {
+    renderMd("| a | b |\n| --- | --- |\n| 1 | 2 |");
+    expect(document.querySelector(".md-table-wrap table")).toBeTruthy();
+    expect(screen.getByText("1")).toBeTruthy();
+    expect(screen.getByText("2")).toBeTruthy();
   });
 
-  it("renders display math with katex", () => {
-    render(<RichMarkdown content={"$$\n\\frac{1}{2}\n$$"} />);
-    const display = document.querySelector(".katex-display");
-    expect(display).toBeTruthy();
+  it("renders inline math $x$", () => {
+    renderMd("公式 $E=mc^2$ 结束");
+    expect(document.querySelector(".katex")).toBeTruthy();
   });
 
-  it("renders fenced code block with language label", () => {
-    render(
-      <RichMarkdown content={"```python\nprint(1)\n```"} />
-    );
+  it("renders display math $$...$$", () => {
+    renderMd("$$\n\\operatorname{Attention}(Q,K,V)\n$$");
+    expect(document.querySelector(".katex-display")).toBeTruthy();
+  });
+
+  it("renders fenced python code with copy button", async () => {
+    renderMd("```python\nprint(1)\n```");
+    const copyBtn = await screen.findByRole("button", { name: /复制代码/ });
+    expect(copyBtn).toBeTruthy();
     expect(document.querySelector(".md-code-lang")?.textContent).toBe("python");
-    expect(document.querySelector("pre code")?.textContent).toContain("print(1)");
   });
 
-  it("does not execute raw HTML (no dangerouslySetInnerHTML)", () => {
-    render(<RichMarkdown content={'<img src="x" onerror="window.__xss=1">'} />);
-    expect((window as unknown as { __xss?: number }).__xss).toBeUndefined();
-    expect(document.querySelector("img[onerror]")).toBeNull();
+  it("keeps \\(x\\) inside fenced code raw (no math transform)", () => {
+    renderMd("```\n\\(x\\)\n```");
+    // lexer 已删除：fenced code 内原样文本，katex 不解析
+    expect(document.querySelector(".katex")).toBeNull();
+    expect(document.querySelector("code")?.textContent).toContain("\\(");
   });
 
-  it("renders links with target blank", () => {
-    render(<RichMarkdown content={"[链接](https://example.com)"} />);
-    const a = document.querySelector("a");
-    expect(a?.getAttribute("target")).toBe("_blank");
-    expect(a?.getAttribute("rel")).toContain("noopener");
+  it("keeps `\\(x\\)` inside inline code raw", () => {
+    renderMd("示例：`\\(x\\)` 是代码文本");
+    expect(document.querySelector(".katex")).toBeNull();
+    expect(document.querySelector("code")?.textContent).toContain("\\(");
+  });
+
+  it("keeps \\[x\\] inside tilde fence raw", () => {
+    renderMd("~~~\n\\[x\\]\n~~~");
+    expect(document.querySelector(".katex")).toBeNull();
+    expect(document.querySelector("code")?.textContent).toContain("\\[");
+  });
+
+  it("does not execute raw HTML", () => {
+    renderMd("<img src=x onerror='window.__hacked=1'>");
+    expect((window as unknown as Record<string, unknown>).__hacked).toBeUndefined();
+  });
+
+  it("external links open in new tab safely", () => {
+    renderMd("[文档](https://example.com)");
+    const link = document.querySelector("a") as HTMLAnchorElement;
+    expect(link?.target).toBe("_blank");
+    expect(link?.rel).toContain("noopener");
+    expect(link?.rel).toContain("noreferrer");
+  });
+
+  it("copy button copies full code", async () => {
+    const userEvent = (await import("@testing-library/user-event")).default;
+    renderMd("```js\nconst a = 1;\n```");
+    const btn = await screen.findByRole("button", { name: /复制代码/ });
+    await userEvent.click(btn);
+    await waitFor(() =>
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith("const a = 1;\n")
+    );
   });
 });

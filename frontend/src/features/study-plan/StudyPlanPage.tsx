@@ -10,7 +10,7 @@ import {
   LoaderCircle,
   MessageCircleQuestion,
 } from "lucide-react";
-import { useApi } from "../../api/ApiProvider";
+import { useApi, ApiError } from "../../api/ApiProvider";
 import type { Course, StudyPlan } from "../../api/types";
 import RichMarkdown from "../../components/content/RichMarkdown";
 import { CourseHeader } from "../../layout/CourseHeader";
@@ -38,14 +38,23 @@ export function StudyPlanPage() {
   useEffect(() => {
     if (!courseId) return;
     setCourseError(false);
+    setError("");
     api.getCourse(courseId).then(setCourse).catch(() => setCourseError(true));
     setPlanLoading(true);
     api
       .getPlan(courseId)
       .then(setPlan)
-      .catch(() => setPlan(null))
+      .catch((e) => {
+        // 404 = 还没有计划；其他错误（500 等）= 服务器问题，显示重试
+        if (e instanceof ApiError && e.status === 404) {
+          setPlan(null);
+        } else {
+          setPlan(null);
+          setError("无法加载学习计划，请重试");
+        }
+      })
       .finally(() => setPlanLoading(false));
-  }, [courseId]);
+  }, [courseId, api]);
 
   const generate = useCallback(async () => {
     if (!courseId) return;
@@ -77,9 +86,9 @@ export function StudyPlanPage() {
   );
 
   const stages = plan?.stages?.length ? plan.stages : [];
-  const totalSteps = plan?.steps?.length ?? 0;
-  const completedSteps = plan?.steps?.filter((s) => s.status === "completed").length ?? 0;
-  const progressPct = totalSteps ? Math.round((completedSteps / totalSteps) * 100) : 0;
+  // progress 单一来源：Backend plan.progress（completed steps / total steps 已由后端算好）
+  const rawProgress = typeof plan?.progress === "number" ? plan.progress : 0;
+  const progressPct = Math.round(Math.max(0, Math.min(1, rawProgress)) * 100);
 
   return (
     <>

@@ -367,3 +367,88 @@
     animation: none !important;
   }
 }
+
+/* ---------- Collapsed 单控件 Header（Logo 即可点击展开，不并排双按钮） ---------- */
+.sidebar-logo.collapsed {
+  justify-content: center;
+}
+
+.sidebar-logo-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  border-radius: var(--ea-radius-sm);
+  cursor: pointer;
+  transition: background 150ms ease;
+}
+
+.sidebar-logo-btn:hover {
+  background: var(--ea-bg-hover);
+}
+
+/* ---------- Collapsed 课程项居中（无 inline style） ---------- */
+.course-nav-item.collapsed {
+  justify-content: center;
+  padding: 8px 0;
+}
+
+.sidebar-new-chat.collapsed {
+  justify-content: center;
+  padding: 0;
+}
+
+/* ---------- Collapsed skeleton / error / add ---------- */
+.sidebar-skeleton.collapsed {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 0;
+}
+
+.skeleton-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--ea-bg-hover);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.sidebar-error.collapsed {
+  display: flex;
+  justify-content: center;
+  padding: 12px 0;
+}
+
+.sidebar-error-icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: none;
+  background: transparent;
+  border-radius: var(--ea-radius-sm);
+  color: var(--ea-danger);
+  cursor: pointer;
+}
+
+.sidebar-error-icon-btn:hover {
+  background: var(--ea-bg-hover);
+}
+
+.course-add-collapsed {
+  display: flex;
+  justify-content: center;
+  padding: 10px 0;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}

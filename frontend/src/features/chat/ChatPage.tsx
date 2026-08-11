@@ -31,31 +31,31 @@ export function ChatPage() {
   const [stepError, setStepError] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(true);
   const [historyError, setHistoryError] = useState(false);
   const [sendError, setSendError] = useState("");
   const [retryText, setRetryText] = useState("");
+  const [retryMsgId, setRetryMsgId] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
 
-  // 课程 / 会话加载
+  // 课程 / 会话加载（historyLoading 区分加载中与空会话，不闪 Empty State）
   useEffect(() => {
     setMessages([]);
     setCourseError(false);
     setHistoryError(false);
+    setHistoryLoading(true);
     if (courseId) {
       api.getCourse(courseId).then(setCourse).catch(() => setCourseError(true));
-      api
-        .getChat(courseId, conversationParam)
-        .then((conv) => setMessages(conv.messages))
-        .catch(() => setHistoryError(true));
     } else {
       setCourse(null);
-      api
-        .getChat(null, conversationParam)
-        .then((conv) => setMessages(conv.messages))
-        .catch(() => setHistoryError(true));
     }
-  }, [courseId, conversationParam]);
+    api
+      .getChat(courseId ?? null, conversationParam)
+      .then((conv) => setMessages(conv.messages))
+      .catch(() => setHistoryError(true))
+      .finally(() => setHistoryLoading(false));
+  }, [courseId, conversationParam, api]);
 
   // ?step= 加载计划步骤
   useEffect(() => {
@@ -70,7 +70,7 @@ export function ChatPage() {
           setStepError("计划步骤不存在或不属于当前课程");
         });
     }
-  }, [courseId, stepParam]);
+  }, [courseId, stepParam, api]);
 
   // 滚动：新消息时贴底；用户上滚查看历史时不强制拉回
   useEffect(() => {
@@ -92,18 +92,13 @@ export function ChatPage() {
     setSearchParams(next, { replace: true });
   }, [searchParams, setSearchParams]);
 
-  const send = useCallback(
-    async (text: string) => {
-      if (!text.trim() || loading) return;
-      const userMsg: ChatMessage = {
-        message_id: `local-${Date.now()}`,
-        role: "user",
-        content: text,
-        created_at: new Date().toISOString(),
-      };
-      setMessages((prev) => [...prev, userMsg]);
+  // 核心发送（retry 复用：不再 append 新 user bubble）
+  const runChat = useCallback(
+    async (text: string, userMsgId: string) => {
       setLoading(true);
       setSendError("");
+      setRetryText("");
+      setRetryMsgId(null);
       stickToBottom.current = true;
       try {
         const reply = await api.chat({
@@ -112,6 +107,12 @@ export function ChatPage() {
           conversation_id: conversationParam ?? null,
           plan_step_id: step?.step_id ?? null,
         });
+        // conversation_id 写回 URL（replace），刷新后恢复同会话
+        if (reply.conversation_id && reply.conversation_id !== conversationParam) {
+          const next = new URLSearchParams(searchParams);
+          next.set("conversation", reply.conversation_id);
+          setSearchParams(next, { replace: true });
+        }
         const aiMsg: ChatMessage = {
           message_id: reply.message_id,
           role: "assistant",
@@ -123,21 +124,46 @@ export function ChatPage() {
         const msg = e instanceof Error ? e.message : "发送失败，请重试";
         setSendError(msg);
         setRetryText(text);
+        setRetryMsgId(userMsgId); // 原 user 消息保留，retry 不重复
       } finally {
         setLoading(false);
       }
     },
-    [courseId, loading, step, conversationParam]
+    [courseId, conversationParam, step, searchParams, setSearchParams, api]
   );
+
+  // 首次发送：append user 消息一次
+  const send = useCallback(
+    (text: string) => {
+      if (!text.trim() || loading) return;
+      const userMsgId = `local-${Date.now()}`;
+      const userMsg: ChatMessage = {
+        message_id: userMsgId,
+        role: "user",
+        content: text,
+        created_at: new Date().toISOString(),
+      };
+      setMessages((prev) => [...prev, userMsg]);
+      runChat(text, userMsgId);
+    },
+    [loading, runChat]
+  );
+
+  // 重试：复用已保留的 user 消息，不 append
+  const retrySend = useCallback(() => {
+    if (!retryText || loading) return;
+    runChat(retryText, retryMsgId ?? `local-retry-${Date.now()}`);
+  }, [retryText, retryMsgId, loading, runChat]);
 
   const retryHistory = useCallback(() => {
     setHistoryError(false);
-    if (courseId) {
-      api.getChat(courseId, conversationParam).then((conv) => setMessages(conv.messages)).catch(() => setHistoryError(true));
-    } else {
-      api.getChat(null, conversationParam).then((conv) => setMessages(conv.messages)).catch(() => setHistoryError(true));
-    }
-  }, [courseId, conversationParam]);
+    setHistoryLoading(true);
+    api
+      .getChat(courseId ?? null, conversationParam)
+      .then((conv) => setMessages(conv.messages))
+      .catch(() => setHistoryError(true))
+      .finally(() => setHistoryLoading(false));
+  }, [courseId, conversationParam, api]);
 
   const placeholder = step
     ? `继续问关于 ${step.title} 的问题…`
@@ -145,33 +171,29 @@ export function ChatPage() {
       ? `继续问关于 ${course.display_name} 的问题…`
       : "有什么我可以帮你的？";
 
+  const composerDisabled = loading || courseError;
+
   return (
     <>
       <CourseHeader course={course} activeView={courseId ? "chat" : "general"} onOpenMobileSidebar={openMobileSidebar} />
 
       <div className="chat-scroll" ref={scrollRef} onScroll={onScroll}>
         <div className="chat-content">
-          {step && (
-            <div className="step-chip">
-              <span className="step-chip-icon">
-                <BookOpen size={13} aria-hidden />
-              </span>
-              <span>学习计划 · {step.title}</span>
-              <button type="button" className="step-chip-x" onClick={removeStep} aria-label="移除计划上下文">
-                <X size={14} aria-hidden />
-              </button>
-            </div>
-          )}
           {stepError && <div className="step-chip step-chip-error">{stepError}</div>}
 
-          {historyError && messages.length === 0 && (
+          {historyError && messages.length === 0 && !historyLoading && (
             <InlineError message="无法加载历史消息" onRetry={retryHistory} />
           )}
           {courseError && (
-            <InlineError message="无法加载课程" onRetry={() => window.location.reload()} />
+            <InlineError message="无法加载课程，请重试" onRetry={() => window.location.reload()} />
           )}
 
-          {messages.length === 0 && !loading && !historyError ? (
+          {historyLoading ? (
+            <div className="chat-history-loading" aria-busy="true">
+              <div className="chat-loading-row" />
+              <div className="chat-loading-row short" />
+            </div>
+          ) : messages.length === 0 && !loading && !historyError ? (
             <ChatEmptyState onPick={send} />
           ) : (
             messages.map((m) => (
@@ -190,15 +212,26 @@ export function ChatPage() {
               <LoadingDots />
             </div>
           )}
-          {sendError && (
-            <InlineError message={sendError} onRetry={retryText ? () => send(retryText) : undefined} />
-          )}
+          {sendError && <InlineError message={sendError} onRetry={retrySend} />}
         </div>
       </div>
 
-      <div className="composer-wrap">
-        <ChatComposer placeholder={placeholder} disabled={loading} onSend={send} />
-      </div>
+      {!courseError && (
+        <div className="composer-wrap">
+          {step && (
+            <div className="step-chip composer-chip">
+              <span className="step-chip-icon">
+                <BookOpen size={13} aria-hidden />
+              </span>
+              <span>学习计划 · {step.title}</span>
+              <button type="button" className="step-chip-x" onClick={removeStep} aria-label="移除计划上下文">
+                <X size={14} aria-hidden />
+              </button>
+            </div>
+          )}
+          <ChatComposer placeholder={placeholder} disabled={composerDisabled} onSend={send} />
+        </div>
+      )}
     </>
   );
 }

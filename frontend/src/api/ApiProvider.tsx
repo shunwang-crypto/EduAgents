@@ -1,5 +1,7 @@
 import { createContext, useContext, useMemo, type ReactNode } from "react";
-import { createApiClient, type ApiClient } from "./client";
+import { createApiClient, ApiError, type ApiClient } from "./client";
+
+export { ApiError };
 
 /** ApiContext：宿主 userId → ApiClient（X-User-Id 头）的单一注入点。
  * 业务组件必须通过 useApi() 获取实例，禁止全局单例 / 写死用户。 */

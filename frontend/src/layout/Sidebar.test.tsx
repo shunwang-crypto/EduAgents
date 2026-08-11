@@ -41,6 +41,34 @@ function renderSidebar(props: Partial<React.ComponentProps<typeof Sidebar>> = {}
 describe("Sidebar", () => {
   beforeEach(() => vi.clearAllMocks());
 
+  it("active course via useLocation gets aria-current (no popstate listener)", async () => {
+    render(
+      <MemoryRouter initialEntries={["/courses/PY/chat"]}>
+        <Sidebar
+          open={false}
+          collapsed={false}
+          onClose={() => {}}
+          onToggleCollapse={() => {}}
+          newChat={() => {}}
+          navigateToCourse={() => {}}
+        />
+      </MemoryRouter>
+    );
+    await waitFor(() => expect(screen.getByText("Python 数据分析")).toBeTruthy());
+    const pyBtn = screen.getByText("Python 数据分析").closest("button");
+    expect(pyBtn?.getAttribute("aria-current")).toBe("page");
+    const javaBtn = screen.getByText("Java OOP").closest("button");
+    expect(javaBtn?.getAttribute("aria-current")).toBeNull();
+  });
+
+  it("collapsed header shows single logo control (no dual toggle)", async () => {
+    renderSidebar({ collapsed: true });
+    await waitFor(() => expect(screen.getAllByText("P").length).toBeGreaterThan(0));
+    // 折叠态只有一个「展开侧边栏」Logo 按钮，没有收起按钮
+    expect(screen.getByRole("button", { name: "展开侧边栏" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "收起侧边栏" })).toBeNull();
+  });
+
   it("expanded shows brand, 我的课程, and full course names", async () => {
     renderSidebar();
     await waitFor(() => expect(screen.getByText("EduAgents")).toBeTruthy());

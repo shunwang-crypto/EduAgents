@@ -14,6 +14,7 @@ export function CreateCourseModal({ onClose, onCreated }: Props) {
   const [topic, setTopic] = useState("");
   const [goal, setGoal] = useState("");
   const [loading, setLoading] = useState(false);
+  const loadingRef = useRef(false);
   const [error, setError] = useState("");
   const topicRef = useRef<HTMLInputElement>(null);
   const closeBtnRef = useRef<HTMLButtonElement>(null);
@@ -25,7 +26,7 @@ export function CreateCourseModal({ onClose, onCreated }: Props) {
     prevFocus.current = document.activeElement as HTMLElement | null;
     topicRef.current?.focus();
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
+      if (e.key === "Escape" && !loadingRef.current) {
         onClose();
         return;
       }
@@ -62,6 +63,7 @@ export function CreateCourseModal({ onClose, onCreated }: Props) {
       return;
     }
     setLoading(true);
+    loadingRef.current = true;
     setError("");
     try {
       const course = await api.createCourse({ topic: topic.trim(), goal: goal.trim() });
@@ -69,11 +71,17 @@ export function CreateCourseModal({ onClose, onCreated }: Props) {
     } catch (e) {
       setError(e instanceof Error ? e.message : "创建失败，请重试");
       setLoading(false);
+      loadingRef.current = false;
     }
   };
 
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    submit();
+  };
+
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div className="modal-backdrop" onClick={() => !loading && onClose()}>
       <div
         ref={modalRef}
         className="modal"
@@ -85,6 +93,7 @@ export function CreateCourseModal({ onClose, onCreated }: Props) {
         <h3 id="create-course-title" className="modal-title">
           新建课程
         </h3>
+        <form onSubmit={handleSubmit}>
         <label className="modal-label" htmlFor="course-topic">
           课程主题
         </label>
@@ -108,13 +117,14 @@ export function CreateCourseModal({ onClose, onCreated }: Props) {
         />
         {error && <p className="form-error" role="alert">{error}</p>}
         <div className="modal-actions">
-          <button ref={closeBtnRef} type="button" className="ea-button" onClick={onClose}>
+          <button ref={closeBtnRef} type="button" className="ea-button" onClick={onClose} disabled={loading}>
             取消
           </button>
-          <button type="button" className="ea-button primary" onClick={submit} disabled={loading}>
+          <button type="submit" className="ea-button primary" disabled={loading}>
             {loading ? "创建中…" : "创建课程"}
           </button>
         </div>
+        </form>
       </div>
     </div>
   );
