@@ -246,7 +246,10 @@ class ChatService:
                  "requirement_block": requirement_block, "history": history_text,
                  "message": message}
             )
-            return str(response).strip() or _fallback_reply(message)
+            # langchain AIMessage 等对象的 str() 会输出 repr（content='...' additional_kwargs=...），
+            # 必须用归一化函数提取纯文本。
+            from edu_agent.core.agent_runner import model_to_text
+            return model_to_text(response).strip() or _fallback_reply(message)
         except Exception:  # noqa: BLE001 - 无模型环境降级
             return _fallback_reply(message)
 
