@@ -34,7 +34,7 @@ const { mockPlan } = vi.hoisted(() => ({
   },
 }));
 
-const { clients } = vi.hoisted(() => ({ clients: new Map<string, Record<string, ReturnType<typeof vi.fn>>>() }));
+const { clients } = vi.hoisted(() => ({ clients: new Map<string, ReturnType<typeof make>>() }));
 
 // mock createApiClient：每个 userId 返回独立 client 实例（ApiProvider 内部 useMemo(userId)）。
 // 用于验证切换 userId 后 StudyPlanPage 的 generate/toggleStep 拿到的是新 api（无 stale closure）。

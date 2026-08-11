@@ -197,7 +197,7 @@ export function StudyPlanPage() {
                           <button
                             type="button"
                             className="step-ask-btn"
-                            onClick={() => nav.openCourseChat(courseId, { stepId: step.step_id })}
+                            onClick={() => nav.openCourseChat(courseId, { stepId: step.step_id ?? null })}
                           >
                             <MessageCircleQuestion size={14} aria-hidden /> 就此提问
                           </button>

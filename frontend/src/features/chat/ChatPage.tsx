@@ -55,7 +55,7 @@ export function ChatPage() {
     }
     setMessages([]);
     setCourseError(false);
-    setHistoryError(false);
+    setHistoryError(null);
     setHistoryLoading(true);
     if (courseId) {
       api.getCourse(courseId).then(setCourse).catch(() => setCourseError(true));
