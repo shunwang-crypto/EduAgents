@@ -39,8 +39,9 @@ export function ChatPage() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
   // 本组件写回 URL 的 conversation_id：写回后消息已在本地 state，跳过重新加载，
-  // 避免 setMessages([]) 清空当前对话（retry/首条消息成功后 user bubble 消失、骨架闪烁）
-  const lastWrittenConvRef = useRef<string | null>(null);
+  // 避免 setMessages([]) 清空当前对话（retry/首条消息成功后 user bubble 消失、骨架闪烁）。
+  // 初始为 undefined（哨兵）：mount 时 conversationParam 为 null，若用 null 会误判为"自己写回"而跳过首次加载
+  const lastWrittenConvRef = useRef<string | null | undefined>(undefined);
 
   // 课程 / 会话加载（historyLoading 区分加载中与空会话，不闪 Empty State）
   useEffect(() => {
