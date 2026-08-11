@@ -38,9 +38,17 @@ export function ChatPage() {
   const [retryMsgId, setRetryMsgId] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
+  // 本组件写回 URL 的 conversation_id：写回后消息已在本地 state，跳过重新加载，
+  // 避免 setMessages([]) 清空当前对话（retry/首条消息成功后 user bubble 消失、骨架闪烁）
+  const lastWrittenConvRef = useRef<string | null>(null);
 
   // 课程 / 会话加载（historyLoading 区分加载中与空会话，不闪 Empty State）
   useEffect(() => {
+    // conversation 变化由本组件写回 URL 引起：消息已在本地，消费标记并跳过重载
+    if (lastWrittenConvRef.current === conversationParam) {
+      lastWrittenConvRef.current = null;
+      return;
+    }
     setMessages([]);
     setCourseError(false);
     setHistoryError(false);
@@ -107,8 +115,10 @@ export function ChatPage() {
           conversation_id: conversationParam ?? null,
           plan_step_id: step?.step_id ?? null,
         });
-        // conversation_id 写回 URL（replace），刷新后恢复同会话
+        // conversation_id 写回 URL（replace），刷新后恢复同会话；
+        // 记录写回值，effect 据此跳过重复加载历史
         if (reply.conversation_id && reply.conversation_id !== conversationParam) {
+          lastWrittenConvRef.current = reply.conversation_id;
           const next = new URLSearchParams(searchParams);
           next.set("conversation", reply.conversation_id);
           setSearchParams(next, { replace: true });
