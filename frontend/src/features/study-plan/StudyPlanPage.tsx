@@ -48,6 +48,11 @@ export function StudyPlanPage() {
     api
       .getPlan(courseId)
       .then((p) => {
+        // getPlan 解析为 null（无计划）也应进入 empty 态，而非 ready 空白页
+        if (!p) {
+          setPlanStatus("empty");
+          return;
+        }
         setPlan(p);
         setPlanStatus("ready");
       })

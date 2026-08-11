@@ -87,7 +87,9 @@ describe("StudyPlanPage uses fresh api after userId swap", () => {
   it("generate with A uses client A; after swap to B uses client B only (no stale closure)", async () => {
     const { rerender } = renderWith("USER-A");
     await waitFor(() => expect(screen.getByText("阶段 1")).toBeTruthy());
-    fireEvent.click(screen.getByText("生成学习计划"));
+    // ready 态的入口是「重新生成计划」→ 确认弹层「确认重新生成」（empty 态才是「生成学习计划」）
+    fireEvent.click(screen.getByText("重新生成计划"));
+    fireEvent.click(screen.getByText("确认重新生成"));
     await waitFor(() => expect((clients.get("USER-A")!.generatePlan)).toHaveBeenCalled());
     expect((clients.get("USER-B")?.generatePlan as ReturnType<typeof vi.fn> | undefined)).toBeUndefined();
 
@@ -102,7 +104,9 @@ describe("StudyPlanPage uses fresh api after userId swap", () => {
     );
     // 切换 userId 后 effect 重跑：用新 client B 重新 getPlan
     await waitFor(() => expect((clients.get("USER-B")!.getPlan)).toHaveBeenCalled());
-    fireEvent.click(screen.getByText("生成学习计划"));
+    // ready 态的入口是「重新生成计划」→ 确认弹层「确认重新生成」（empty 态才是「生成学习计划」）
+    fireEvent.click(screen.getByText("重新生成计划"));
+    fireEvent.click(screen.getByText("确认重新生成"));
     await waitFor(() => expect((clients.get("USER-B")!.generatePlan)).toHaveBeenCalled());
 
     // 关键回归：切换后再 generate 不应再调用旧 client A（stale closure 会落到 A）
