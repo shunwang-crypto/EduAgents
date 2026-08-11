@@ -49,8 +49,8 @@ class UpdateCourseRequest(BaseModel):
 
 class GeneratePlanRequest(BaseModel):
     goal: str = Field(default="", description="学习目标（留空沿用课程目标）")
-    duration_days: int = Field(default=14, ge=1, le=365)
-    daily_minutes: int = Field(default=60, ge=5, le=600)
+    duration_days: Optional[int] = Field(default=None, description="学习周期（天）；留空沿用课程已保存默认值")
+    daily_minutes: Optional[int] = Field(default=None, description="每天学习分钟；留空沿用课程已保存默认值")
     background: str = Field(default="", description="补充背景（可选，写为 Profile Fact）")
 
 
@@ -157,6 +157,22 @@ def get_step(course_id: str, step_id: str, user_id: str = Depends(_user_id)) -> 
         return study_plan_service.get_step(user_id, course_id, step_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/courses/{course_id}/plan/steps/{step_id}/lesson")
+def generate_step_lesson(course_id: str, step_id: str,
+                         user_id: str = Depends(_user_id)) -> dict:
+    """GET-OR-GENERATE 单个 plan step 的讲解（懒生成，首次「开始学习 / 继续学习」调用）。
+
+    已有 lesson_markdown → 直接返回；没有 → LLM 生成并落库。LLM 失败返回 5xx（前端重试），
+    不保存错误正文。
+    """
+    try:
+        return study_plan_service.get_or_generate_step_lesson(user_id, course_id, step_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------

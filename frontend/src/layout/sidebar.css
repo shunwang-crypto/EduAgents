@@ -397,6 +397,114 @@
   padding: 8px 0;
 }
 
+/* ---------- CourseNavItem：main + more 两个 sibling 按钮（无嵌套 button） ---------- */
+.course-nav-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  position: relative;
+  width: 100%;
+}
+
+.course-nav-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  height: 40px;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--ea-text-primary);
+  font-size: 14px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 150ms ease;
+  overflow: hidden;
+}
+
+.course-nav-main:hover {
+  background: var(--ea-bg-hover);
+}
+
+.course-nav-row.active .course-nav-main {
+  background: var(--ea-bg-active);
+  color: var(--ea-primary);
+}
+
+.course-nav-more {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  border-radius: 7px;
+  color: var(--ea-text-secondary);
+  cursor: pointer;
+  transition: background 150ms ease;
+}
+
+.course-nav-more:hover {
+  background: var(--ea-bg-hover);
+}
+
+.course-nav-menu {
+  position: absolute;
+  top: 42px;
+  right: 0;
+  z-index: 30;
+  min-width: 148px;
+  background: #fff;
+  border: 1px solid var(--ea-border);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+}
+
+.course-nav-menu-item {
+  display: flex;
+  align-items: center;
+  border: none;
+  background: transparent;
+  border-radius: 7px;
+  padding: 8px 10px;
+  font-size: 13px;
+  color: var(--ea-text-primary);
+  cursor: pointer;
+  text-align: left;
+  transition: background 150ms ease;
+}
+
+.course-nav-menu-item:hover {
+  background: var(--ea-bg-hover);
+}
+
+.course-nav-menu-item.danger {
+  color: var(--ea-danger);
+}
+
+.course-nav-menu-item.danger:hover {
+  background: rgba(220, 53, 69, 0.08);
+}
+
+/* Collapsed：只显示 avatar（more 按钮在折叠态隐藏，展开后再操作） */
+.course-nav-row.collapsed {
+  justify-content: center;
+}
+
+.course-nav-main.collapsed {
+  flex: 0 0 auto;
+  padding: 8px;
+  justify-content: center;
+}
+
 .sidebar-new-chat.collapsed {
   justify-content: center;
   padding: 0;

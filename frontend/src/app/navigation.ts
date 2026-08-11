@@ -5,12 +5,15 @@
  * 避免宿主前缀（/adaptive-learning 等）下导航「跳出前缀」。
  */
 
-/** 计算 LearningApp 根路径（General Chat 对应路由，空 path = AppShell index）。 */
+/** 计算 LearningApp 根路径（General Chat 对应路由，空 path = AppShell index）。
+ * 同时去除尾部多余 "/"，避免 base 为 "/host/learning/" 时拼出 "/host/learning//courses/..."。 */
 export function learningAppBase(pathname: string): string {
   const idx = pathname.indexOf("/courses/");
-  if (idx < 0) return pathname || "/";
-  if (idx === 0) return "/";
-  return pathname.slice(0, idx);
+  let base = idx < 0 ? (pathname || "/") : (idx === 0 ? "/" : pathname.slice(0, idx));
+  if (base.length > 1 && base.endsWith("/")) {
+    base = base.replace(/\/+$/, "");
+  }
+  return base;
 }
 
 /** 拼接 base（LearningApp 根，结尾无斜杠或为 "/"）与以 "/" 开头的相对后缀，避免出现双斜杠。 */

@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import hashlib
 import re
-from typing import Optional
+from typing import Dict, Optional
 
-_BUILTIN_COURSES = {
+_BUILTIN_COURSES: Dict[str, str] = {
     "java oop": "JAVA-OOP",
     "java": "JAVA-OOP",
     "面向对象": "JAVA-OOP",
@@ -21,6 +21,32 @@ _BUILTIN_COURSES = {
     "注意力": "TRANSFORMER",
     "attention": "TRANSFORMER",
 }
+
+# ASCII 关键词按 token/word boundary 匹配，避免 "javascript" 误命中 "java"；
+# 中文关键词按明确短语匹配。
+_TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+
+def _match_builtin(topic: str) -> Optional[str]:
+    lower = (topic or "").strip().lower()
+    if not lower:
+        return None
+    tokens = set(_TOKEN_RE.findall(lower))
+    for keyword, course_id in _BUILTIN_COURSES.items():
+        kw_tokens = _TOKEN_RE.findall(keyword)
+        if not kw_tokens:
+            # 中文短语：直接子串匹配
+            if keyword in lower:
+                return course_id
+            continue
+        if len(kw_tokens) == 1:
+            if kw_tokens[0] in tokens:
+                return course_id
+        else:
+            # 多 token 短语：按空格拼接后在 lower 中连续出现
+            if " ".join(kw_tokens) in lower:
+                return course_id
+    return None
 
 
 def slugify(topic: str) -> str:
@@ -33,28 +59,25 @@ def _stable_suffix(topic: str) -> str:
 
 
 def resolve_course_id(topic: str, existing_course_ids: Optional[list] = None) -> str:
-    """根据学习主题解析稳定 course_id。"""
+    """根据学习主题解析稳定 course_id。
+
+    ASCII 关键词使用 token/word boundary 匹配，避免 "javascript" 误命中 "java"；
+    中文关键词按明确短语匹配。相同 normalized topic → 相同 course_id（Fresh Baseline 无旧格式兼容）。
+    """
     topic = (topic or "").strip()
     if not topic:
         return "CUSTOM-unknown"
-    lower = topic.lower()
-    for keyword, course_id in _BUILTIN_COURSES.items():
-        if keyword in lower:
-            return course_id
+    builtin = _match_builtin(topic)
+    if builtin is not None:
+        return builtin
 
     slug = slugify(topic)
     suffix = _stable_suffix(topic)
     candidate = f"CUSTOM-{slug[:24]}-{suffix}" if slug else f"CUSTOM-{suffix}"
 
-    # 复用已有同主题课程（要求 normalized 前缀 + 相同 hash 才复用，避免误合并）
-    prefix = f"CUSTOM-{slug[:24]}-" if slug else f"CUSTOM-"
+    # 复用已有同主题课程（normalized slug + hash 完全一致才复用，避免误合并）
     for cid in existing_course_ids or []:
         if cid == candidate:
-            return cid
-        # 旧格式兼容：同 slug 无 hash 后缀的旧课程
-        if slug and cid == f"CUSTOM-{slug[:24]}":
-            return cid
-        if not slug and cid.startswith(prefix) and cid.endswith(suffix):
             return cid
     return candidate
 

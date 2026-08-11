@@ -65,10 +65,21 @@ const { mockPlan } = vi.hoisted(() => ({
 
 const { mockApi } = vi.hoisted(() => ({
   mockApi: {
-    getCourse: vi.fn().mockResolvedValue({ course_id: "PY", display_name: "Python 数据分析" }),
+    getCourse: vi.fn().mockResolvedValue({
+      course_id: "PY",
+      display_name: "Python 数据分析",
+      duration_days: 14,
+      daily_minutes: 60,
+    }),
     getPlan: vi.fn().mockResolvedValue(mockPlan),
     generatePlan: vi.fn().mockResolvedValue(mockPlan),
     updateStep: vi.fn().mockResolvedValue(mockPlan),
+    getLesson: vi.fn().mockResolvedValue({
+      step_id: "S1",
+      lesson_markdown: "## 本节要学什么\nNumPy 数组是…",
+      lesson_generated_at: "2026-08-11T00:00:00Z",
+      title: "NumPy 数组基础",
+    }),
   },
 }));
 
@@ -150,5 +161,90 @@ describe("StudyPlanPage", () => {
     (mockApi.getPlan as ReturnType<typeof vi.fn>).mockResolvedValueOnce(null);
     renderPage();
     await waitFor(() => expect(screen.getByText("还没有学习计划")).toBeTruthy());
+  });
+
+  it("clicking 开始学习 expands lesson panel and lazily loads it", async () => {
+    renderPage();
+    await waitFor(() => expect(screen.getAllByText("开始学习").length).toBe(3));
+    fireEvent.click(screen.getAllByText("开始学习")[0]);
+    // 展开后出现「标记完成」与「收起」
+    await waitFor(() => expect(screen.getByText("标记完成")).toBeTruthy());
+    expect(screen.getByText("收起")).toBeTruthy();
+    // Lesson 懒加载完成（getLesson mock 返回的 Markdown 渲染出标题）
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { name: "本节要学什么" })).toBeTruthy()
+    );
+    // getLesson 仅调用一次（缓存）
+    expect((mockApi.getLesson as ReturnType<typeof vi.fn>).mock.calls.length).toBe(1);
+  });
+
+  it("clicking 标记完成 calls updateStep with completed", async () => {
+    renderPage();
+    await waitFor(() => expect(screen.getAllByText("开始学习").length).toBe(3));
+    fireEvent.click(screen.getAllByText("开始学习")[0]);
+    await waitFor(() => expect(screen.getByText("标记完成")).toBeTruthy());
+    fireEvent.click(screen.getByText("标记完成"));
+    await waitFor(() =>
+      expect((mockApi.updateStep as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith(
+        "PY",
+        "S1",
+        "completed"
+      )
+    );
+  });
+
+  it("shows plan settings inputs initialized from course and applies them on regenerate", async () => {
+    renderPage();
+    await waitFor(() => expect(screen.getByText("计划设置")).toBeTruthy());
+    const dur = screen.getByDisplayValue("14") as HTMLInputElement;
+    const min = screen.getByDisplayValue("60") as HTMLInputElement;
+    expect(dur).toBeTruthy();
+    expect(min).toBeTruthy();
+    // 改每日时长为 90
+    fireEvent.change(min, { target: { value: "90" } });
+    // 重新生成并确认
+    fireEvent.click(screen.getByText("重新生成计划"));
+    fireEvent.click(screen.getByText("确认重新生成"));
+    await waitFor(() =>
+      expect((mockApi.generatePlan as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith(
+        "PY",
+        expect.objectContaining({ duration_days: 14, daily_minutes: 90 })
+      )
+    );
+  });
+
+  it("hides step description when it equals the title (dedup)", async () => {
+    const dupPlan = {
+      ...mockPlan,
+      stages: [
+        {
+          stage_id: "s1",
+          stage_title: "基础",
+          order: 1,
+          steps: [
+            {
+              step_id: "D1",
+              seq: 1,
+              stage_id: "s1",
+              stage_title: "基础",
+              stage_order: 1,
+              kc_id: "k",
+              title: "相同标题",
+              description: "相同标题",
+              learning_objective: "",
+              prerequisites: [],
+              difficulty: "入门",
+              minutes: 20,
+              status: "not_started",
+            },
+          ],
+        },
+      ],
+    };
+    (mockApi.getPlan as ReturnType<typeof vi.fn>).mockResolvedValueOnce(dupPlan);
+    renderPage();
+    await waitFor(() => expect(screen.getByText("相同标题")).toBeTruthy());
+    // 标题出现一次；描述与标题相同则不重复渲染
+    expect(screen.getAllByText("相同标题").length).toBe(1);
   });
 });

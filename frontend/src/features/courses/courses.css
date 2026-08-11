@@ -67,6 +67,24 @@
   margin: 0 0 12px;
 }
 
+.modal-text {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--ea-text-secondary);
+  margin: 0 0 12px;
+}
+
+.ea-button.danger {
+  background: var(--ea-danger);
+  color: #fff;
+  border-color: var(--ea-danger);
+}
+
+.ea-button.danger:hover {
+  background: #c82333;
+  border-color: #c82333;
+}
+
 .modal-actions {
   display: flex;
   justify-content: flex-end;

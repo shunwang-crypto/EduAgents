@@ -12,6 +12,11 @@ const { courses, mockApi } = vi.hoisted(() => ({
   mockApi: {
     createConversation: vi.fn().mockResolvedValue({ conversation_id: "CONV-1" }),
     createCourse: vi.fn(),
+    renameCourse: vi
+      .fn()
+      .mockResolvedValue({ course_id: "PY", display_name: "Python 进阶" }),
+    deleteCourse: vi.fn().mockResolvedValue(undefined),
+    getCourse: vi.fn().mockResolvedValue({ course_id: "PY", display_name: "Python 数据分析" }),
   },
 }));
 
@@ -101,5 +106,37 @@ describe("Sidebar", () => {
   it("mobile open shows backdrop", async () => {
     const { container } = renderSidebar({ open: true });
     await waitFor(() => expect(container.querySelector(".sidebar-backdrop")).toBeTruthy());
+  });
+
+  it("opens rename modal from more menu and updates sidebar state in place", async () => {
+    renderSidebar();
+    await waitFor(() => expect(screen.getByText("Python 数据分析")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "更多操作：Python 数据分析" }));
+    fireEvent.click(screen.getByText("重命名"));
+    await waitFor(() => expect(screen.getByText("重命名课程")).toBeTruthy());
+    const input = screen.getByLabelText("课程名") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "Python 进阶" } });
+    fireEvent.click(screen.getByText("保存"));
+    await waitFor(() =>
+      expect((mockApi.renameCourse as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith(
+        "PY",
+        "Python 进阶"
+      )
+    );
+    // 就地更新侧边栏状态（不重新拉取列表）
+    await waitFor(() => expect(screen.getByText("Python 进阶")).toBeTruthy());
+  });
+
+  it("opens delete dialog and removes the course from sidebar on confirm", async () => {
+    renderSidebar();
+    await waitFor(() => expect(screen.getByText("Python 数据分析")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "更多操作：Python 数据分析" }));
+    fireEvent.click(screen.getByText("删除课程"));
+    await waitFor(() => expect(screen.getByRole("heading", { name: "删除课程" })).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "删除课程" }));
+    await waitFor(() =>
+      expect((mockApi.deleteCourse as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith("PY")
+    );
+    await waitFor(() => expect(screen.queryByText("Python 数据分析")).toBeNull());
   });
 });

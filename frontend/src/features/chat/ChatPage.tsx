@@ -41,6 +41,9 @@ export function ChatPage() {
   const [retryMsgId, setRetryMsgId] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
+  //  stale-async 保护：courseId / conversation 快速切换时，旧响应不许覆盖新页面
+  const chatSeq = useRef(0);
+  const stepSeq = useRef(0);
   // 本组件写回 URL 的 conversation_id：写回后消息已在本地 state，跳过重新加载，
   // 避免 setMessages([]) 清空当前对话（retry/首条消息成功后 user bubble 消失、骨架闪烁）。
   // 初始为 undefined（哨兵）：mount 时 conversationParam 为 null，若用 null 会误判为"自己写回"而跳过首次加载
@@ -53,34 +56,51 @@ export function ChatPage() {
       lastWrittenConvRef.current = null;
       return;
     }
+    const seq = ++chatSeq.current;
     setMessages([]);
     setCourseError(false);
     setHistoryError(null);
     setHistoryLoading(true);
     if (courseId) {
-      api.getCourse(courseId).then(setCourse).catch(() => setCourseError(true));
+      api
+        .getCourse(courseId)
+        .then((c) => {
+          if (seq === chatSeq.current) setCourse(c);
+        })
+        .catch(() => {
+          if (seq === chatSeq.current) setCourseError(true);
+        });
     } else {
       setCourse(null);
     }
     api
       .getChat(courseId ?? null, conversationParam)
-      .then((conv) => setMessages(conv.messages))
+      .then((conv) => {
+        if (seq === chatSeq.current) setMessages(conv.messages);
+      })
       .catch((e) => {
+        if (seq !== chatSeq.current) return;
         if (import.meta.env.DEV) console.error("[chat] getChat failed", e);
         setHistoryError(e instanceof Error ? e : new Error(String(e)));
       })
-      .finally(() => setHistoryLoading(false));
+      .finally(() => {
+        if (seq === chatSeq.current) setHistoryLoading(false);
+      });
   }, [courseId, conversationParam, api]);
 
   // ?step= 加载计划步骤
   useEffect(() => {
+    const seq = ++stepSeq.current;
     setStep(null);
     setStepError("");
     if (courseId && stepParam) {
       api
         .getStep(courseId, stepParam)
-        .then(setStep)
+        .then((s) => {
+          if (seq === stepSeq.current) setStep(s);
+        })
         .catch(() => {
+          if (seq !== stepSeq.current) return;
           setStep(null);
           setStepError("计划步骤不存在或不属于当前课程");
         });

@@ -4,7 +4,21 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { StudyPlanPage } from "./StudyPlanPage";
 import { ApiProvider } from "../../api/ApiProvider";
 
-const { mockPlan } = vi.hoisted(() => ({
+// 模块级 mock client 类型：避免在 vi.hoisted / vi.mock 工厂作用域之间互相引用内部函数
+type MockApiClient = {
+  userId: string;
+  getCourse: ReturnType<typeof vi.fn>;
+  getPlan: ReturnType<typeof vi.fn>;
+  generatePlan: ReturnType<typeof vi.fn>;
+  updateStep: ReturnType<typeof vi.fn>;
+  chat: ReturnType<typeof vi.fn>;
+  listCourses: ReturnType<typeof vi.fn>;
+  getChat: ReturnType<typeof vi.fn>;
+  getStep: ReturnType<typeof vi.fn>;
+  createConversation: ReturnType<typeof vi.fn>;
+};
+
+const { mockPlan, clients } = vi.hoisted(() => ({
   mockPlan: {
     plan_id: "PLAN-1",
     course_id: "PY",
@@ -32,14 +46,13 @@ const { mockPlan } = vi.hoisted(() => ({
       },
     ],
   },
+  clients: new Map<string, MockApiClient>(),
 }));
-
-const { clients } = vi.hoisted(() => ({ clients: new Map<string, ReturnType<typeof make>>() }));
 
 // mock createApiClient：每个 userId 返回独立 client 实例（ApiProvider 内部 useMemo(userId)）。
 // 用于验证切换 userId 后 StudyPlanPage 的 generate/toggleStep 拿到的是新 api（无 stale closure）。
 vi.mock("../../api/client", () => {
-  const make = (userId: string) => ({
+  const make = (userId: string): MockApiClient => ({
     userId,
     getCourse: vi.fn().mockResolvedValue({ course_id: "PY", display_name: "Python 数据分析" }),
     getPlan: vi.fn().mockResolvedValue(mockPlan),
@@ -49,6 +62,12 @@ vi.mock("../../api/client", () => {
     listCourses: vi.fn().mockResolvedValue([]),
     getChat: vi.fn().mockResolvedValue({ conversation_id: null, course_id: null, messages: [] }),
     getStep: vi.fn(),
+    getLesson: vi.fn().mockResolvedValue({
+      step_id: "S1",
+      lesson_markdown: "## 本节要学什么\nNumPy 数组是…",
+      lesson_generated_at: "2026-08-11T00:00:00Z",
+      title: "NumPy 数组基础",
+    }),
     createConversation: vi.fn(),
   });
   return {

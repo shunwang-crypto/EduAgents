@@ -1,0 +1,186 @@
+"""学习计划 Lesson 懒生成 / 计划设置持久化 / 课程解析器 token 边界 / 计划归属防 ghost-state。
+
+使用 TestClient + 临时 DB；Lesson 的 LLM 调用通过 monkeypatch 替换，避免真实网络。
+"""
+
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SRC_DIR = PROJECT_ROOT / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
+import pytest  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+
+from edu_agent.adaptive.course_resolver import resolve_course_id  # noqa: E402
+from edu_agent.api.main import app  # noqa: E402
+from edu_agent.config.settings import get_settings  # noqa: E402
+from edu_agent.learner_model.service import LearnerModelService  # noqa: E402
+
+
+@pytest.fixture()
+def client(tmp_path, monkeypatch):
+    db = str(tmp_path / "lm.db")
+    monkeypatch.setenv("LEARNER_MODEL_DB_PATH", db)
+    monkeypatch.setenv("LEARNER_MODEL_USER_ID", "STU-LESSON")
+    get_settings.cache_clear()
+    LearnerModelService._shared_default = None
+    with TestClient(app) as c:
+        yield c
+
+
+# ---------------------------------------------------------------------------
+# 课程解析器：token/word boundary（修复 "javascript" 误命中 "java"）
+# ---------------------------------------------------------------------------
+
+
+def test_resolver_token_boundary():
+    assert resolve_course_id("Java") == "JAVA-OOP"
+    assert resolve_course_id("Java OOP") == "JAVA-OOP"
+    assert resolve_course_id("java oop") == "JAVA-OOP"
+    # 关键回归：javascript 不应命中 java
+    assert resolve_course_id("JavaScript 入门").startswith("CUSTOM-")
+    assert resolve_course_id("JavaScript 和 React").startswith("CUSTOM-")
+    assert resolve_course_id("Transformer") == "TRANSFORMER"
+    assert resolve_course_id("注意力机制") == "TRANSFORMER"
+
+
+# ---------------------------------------------------------------------------
+# Plan Step Lesson：GET-OR-GENERATE（懒生成 + 缓存）
+# ---------------------------------------------------------------------------
+
+
+def test_lesson_generate_then_cache(client, monkeypatch):
+    calls = {"n": 0}
+
+    def fake_generate_lesson_markdown(step, context_text):
+        calls["n"] += 1
+        return "## 本节要学什么\n这是讲解内容。"
+
+    monkeypatch.setattr(
+        "edu_agent.application.study_plan_service._generate_lesson_markdown",
+        fake_generate_lesson_markdown,
+    )
+
+    r = client.post("/api/courses", json={"topic": "Python 数据分析", "goal": "两周完成报告"})
+    assert r.status_code == 200, r.text
+    cid = r.json()["course_id"]
+    r = client.post(
+        f"/api/courses/{cid}/plan/generate",
+        json={"duration_days": 14, "daily_minutes": 60},
+    )
+    assert r.status_code == 200, r.text
+    step = r.json()["steps"][0]
+
+    # 首次调用：生成
+    r = client.post(f"/api/courses/{cid}/plan/steps/{step['step_id']}/lesson")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["step_id"] == step["step_id"]
+    assert body["lesson_markdown"].startswith("## 本节要学什么")
+    assert body["lesson_generated_at"]
+    assert body["title"] == step["title"]
+    assert calls["n"] == 1
+
+    # 第二次调用：命中缓存，不再调 LLM
+    r = client.post(f"/api/courses/{cid}/plan/steps/{step['step_id']}/lesson")
+    assert r.status_code == 200, r.text
+    assert calls["n"] == 1
+
+    # 落库：get_plan 返回的 step 携带 lesson_markdown
+    plan = client.get(f"/api/courses/{cid}/plan").json()
+    persisted = next(s for s in plan["steps"] if s["step_id"] == step["step_id"])
+    assert persisted["lesson_markdown"].startswith("## 本节要学什么")
+    assert persisted["lesson_generated_at"]
+
+
+def test_lesson_ownership_404(client):
+    r = client.post("/api/courses", json={"topic": "Python 数据分析"})
+    assert r.status_code == 200
+    cid = r.json()["course_id"]
+    r = client.post(
+        f"/api/courses/{cid}/plan/generate", json={}, headers={"X-User-Id": "USER-A"}
+    )
+    assert r.status_code == 200
+    step = r.json()["steps"][0]
+
+    # 非 owner（USER-B）访问他人 step 的 lesson → 404
+    r = client.post(
+        f"/api/courses/{cid}/plan/steps/{step['step_id']}/lesson",
+        headers={"X-User-Id": "USER-B"},
+    )
+    assert r.status_code == 404
+
+    # 不存在的 step → 404
+    r = client.post(
+        f"/api/courses/{cid}/plan/steps/STEP-NOPE/lesson",
+        headers={"X-User-Id": "USER-A"},
+    )
+    assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# 计划设置持久化：create_course 保存 / generate 解析 / 写回
+# ---------------------------------------------------------------------------
+
+
+def test_plan_settings_persistence(client):
+    r = client.post(
+        "/api/courses",
+        json={"topic": "Python 数据分析", "duration_days": 21, "daily_minutes": 45},
+    )
+    assert r.status_code == 200, r.text
+    cid = r.json()["course_id"]
+
+    course = client.get(f"/api/courses/{cid}").json()
+    assert course["duration_days"] == 21
+    assert course["daily_minutes"] == 45
+
+    # 不显式传设置 → 沿用课程已保存的 21/45
+    r = client.post(f"/api/courses/{cid}/plan/generate", json={})
+    assert r.status_code == 200, r.text
+
+    # 重新生成并显式覆盖 → 写回为新的默认值
+    r = client.post(
+        f"/api/courses/{cid}/plan/generate",
+        json={"duration_days": 30, "daily_minutes": 90},
+    )
+    assert r.status_code == 200, r.text
+    course = client.get(f"/api/courses/{cid}").json()
+    assert course["duration_days"] == 30
+    assert course["daily_minutes"] == 90
+
+
+# ---------------------------------------------------------------------------
+# 计划归属：owner 校验优先，避免非法 course_id 产生 ghost learner_course_state
+# ---------------------------------------------------------------------------
+
+
+def test_plan_ownership_no_ghost_state(client):
+    r = client.post(
+        "/api/courses", json={"topic": "Python 数据分析"}, headers={"X-User-Id": "USER-A"}
+    )
+    assert r.status_code == 200
+    cid = r.json()["course_id"]
+
+    # USER-B 对他人课程生成计划 → 404（不创建 ghost state）
+    r = client.post(
+        f"/api/courses/{cid}/plan/generate", json={}, headers={"X-User-Id": "USER-B"}
+    )
+    assert r.status_code == 404
+
+    # USER-B 获取他人计划 → 404
+    r = client.get(f"/api/courses/{cid}/plan", headers={"X-User-Id": "USER-B"})
+    assert r.status_code == 404
+
+    # USER-B 获取他人课程 → 404（确认无 ghost learner_course_state 行）
+    r = client.get(f"/api/courses/{cid}", headers={"X-User-Id": "USER-B"})
+    assert r.status_code == 404
+
+    # USER-A 自身可正常生成
+    r = client.post(
+        f"/api/courses/{cid}/plan/generate", json={}, headers={"X-User-Id": "USER-A"}
+    )
+    assert r.status_code == 200

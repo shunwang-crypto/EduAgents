@@ -72,6 +72,7 @@ def create_course(
             learner.repo.upsert_user_course(
                 {"user_id": user_id, "course_id": course_id, "display_name": topic,
                  "topic": topic, "normalized_topic": normalized,
+                 "duration_days": int(duration_days), "daily_minutes": int(daily_minutes),
                  "created_at": _now_iso(), "updated_at": _now_iso()}
             )
         learner.ensure_course(user_id, course_id)
@@ -151,6 +152,8 @@ def _compose_course(user_id: str, course_id: str, row: dict,
         "goal": goal,
         "progress": float(state.get("progress", 0.0)),
         "plan_summary": (plan or {}).get("summary", ""),
+        "duration_days": int(row.get("duration_days") or 14),
+        "daily_minutes": int(row.get("daily_minutes") or 60),
         "created_at": row.get("created_at"),
         "updated_at": state.get("updated_at"),
     }

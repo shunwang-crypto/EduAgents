@@ -15,6 +15,8 @@ export interface Course {
   goal: Goal | null;
   progress: number;
   plan_summary: string;
+  duration_days: number;
+  daily_minutes: number;
   created_at: string | null;
   updated_at: string | null;
 }
@@ -33,6 +35,8 @@ export interface PlanStep {
   difficulty: string;
   minutes: number;
   status: "not_started" | "in_progress" | "completed";
+  lesson_markdown: string | null;
+  lesson_generated_at: string | null;
 }
 
 export interface PlanStage {
@@ -65,7 +69,7 @@ export interface ChatMessage {
 }
 
 export interface Conversation {
-  conversation_id: string;
+  conversation_id: string | null;
   course_id: string | null;
   messages: ChatMessage[];
 }

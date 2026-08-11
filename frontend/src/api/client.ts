@@ -34,6 +34,10 @@ export interface ApiClient {
   getPlan: (courseId: string) => Promise<StudyPlan>;
   updateStep: (courseId: string, stepId: string, status: string) => Promise<StudyPlan>;
   getStep: (courseId: string, stepId: string) => Promise<PlanStep>;
+  getLesson: (
+    courseId: string,
+    stepId: string,
+  ) => Promise<{ step_id: string; lesson_markdown: string; lesson_generated_at: string | null; title: string }>;
 
   // Chat
   createConversation: (courseId?: string | null) => Promise<{ conversation_id: string; course_id: string | null }>;
@@ -105,6 +109,11 @@ export function createApiClient(userId: string): ApiClient {
       }),
     getStep: (courseId, stepId) =>
       request<PlanStep>(`/api/courses/${courseId}/plan/steps/${stepId}`),
+    getLesson: (courseId, stepId) =>
+      request<{ step_id: string; lesson_markdown: string; lesson_generated_at: string | null; title: string }>(
+        `/api/courses/${courseId}/plan/steps/${stepId}/lesson`,
+        { method: "POST" },
+      ),
 
     // Chat
     createConversation: (courseId) =>

@@ -1,9 +1,18 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
-import { AlertCircle, GraduationCap, PanelLeftClose, Plus } from "lucide-react";
+import {
+  AlertCircle,
+  GraduationCap,
+  MoreHorizontal,
+  PanelLeftClose,
+  Plus,
+} from "lucide-react";
 import type { Course } from "../api/types";
 import { CreateCourseModal } from "../features/courses/CreateCourseModal";
+import { RenameCourseModal } from "../features/courses/RenameCourseModal";
+import { DeleteCourseDialog } from "../features/courses/DeleteCourseDialog";
 import { useApi } from "../api/ApiProvider";
+import { useLearningNav } from "../app/useLearningNav";
 import "./sidebar.css";
 
 /** SidebarLogo：展开显示 Logo + EduAgents；折叠只显示 Logo（本身可点击展开）。 */
@@ -34,32 +43,72 @@ export function SidebarLogo({ collapsed, onExpand }: { collapsed: boolean; onExp
   );
 }
 
-/** CourseNavItem：展开显示 avatar + 课程名；折叠只显示 avatar（首字符）。 */
+/** CourseNavItem：展开显示 avatar + 课程名 + 更多按钮。
+ * 结构：.course-nav-row 内两个 sibling 按钮（.course-nav-main 导航 / .course-nav-more 打开菜单），
+ * 不嵌套 button（避免无效 HTML / a11y 问题）。 */
 export function CourseNavItem({
   course,
   active,
   collapsed,
-  onClick,
+  onOpen,
+  onToggleMenu,
+  menuOpen,
+  onRename,
+  onDelete,
 }: {
   course: Course;
   active: boolean;
   collapsed: boolean;
-  onClick: () => void;
+  onOpen: () => void;
+  onToggleMenu: () => void;
+  menuOpen: boolean;
+  onRename: () => void;
+  onDelete: () => void;
 }) {
   const avatar = course.display_name?.trim().charAt(0) || "?";
   return (
-    <button
-      type="button"
-      className={`course-nav-item ${active ? "active" : ""} ${collapsed ? "collapsed" : ""}`}
-      onClick={onClick}
-      aria-current={active ? "page" : undefined}
-      title={course.display_name}
-    >
-      <span className="course-avatar" aria-hidden>
-        {avatar}
-      </span>
-      {!collapsed && <span className="course-name">{course.display_name}</span>}
-    </button>
+    <div className={`course-nav-row ${active ? "active" : ""} ${collapsed ? "collapsed" : ""}`}>
+      <button
+        type="button"
+        className={`course-nav-main ${collapsed ? "collapsed" : ""}`}
+        onClick={onOpen}
+        aria-current={active ? "page" : undefined}
+        title={course.display_name}
+      >
+        <span className="course-avatar" aria-hidden>
+          {avatar}
+        </span>
+        {!collapsed && <span className="course-name">{course.display_name}</span>}
+      </button>
+      {!collapsed && (
+        <button
+          type="button"
+          className="course-nav-more"
+          onClick={onToggleMenu}
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
+          aria-label={`更多操作：${course.display_name}`}
+          title="更多操作"
+        >
+          <MoreHorizontal size={16} aria-hidden />
+        </button>
+      )}
+      {!collapsed && menuOpen && (
+        <div className="course-nav-menu" role="menu">
+          <button type="button" className="course-nav-menu-item" role="menuitem" onClick={onRename}>
+            重命名
+          </button>
+          <button
+            type="button"
+            className="course-nav-menu-item danger"
+            role="menuitem"
+            onClick={onDelete}
+          >
+            删除课程
+          </button>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -75,24 +124,42 @@ interface SidebarProps {
 /** Sidebar：EduAgents + 新对话 + 我的课程（唯一新建入口）。
  * collapsed = 68px 真 icon rail（条件渲染，无竖排文字、无被挤压文字）。
  */
-export function Sidebar({ open, collapsed, onClose, onToggleCollapse, newChat, navigateToCourse }: SidebarProps) {
+export function Sidebar({
+  open,
+  collapsed,
+  onClose,
+  onToggleCollapse,
+  newChat,
+  navigateToCourse,
+}: SidebarProps) {
   const { pathname } = useLocation();
   const api = useApi();
+  const nav = useLearningNav();
   const [courses, setCourses] = useState<Course[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [showCreate, setShowCreate] = useState(false);
+  // 课程菜单 / 重命名 / 删除 状态
+  const [menuOpenFor, setMenuOpenFor] = useState<string | null>(null);
+  const [renaming, setRenaming] = useState<Course | null>(null);
+  const [deleting, setDeleting] = useState<Course | null>(null);
+
+  //  stale-async 保护：load 并发/快速重跑时旧响应不覆盖新列表
+  const loadSeq = useRef(0);
 
   const load = () => {
+    const seq = ++loadSeq.current;
     setLoading(true);
     setError("");
     api
       .listCourses()
       .then((list) => {
+        if (seq !== loadSeq.current) return;
         setCourses(list);
         setLoading(false);
       })
       .catch((e) => {
+        if (seq !== loadSeq.current) return;
         setError(e instanceof Error ? e.message : "加载失败");
         setLoading(false);
       });
@@ -102,6 +169,19 @@ export function Sidebar({ open, collapsed, onClose, onToggleCollapse, newChat, n
   useEffect(() => {
     load();
   }, [api]);
+
+  // 菜单打开时，点击课程行外部关闭（避免全屏遮罩与菜单的层叠冲突）
+  useEffect(() => {
+    if (!menuOpenFor) return;
+    const onDocMouseDown = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target && !target.closest(".course-nav-row")) {
+        setMenuOpenFor(null);
+      }
+    };
+    document.addEventListener("mousedown", onDocMouseDown);
+    return () => document.removeEventListener("mousedown", onDocMouseDown);
+  }, [menuOpenFor]);
 
   // Esc 关闭 mobile drawer
   useEffect(() => {
@@ -205,9 +285,22 @@ export function Sidebar({ open, collapsed, onClose, onToggleCollapse, newChat, n
               course={course}
               active={courseActive(course.course_id)}
               collapsed={collapsed}
-              onClick={() => {
+              onOpen={() => {
+                setMenuOpenFor(null);
                 onClose();
                 navigateToCourse(course.course_id);
+              }}
+              onToggleMenu={() =>
+                setMenuOpenFor((prev) => (prev === course.course_id ? null : course.course_id))
+              }
+              menuOpen={menuOpenFor === course.course_id}
+              onRename={() => {
+                setRenaming(course);
+                setMenuOpenFor(null);
+              }}
+              onDelete={() => {
+                setDeleting(course);
+                setMenuOpenFor(null);
               }}
             />
           ))}
@@ -237,6 +330,33 @@ export function Sidebar({ open, collapsed, onClose, onToggleCollapse, newChat, n
             load();
             onClose();
             navigateToCourse(course.course_id);
+          }}
+        />
+      )}
+
+      {renaming && (
+        <RenameCourseModal
+          course={renaming}
+          onClose={() => setRenaming(null)}
+          onRenamed={(id, name) => {
+            // 就地更新侧边栏状态，不重新拉取列表
+            setCourses((prev) => prev.map((c) => (c.course_id === id ? { ...c, display_name: name } : c)));
+            setRenaming(null);
+          }}
+        />
+      )}
+
+      {deleting && (
+        <DeleteCourseDialog
+          course={deleting}
+          onClose={() => setDeleting(null)}
+          onDeleted={(id) => {
+            setCourses((prev) => prev.filter((c) => c.course_id !== id));
+            setDeleting(null);
+            // 删除的若是当前课程 → 跳回普通对话（不硬编码 "/"）
+            if (courseActive(id)) {
+              nav.openGeneralChat();
+            }
           }}
         />
       )}
