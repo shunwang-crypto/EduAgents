@@ -58,7 +58,10 @@ export function ChatPage() {
   }, [courseId, stepParam]);
 
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+    const el = scrollRef.current;
+    if (el && typeof el.scrollTo === "function") {
+      el.scrollTo({ top: el.scrollHeight });
+    }
   }, [messages, loading]);
 
   const removeStep = useCallback(() => {

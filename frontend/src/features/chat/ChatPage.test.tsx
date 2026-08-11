@@ -41,7 +41,7 @@ describe("ChatPage plan step context", () => {
 
   it("does not show chip without ?step=", async () => {
     renderChat("/courses/PY/chat");
-    await waitFor(() => expect(screen.getByText(/继续问关于 Python 数据分析/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByPlaceholderText(/继续问关于 Python 数据分析/)).toBeTruthy());
     expect(screen.queryByText(/学习计划 ·/)).toBeNull();
   });
 });
