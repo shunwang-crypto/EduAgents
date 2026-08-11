@@ -12,6 +12,22 @@ export default defineConfig({
       },
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          "vendor-react": ["react", "react-dom", "react-router-dom"],
+          "vendor-markdown": [
+            "react-markdown",
+            "remark-gfm",
+            "remark-math",
+            "rehype-katex",
+            "katex",
+          ],
+        },
+      },
+    },
+  },
   test: {
     environment: "jsdom",
     globals: true,
