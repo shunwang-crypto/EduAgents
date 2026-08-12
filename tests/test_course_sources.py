@@ -285,7 +285,9 @@ def test_search_internet_returns_candidates(client, kb, monkeypatch):
 def test_plan_knowledge_context_includes_source(client, kb, monkeypatch):
     import edu_agent.application.study_plan_service as sp
 
-    _mock_web(monkeypatch)
+    # 检索 query = f"{semantic_topic} {goal_text}"，搜索要求命中数 >= min_hits(2)；
+    # mock 文本必须包含 query 的多个 token（课程名/目标词），否则命中不足检索为空。
+    _mock_web(monkeypatch, text="# Doc\n\n知识注入课资料：理解 KNOWLEDGE_MARKER_xyz 原理，标记为测试内容。")
     captured = {}
     orig = sp.run_study_plan_workflow
 

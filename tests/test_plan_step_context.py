@@ -128,28 +128,16 @@ def test_chat_course_not_owned_by_user_rejected(seeded):
         svc.chat("STU-001", "你好", course_id=java_course, plan_step_id=step["step_id"])
 
 
-def test_rag_query_uses_message_not_empty(seeded, monkeypatch):
+def test_rag_query_uses_message_not_empty(seeded):
     """正式路径 RAG query = step.title + message，绝不允许空串。"""
     from edu_agent.application import chat_service as cs
 
     captured: dict = {}
-    class FakeKB:
-        chunks = [object()]  # 非空 → 触发检索
-
-        def __init__(self, *a, **kw):
-            pass
-
-        def search(self, query, top_k=3):
-            captured["query"] = query
-            captured["top_k"] = top_k
-            return []
-
-    monkeypatch.setattr(cs, "CourseKnowledgeBase", FakeKB, raising=False)
-    # 直接替换 _rag 内部 import 的类：通过 monkeypatch module 内引用不可行，
-    # 改测 _build_context 触发 _rag（course_kb import 失败会走 [] 分支，这里用可控方式）
     step = seeded["plan"]["steps"][0]
     svc = cs.ChatService(learner=seeded["learner"])
-    svc._rag = lambda cid, msg, top_k=3: (captured.update(query=msg, top_k=top_k) or [])
+    # _build_context 调 self._rag(user_id, course_id, query, top_k=3)；
+    # 用同签名桩捕获 query，验证正式路径 query 非空且含 step.title + message。
+    svc._rag = lambda uid, cid, msg, top_k=3: (captured.update(query=msg, top_k=top_k) or [])
     svc._build_context("STU-001", seeded["py"]["course_id"], "为什么这样？", step)
     assert captured["query"]
     assert captured["query"] != ""

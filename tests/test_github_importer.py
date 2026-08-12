@@ -49,19 +49,11 @@ def test_import_github_repo_rejects_invalid_url_before_network(monkeypatch):
         import_github_repo("https://evil.com/a/b")
 
 
-def test_load_github_repo_integrates_docs_into_kb(monkeypatch):
+def test_load_github_repo_integrates_docs_into_kb():
     fake_docs = {
         "README.md": "# 示例仓库\n\n## 快速开始\n\n先安装依赖，再运行。",
         "docs/guide.md": "# 使用指南\n\n## 常见问题\n\n遇到报错先看日志。",
     }
-
-    def _fake_import(url, **kwargs):
-        assert "github.com" in url
-        return dict(fake_docs)
-
-    monkeypatch.setattr(
-        "edu_agent.tools.course_kb.import_github_repo", _fake_import
-    )
 
     kb = CourseKnowledgeBase(user_id="A", course_id="C-PY")
     for name, text in fake_docs.items():
@@ -76,11 +68,13 @@ def test_load_github_repo_integrates_docs_into_kb(monkeypatch):
 
 
 def test_import_github_repo_propagates_import_error(monkeypatch):
+    from edu_agent.tools import github_importer
+
     def _fail(url, **kwargs):
         raise GitHubImportError("git clone 失败")
 
-    monkeypatch.setattr(
-        "edu_agent.tools.course_kb.import_github_repo", _fail
-    )
+    # import_github_repo 在 github_importer 模块；必须 patch 模块属性并从模块属性调用
+    #（from-import 的局部绑定不受 monkeypatch 影响）。
+    monkeypatch.setattr(github_importer, "import_github_repo", _fail)
     with pytest.raises(GitHubImportError, match="git clone"):
-        import_github_repo("https://github.com/owner/repo")
+        github_importer.import_github_repo("https://github.com/owner/repo")

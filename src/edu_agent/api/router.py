@@ -6,7 +6,7 @@ Router 只负责取参并转交 Application Services，不组织业务流程。
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field

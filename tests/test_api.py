@@ -227,8 +227,17 @@ def test_conversation_title_listed(client):
 
 
 def test_conversations_limit(client):
+    # 生产语义：POST /api/chat 无 conversation_id 时复用 (user, course) 现有会话（GPT 式「继续当前对话」）。
+    # 要产生多条对话，须显式走「新对话」POST /api/chat/conversations，再带 conversation_id 发消息。
+    conv_ids = []
     for i in range(8):
-        client.post("/api/chat", json={"message": f"普通对话第 {i} 条"})
+        conv = client.post("/api/chat/conversations", json={}).json()
+        conv_ids.append(conv["conversation_id"])
+        client.post(
+            "/api/chat",
+            json={"message": f"普通对话第 {i} 条", "conversation_id": conv["conversation_id"]},
+        )
+    assert len(conv_ids) == 8
     assert len(client.get("/api/chat/conversations", params={"limit": 6}).json()) == 6
     assert len(client.get("/api/chat/conversations", params={"limit": 20}).json()) == 8
 
