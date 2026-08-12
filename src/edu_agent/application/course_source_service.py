@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import threading
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -32,6 +33,8 @@ from edu_agent.tools.internet_sources import (
 )
 
 logger = logging.getLogger(__name__)
+
+_SOURCE_FINALIZE_LOCK = threading.RLock()
 
 # 单资料正文上限（进入 chunk 前再截一次，避免巨库撑爆存储）
 _MAX_DOC_CHARS = 120_000
@@ -134,26 +137,15 @@ def add_source(
 
     now = _now_iso()
     repo = learner.repo
-    try:
-        repo.upsert_course_source(
-            {
-                "source_id": source_id,
-                "user_id": user_id,
-                "course_id": course_id,
-                "source_type": source_type,
-                "source_url": raw_url,
-                "title": display_title,
-                "status": "importing",
-                "import_token": my_token,
-                "chunk_count": existing.get("chunk_count", 0) if existing else 0,
-                "error_message": "",
-                "created_at": existing.get("created_at", now) if existing else now,
-                "updated_at": now,
-            }
-        )
-    except sqlite3.IntegrityError as exc:
-        # FK race：course 在 validate 后被并发删除（FK CASCADE 防线）→ 404 语义
-        raise KeyError(f"course not found: {course_id}") from exc
+    claimed = repo.claim_course_source(
+        {"source_id": source_id, "user_id": user_id, "course_id": course_id,
+         "source_type": source_type, "source_url": raw_url, "title": display_title,
+         "import_token": my_token, "chunk_count": existing.get("chunk_count", 0) if existing else 0,
+         "created_at": existing.get("created_at", now) if existing else now, "updated_at": now}
+    )
+    if claimed is None:
+        raise KeyError(f"course not found: {course_id}")
+    source_id = claimed["source_id"]
 
     # 4) 事务外：外部导入（可能很慢 / 可能失败）
     try:
@@ -186,23 +178,23 @@ def add_source(
 
     # 6) 落库 chunks（replace 语义，杜绝重复）+ 标记 ready
     try:
-        kb_store.replace_source_chunks(user_id, course_id, source_id, chunks)
-        repo.upsert_course_source(
-            {
-                "source_id": source_id,
-                "user_id": user_id,
-                "course_id": course_id,
-                "source_type": source_type,
-                "source_url": raw_url,
-                "title": display_title,
-                "status": "ready",
-                "import_token": my_token,
-                "chunk_count": len(chunks),
-                "error_message": "",
-                "created_at": existing.get("created_at", now) if existing else now,
-                "updated_at": _now_iso(),
-            }
-        )
+        # JSON chunks and SQLite metadata are separate stores.  Serialize the
+        # token re-check, JSON replacement, and conditional metadata publish so
+        # an older generation cannot overwrite a newer one.
+        with _SOURCE_FINALIZE_LOCK:
+            cur = repo.get_course_source(user_id, course_id, source_id)
+            if cur is None or cur.get("import_token") != my_token:
+                return {"source_id": source_id, "status": "discarded",
+                        "source_deleted": cur is None, "stale": True}
+            kb_store.replace_source_chunks(user_id, course_id, source_id, chunks)
+            ok = repo.finalize_course_source_if_token(
+                {"source_id": source_id, "user_id": user_id, "course_id": course_id,
+                 "status": "ready", "import_token": my_token, "chunk_count": len(chunks),
+                 "error_message": "", "updated_at": _now_iso()}
+            )
+            if not ok:
+                _safe_delete_chunks(user_id, course_id, source_id)
+                return {"source_id": source_id, "status": "discarded", "stale": True}
     except sqlite3.IntegrityError as exc:
         # FK race：finalize 时 course 已被并发删除（CASCADE 防线）→ 清理本 request chunks + 404 语义
         logger.warning("[source] course deleted before finalize; discard chunks: %s", source_id)
@@ -223,13 +215,14 @@ def _discard_or_fail(repo, user_id: str, course_id: str, source_id: str,
                      my_token: str, exc: Exception) -> None:
     """导入失败收尾：仅当仍是本 request 的代（import_token 匹配）才标 failed + 清 chunks。"""
     try:
-        cur = repo.get_course_source(user_id, course_id, source_id)
+        with _SOURCE_FINALIZE_LOCK:
+            cur = repo.get_course_source(user_id, course_id, source_id)
+            if cur is None or cur.get("import_token") != my_token:
+                return
+            _safe_delete_chunks(user_id, course_id, source_id)
+            _mark_failed(repo, user_id, course_id, source_id, _readable_error(exc))
     except Exception:  # noqa: BLE001
-        return
-    if cur is None or cur.get("import_token") != my_token:
-        return  # 旧代失败 / source 已删：不覆盖新代，不删新 chunks
-    _safe_delete_chunks(user_id, course_id, source_id)
-    _mark_failed(repo, user_id, course_id, source_id, _readable_error(exc))
+        logger.warning("[source] failure finalize failed: %s", source_id, exc_info=True)
 
 
 def _import_github(
@@ -259,14 +252,9 @@ def _mark_failed(repo, user_id: str, course_id: str, source_id: str, message: st
     row = repo.get_course_source(user_id, course_id, source_id)
     if row is None:
         return
-    repo.upsert_course_source(
-        {
-            **row,
-            "status": "failed",
-            "chunk_count": 0,  # 正式不变量：status=failed → chunk_count=0 → RAG inactive
-            "error_message": message[:200],
-            "updated_at": _now_iso(),
-        }
+    repo.finalize_course_source_if_token(
+        {**row, "status": "failed", "chunk_count": 0,
+         "error_message": message[:200], "updated_at": _now_iso()}
     )
 
 
@@ -290,8 +278,11 @@ def delete_source(
         raise KeyError(f"course not found: {course_id}")
     if learner.repo.get_course_source(user_id, course_id, source_id) is None:
         raise KeyError(f"source not found: {source_id}")
-    kb_store.delete_source_chunks(user_id, course_id, source_id)
-    learner.repo.delete_course_source(user_id, course_id, source_id)
+    # Coordinate physical JSON deletion with import finalize so an in-flight
+    # importer cannot publish chunks after metadata has been deleted.
+    with _SOURCE_FINALIZE_LOCK:
+        kb_store.delete_source_chunks(user_id, course_id, source_id)
+        learner.repo.delete_course_source(user_id, course_id, source_id)
 
 
 def search_sources(

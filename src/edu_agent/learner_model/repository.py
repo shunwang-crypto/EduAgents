@@ -29,6 +29,10 @@ class LearnerRepository(ABC):
     def upsert_user_course(self, course: Dict[str, Any]) -> None: ...
 
     @abstractmethod
+    def update_user_course_if_unchanged(self, user_id: str, course_id: str,
+                                        expected_updated_at: str, fields: Dict[str, Any]) -> bool: ...
+
+    @abstractmethod
     def get_user_course(self, user_id: str, course_id: str) -> Optional[dict]: ...
 
     @abstractmethod
@@ -75,6 +79,10 @@ class LearnerRepository(ABC):
     # ---- goals（user_id + goal_id 联合身份）-------------------------------
     @abstractmethod
     def upsert_goal(self, goal: Dict[str, Any]) -> None: ...
+
+    @abstractmethod
+    def update_goal_if_unchanged(self, user_id: str, goal_id: str,
+                                 expected_updated_at: str, fields: Dict[str, Any]) -> bool: ...
 
     @abstractmethod
     def get_goal(self, user_id: str, goal_id: str) -> Optional[dict]: ...
@@ -182,6 +190,10 @@ class LearnerRepository(ABC):
     def upsert_plan_step(self, step: Dict[str, Any]) -> None: ...
 
     @abstractmethod
+    def update_plan_step_lesson(self, step_id: str, lesson_markdown: str,
+                                lesson_generated_at: str, updated_at: str) -> bool: ...
+
+    @abstractmethod
     def list_plan_steps(self, plan_id: str) -> List[dict]: ...
 
     @abstractmethod
@@ -206,6 +218,16 @@ class LearnerRepository(ABC):
     # ---- course sources（user + course 双 scoped）------------------------
     @abstractmethod
     def upsert_course_source(self, source: Dict[str, Any]) -> None: ...
+
+    @abstractmethod
+    def claim_course_source(self, source: Dict[str, Any]) -> Optional[dict]: ...
+
+    @abstractmethod
+    def touch_course_source_if_token(self, user_id: str, course_id: str,
+                                     source_id: str, import_token: str) -> bool: ...
+
+    @abstractmethod
+    def finalize_course_source_if_token(self, source: Dict[str, Any]) -> bool: ...
 
     @abstractmethod
     def get_course_source(self, user_id: str, course_id: str, source_id: str) -> Optional[dict]: ...

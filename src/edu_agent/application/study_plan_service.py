@@ -87,9 +87,10 @@ def generate_plan(
     # 捕获 request 开始的 goal 版本信号（仅当课程已有 active goal；首次创建无旧版本可比较）。
     # workflow 期间用户可能编辑/清空/替换 goal——用 updated_at+target 作为 version signal。
     request_goal_sig = None
-    if active_goal is not None:
-        _g = learner.repo.get_goal(user_id, goal_id)
-        request_goal_sig = ((_g or {}).get("updated_at"), (_g or {}).get("target"))
+    _g = learner.repo.get_goal(user_id, goal_id)
+    if _g is not None:
+        request_goal_sig = ((_g or {}).get("updated_at"), (_g or {}).get("target"),
+                            (_g or {}).get("status"))
 
     # 首次提供背景 → USER_EXPLICIT_PROFILE_FACT（画像闭环）
     if optional_background and optional_background.strip():
@@ -151,10 +152,10 @@ def generate_plan(
     if request_goal_sig is not None:
         fresh_active = learner.resolve_active_goal(user_id, course_id)
         fg = learner.repo.get_goal(user_id, goal_id)
-        fresh_sig = ((fg or {}).get("updated_at"), (fg or {}).get("target")) if fg else None
+        fresh_sig = ((fg or {}).get("updated_at"), (fg or {}).get("target"),
+                     (fg or {}).get("status")) if fg else None
         if (
-            fresh_active is None
-            or fresh_active.goal_id != goal_id
+            (fresh_active is not None and fresh_active.goal_id != goal_id)
             or fg is None
             or fresh_sig != request_goal_sig
         ):
@@ -173,14 +174,17 @@ def generate_plan(
     # goal target_kcs → PLAN_CREATED event。任一失败整体回滚，旧 plan 继续可用。
     # 个性化 Plan Nodes 只保存在 plan_steps（user-scoped），不写共享 domain_kcs。
     with learner.repo.transaction():
+        # First finalize DML is an optimistic CAS.  Never upsert the course:
+        # a delete after the stale read must not recreate the course.
+        if not learner.repo.update_user_course_if_unchanged(
+            user_id, course_id, fresh_course_row.get("updated_at", ""),
+            {"duration_days": resolved_days, "daily_minutes": resolved_minutes},
+        ):
+            raise ValueError("课程已变更，请重新生成学习计划")
         old_plan = learner.repo.get_plan(user_id, course_id)
         if old_plan is not None:
             learner.repo.delete_plan(old_plan["plan_id"])
         # 把本次解析出的周期/每日时长写回课程，作为新的默认值（沿用或覆盖都保持一致）
-        learner.repo.upsert_user_course(
-            {**fresh_course_row, "duration_days": resolved_days, "daily_minutes": resolved_minutes,
-             "updated_at": _now_iso()}
-        )
         learner.repo.upsert_plan(
             {"plan_id": plan_id, "user_id": user_id, "course_id": course_id,
              "goal_id": goal_id, "title": f"{fresh_name} 学习计划",
@@ -206,10 +210,15 @@ def generate_plan(
         # 新 replacement Plan 从 0 开始：重置 goal 生命周期（status=active / progress=0.0）
         # 与 course progress（哪怕旧 Plan 已 completed）。不提前 reset（workflow 失败不破坏旧状态）。
         if nodes:
-            learner.upsert_goal(user_id, goal_id, course_id,
-                                name=fresh_name, target=goal_text,
-                                target_kcs=[n.get("id") for n in nodes if n.get("id")][:8] or None,
-                                status="active", progress=0.0)
+            goal_row = learner.repo.get_goal(user_id, goal_id)
+            expected_goal_updated_at = (request_goal_sig or ((goal_row or {}).get("updated_at"),))[0]
+            if goal_row is None or not expected_goal_updated_at or not learner.repo.update_goal_if_unchanged(
+                user_id, goal_id, expected_goal_updated_at,
+                {"name": fresh_name, "target": goal_text,
+                 "target_kcs_json": json.dumps([n.get("id") for n in nodes if n.get("id")][:8], ensure_ascii=False),
+                 "status": "active", "progress": 0.0, "updated_at": _now_iso()},
+            ):
+                raise ValueError("课程目标已变更，请重新生成学习计划")
         learner.update_course_progress(user_id, course_id, 0.0)
         learner.record_event({"event_type": "PLAN_CREATED", "user_id": user_id,
                               "course_id": course_id, "payload": {"plan_id": plan_id, "goal_id": goal_id}})
@@ -425,11 +434,10 @@ def get_or_generate_step_lesson(
 
     generated_at = _now_iso()
     with learner.repo.transaction():
-        learner.repo.upsert_plan_step(
-            {**fresh, "lesson_markdown": markdown, "lesson_generated_at": generated_at,
-             "updated_at": generated_at}
-        )
-    return _lesson_payload(fresh, markdown, generated_at)
+        if not learner.repo.update_plan_step_lesson(step_id, markdown, generated_at, generated_at):
+            raise RuntimeError("plan step changed during lesson generation; discard stale lesson")
+    persisted = learner.repo.get_plan_step_by_id(user_id, course_id, step_id) or fresh
+    return _lesson_payload(persisted, markdown, generated_at)
 
 
 def _lesson_payload(step: dict, markdown: str, generated_at: Optional[str] = None) -> dict:

@@ -119,6 +119,21 @@ class SQLiteLearnerRepository(LearnerRepository):
     def upsert_user_course(self, course: Dict[str, Any]) -> None:
         self._insert_or_update("user_courses", course, ["user_id", "course_id"])
 
+    def update_user_course_if_unchanged(self, user_id: str, course_id: str,
+                                        expected_updated_at: str, fields: Dict[str, Any]) -> bool:
+        if not fields:
+            return self.get_user_course(user_id, course_id) is not None
+        values = dict(fields)
+        values["updated_at"] = fields.get("updated_at") or _now_iso()
+        assignments = ", ".join(f"{k}=?" for k in values)
+        params = tuple(values.values()) + (user_id, course_id, expected_updated_at)
+        cur = self._conn().execute(
+            f"UPDATE user_courses SET {assignments} WHERE user_id=? AND course_id=? AND updated_at=?",
+            params,
+        )
+        self._commit()
+        return cur.rowcount == 1
+
     def get_user_course(self, user_id: str, course_id: str) -> Optional[dict]:
         return self._fetchone(
             "SELECT * FROM user_courses WHERE user_id=? AND course_id=?", (user_id, course_id)
@@ -252,6 +267,18 @@ class SQLiteLearnerRepository(LearnerRepository):
     # ---- goals ------------------------------------------------------------
     def upsert_goal(self, goal: Dict[str, Any]) -> None:
         self._insert_or_update("learning_goals", goal, ["user_id", "goal_id"])
+
+    def update_goal_if_unchanged(self, user_id: str, goal_id: str,
+                                 expected_updated_at: str, fields: Dict[str, Any]) -> bool:
+        if not fields:
+            return self.get_goal(user_id, goal_id) is not None
+        assignments = ", ".join(f"{k}=?" for k in fields)
+        cur = self._conn().execute(
+            f"UPDATE learning_goals SET {assignments} WHERE user_id=? AND goal_id=? AND updated_at=?",
+            tuple(fields.values()) + (user_id, goal_id, expected_updated_at),
+        )
+        self._commit()
+        return cur.rowcount == 1
 
     def get_goal(self, user_id: str, goal_id: str) -> Optional[dict]:
         return self._fetchone(
@@ -490,6 +517,15 @@ class SQLiteLearnerRepository(LearnerRepository):
         # step_id 是 PRIMARY KEY；(plan_id, seq) 另有 UNIQUE 约束
         self._insert_or_update("plan_steps", step, ["step_id"])
 
+    def update_plan_step_lesson(self, step_id: str, lesson_markdown: str,
+                                lesson_generated_at: str, updated_at: str) -> bool:
+        cur = self._conn().execute(
+            "UPDATE plan_steps SET lesson_markdown=?, lesson_generated_at=?, updated_at=? WHERE step_id=?",
+            (lesson_markdown, lesson_generated_at, updated_at, step_id),
+        )
+        self._commit()
+        return cur.rowcount == 1
+
     def list_plan_steps(self, plan_id: str) -> List[dict]:
         return self._fetchall(
             "SELECT * FROM plan_steps WHERE plan_id=? ORDER BY seq ASC", (plan_id,)
@@ -558,6 +594,43 @@ class SQLiteLearnerRepository(LearnerRepository):
     # ---- course sources（user + course 双 scoped）------------------------
     def upsert_course_source(self, source: Dict[str, Any]) -> None:
         self._insert_or_update("course_sources", source, ["user_id", "course_id", "source_url"])
+
+    def claim_course_source(self, source: Dict[str, Any]) -> Optional[dict]:
+        """Atomically claim URL; an existing row keeps its stable source_id."""
+        conn = self._conn()
+        try:
+            conn.execute(
+                "INSERT INTO course_sources (source_id,user_id,course_id,source_type,source_url,title,status,import_token,chunk_count,error_message,created_at,updated_at) "
+                "VALUES (:source_id,:user_id,:course_id,:source_type,:source_url,:title,'importing',:import_token,:chunk_count,'',:created_at,:updated_at) "
+                "ON CONFLICT(user_id,course_id,source_url) DO UPDATE SET "
+                "source_type=excluded.source_type, title=excluded.title, status='importing', "
+                "import_token=excluded.import_token, error_message='', updated_at=excluded.updated_at",
+                source,
+            )
+            self._commit()
+        except sqlite3.IntegrityError:
+            self._conn().rollback()
+            return None
+        return self.get_course_source_by_url(source["user_id"], source["course_id"], source["source_url"])
+
+    def touch_course_source_if_token(self, user_id: str, course_id: str,
+                                     source_id: str, import_token: str) -> bool:
+        cur = self._conn().execute(
+            "UPDATE course_sources SET updated_at=updated_at WHERE user_id=? AND course_id=? AND source_id=? AND import_token=?",
+            (user_id, course_id, source_id, import_token),
+        )
+        self._commit()
+        return cur.rowcount == 1
+
+    def finalize_course_source_if_token(self, source: Dict[str, Any]) -> bool:
+        cur = self._conn().execute(
+            "UPDATE course_sources SET status=?, import_token=?, chunk_count=?, error_message=?, updated_at=? "
+            "WHERE user_id=? AND course_id=? AND source_id=? AND import_token=?",
+            (source["status"], source["import_token"], source["chunk_count"], source.get("error_message", ""),
+             source["updated_at"], source["user_id"], source["course_id"], source["source_id"], source["import_token"]),
+        )
+        self._commit()
+        return cur.rowcount == 1
 
     def get_course_source(self, user_id: str, course_id: str, source_id: str) -> Optional[dict]:
         return self._fetchone(
