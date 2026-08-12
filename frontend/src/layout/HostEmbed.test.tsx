@@ -11,6 +11,7 @@ const { mockApi } = vi.hoisted(() => ({
       { course_id: "PY", display_name: "Python 数据分析", category_id: null, current_goal: null },
     ]),
     listCourseCategories: vi.fn().mockResolvedValue([]),
+    listConversations: vi.fn().mockResolvedValue([]),
     createCourseCategory: vi.fn(),
     renameCourseCategory: vi.fn(),
     deleteCourseCategory: vi.fn(),

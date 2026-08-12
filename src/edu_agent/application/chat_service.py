@@ -437,7 +437,7 @@ class ChatService:
             from edu_agent.application.course_source_service import load_ready_course_chunks
             from edu_agent.tools.course_kb import CourseKnowledgeBase
 
-            chunks = load_ready_course_chunks(user_id, course_id)
+            chunks = load_ready_course_chunks(user_id, course_id, learner=self._learner)
             if not chunks:
                 return []
             kb = CourseKnowledgeBase.from_chunks(chunks, user_id=user_id, course_id=course_id)

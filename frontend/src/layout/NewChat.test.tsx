@@ -8,6 +8,7 @@ const { mockApi } = vi.hoisted(() => ({
   mockApi: {
     listCourses: vi.fn().mockResolvedValue([]),
     listCourseCategories: vi.fn().mockResolvedValue([]),
+    listConversations: vi.fn().mockResolvedValue([]),
     createCourseCategory: vi.fn(),
     renameCourseCategory: vi.fn(),
     deleteCourseCategory: vi.fn(),
@@ -62,24 +63,30 @@ function renderAt(initialEntry: string, hostPrefix = "") {
 describe("New Chat navigates to General Chat (not course route)", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("from course page → 新对话 lands on General Chat root (course_id=null)", async () => {
-    renderAt("/courses/PY/chat");
-    await waitFor(() => expect(screen.getByText("新对话")).toBeTruthy());
-    fireEvent.click(screen.getByText("新对话"));
-    // General Chat 空状态出现（落在根路由，而非 /courses/PY/chat）
+  // 注：分类导航后 workspace 视图无「新对话」按钮（root 视图才有），
+  // 故从根路径进入点击（核心断言不变：createConversation(null) + getChat(null, CONV)）。
+  it("from root → 新对话 lands on General Chat root (course_id=null)", async () => {
+    renderAt("/");
+    await waitFor(() =>
+      expect(screen.getAllByRole("button", { name: "新对话" }).length).toBeGreaterThanOrEqual(1)
+    );
+    fireEvent.click(screen.getAllByRole("button", { name: "新对话" })[0]);
+    // General Chat 空状态出现（落在根路由）
     await waitFor(() => expect(screen.getByText("今天想学习什么？")).toBeTruthy());
     await waitFor(() =>
       expect((mockApi.createConversation as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith(null)
     );
-    // 关键回归：新对话是普通对话（course_id=null），不应仍以 PY 重新加载历史
+    // 关键回归：新对话是普通对话（course_id=null），不应以任何课程重新加载历史
     expect(mockApi.getChat).toHaveBeenCalledWith(null, "CONV-GENERAL");
     expect(mockApi.getChat).not.toHaveBeenCalledWith("PY", "CONV-GENERAL");
   });
 
   it("host mount (/host/learning) → 新对话 lands on /host/learning?conversation=CONV-GENERAL", async () => {
-    renderAt("/host/learning/courses/PY/chat", "/host/learning");
-    await waitFor(() => expect(screen.getByText("新对话")).toBeTruthy());
-    fireEvent.click(screen.getByText("新对话"));
+    renderAt("/host/learning", "/host/learning");
+    await waitFor(() =>
+      expect(screen.getAllByRole("button", { name: "新对话" }).length).toBeGreaterThanOrEqual(1)
+    );
+    fireEvent.click(screen.getAllByRole("button", { name: "新对话" })[0]);
     await waitFor(() => expect(screen.getByText("今天想学习什么？")).toBeTruthy());
     await waitFor(() =>
       expect((mockApi.createConversation as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith(null)

@@ -166,7 +166,9 @@ def test_lesson_generate_then_cache(client, monkeypatch):
 def test_lesson_ownership_404(client):
     # 创建课程 + 生成计划都用同一 owner USER-A（不依赖 fixture 默认 owner）
     r = client.post(
-        "/api/courses", json={"topic": "Python 数据分析"}, headers={"X-User-Id": "USER-A"}
+        "/api/courses",
+        json={"topic": "Python 数据分析", "goal": "掌握 Python 数据分析"},
+        headers={"X-User-Id": "USER-A"},
     )
     assert r.status_code == 200, r.text
     cid = r.json()["course_id"]
@@ -217,7 +219,9 @@ def test_lesson_uses_course_settings(client, monkeypatch):
     )
 
     r = client.post(
-        "/api/courses", json={"topic": "Python 数据分析"}, headers={"X-User-Id": "USER-A"}
+        "/api/courses",
+        json={"topic": "Python 数据分析", "goal": "掌握 Python 数据分析"},
+        headers={"X-User-Id": "USER-A"},
     )
     assert r.status_code == 200, r.text
     cid = r.json()["course_id"]
@@ -251,7 +255,9 @@ def test_lesson_does_not_change_mastery(client, monkeypatch):
     )
 
     r = client.post(
-        "/api/courses", json={"topic": "Python 数据分析"}, headers={"X-User-Id": "USER-A"}
+        "/api/courses",
+        json={"topic": "Python 数据分析", "goal": "掌握 Python 数据分析"},
+        headers={"X-User-Id": "USER-A"},
     )
     assert r.status_code == 200, r.text
     cid = r.json()["course_id"]
@@ -301,7 +307,9 @@ def test_lesson_timestamp_consistent_with_plan(client, monkeypatch):
     )
 
     r = client.post(
-        "/api/courses", json={"topic": "Python 数据分析"}, headers={"X-User-Id": "USER-A"}
+        "/api/courses",
+        json={"topic": "Python 数据分析", "goal": "掌握 Python 数据分析"},
+        headers={"X-User-Id": "USER-A"},
     )
     assert r.status_code == 200, r.text
     cid = r.json()["course_id"]
@@ -344,7 +352,9 @@ def test_lesson_does_not_rollback_step_status(client, monkeypatch):
     )
 
     r = client.post(
-        "/api/courses", json={"topic": "Python 数据分析"}, headers={"X-User-Id": "USER-A"}
+        "/api/courses",
+        json={"topic": "Python 数据分析", "goal": "掌握 Python 数据分析"},
+        headers={"X-User-Id": "USER-A"},
     )
     assert r.status_code == 200, r.text
     cid = r.json()["course_id"]
@@ -394,7 +404,12 @@ def test_lesson_does_not_rollback_step_status(client, monkeypatch):
 def test_plan_settings_persistence(client):
     r = client.post(
         "/api/courses",
-        json={"topic": "Python 数据分析", "duration_days": 21, "daily_minutes": 45},
+        json={
+            "topic": "Python 数据分析",
+            "goal": "掌握 Python 数据分析",
+            "duration_days": 21,
+            "daily_minutes": 45,
+        },
     )
     assert r.status_code == 200, r.text
     cid = r.json()["course_id"]
@@ -425,7 +440,9 @@ def test_plan_settings_persistence(client):
 
 def test_plan_ownership_no_ghost_state(client):
     r = client.post(
-        "/api/courses", json={"topic": "Python 数据分析"}, headers={"X-User-Id": "USER-A"}
+        "/api/courses",
+        json={"topic": "Python 数据分析", "goal": "掌握 Python 数据分析"},
+        headers={"X-User-Id": "USER-A"},
     )
     assert r.status_code == 200
     cid = r.json()["course_id"]

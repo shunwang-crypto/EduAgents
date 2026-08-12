@@ -188,7 +188,7 @@ def test_invalid_plan_step_id_no_side_effects(client):
 
 # ---------------------------------------------------------------- P2-3 plan time bounds → 422
 def test_generate_plan_invalid_time_bounds_422(client):
-    course = client.post("/api/courses", json={"topic": "SQL"}).json()
+    course = client.post("/api/courses", json={"topic": "SQL", "goal": "掌握 SQL 查询"}).json()
     cid = course["course_id"]
     # duration_days 超出 [1,365] → 422（不跑完整 LLM workflow 后 DB 500）
     r = client.post(

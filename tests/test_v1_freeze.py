@@ -714,7 +714,9 @@ def test_completed_goal_reactivates_on_new_target(learner):
                                            fields={"goal"}, goal="熟练掌握 SQL 查询")
     g = updated["goal"]
     assert g["goal_id"] == goal_id  # 稳定 goal_id，无新版本/history
-    assert g["status"] == "active" and g["progress"] == 0.0
+    # public projection 不含 status（spec 9.3：lifecycle 状态经 repo 验证）
+    assert g["progress"] == 0.0
+    assert learner.repo.get_goal(USER, goal_id)["status"] == "active"
     assert g["target"] == "熟练掌握 SQL 查询"
     assert updated["progress"] == 0.0  # course progress 归零（新生命周期从 0 开始）
 
@@ -728,7 +730,7 @@ def test_active_goal_wording_edit_keeps_progress(learner):
     updated = course_service.update_course(USER, cid, learner=learner,
                                            fields={"goal"}, goal="熟练掌握 SQL 查询与优化")
     assert updated["goal"]["target"] == "熟练掌握 SQL 查询与优化"
-    assert updated["goal"]["status"] == "active"
+    assert learner.repo.get_goal(USER, goal_id)["status"] == "active"
     assert updated["goal"]["progress"] == 0.5  # 不抹进度
 
 
@@ -755,12 +757,79 @@ def test_plan_regenerate_resets_plan_course_goal_progress(learner):
     assert p2["progress"] == 0.0
     after = course_service.get_course(USER, cid, learner)
     assert after["progress"] == 0.0
-    assert after["goal"]["status"] == "active" and after["goal"]["progress"] == 0.0
+    assert after["goal"]["progress"] == 0.0
+    assert learner.repo.get_goal(USER, goal_id)["status"] == "active"
     assert after["goal"]["goal_id"] == goal_id
 
 
 def test_plan_generate_rejects_empty_goal(learner):
-    """Server-side 拒绝空目标：课程无目标且不传 goal → 不能只靠前端 disabled。"""
-    course = _make_course(learner, topic="无目标课", goal="")
+    """Server-side 拒绝空目标：课程无目标且不传 goal → 不能只靠前端 disabled。
+    topic 用无歧义词（避免「目标」等触发自然语言解析出 goal）。"""
+    course = _make_course(learner, topic="Linear Algebra", goal="")
     with pytest.raises(ValueError):
         generate_plan(USER, course["course_id"], learner=learner)
+
+
+def test_upsert_goal_facade_target_tristate(learner):
+    """P0 facade：不传 target 不覆盖已有 target；'' 显式清空；新值更新；
+    status/progress 能经 Service facade 更新（不再 TypeError）。"""
+    course = _make_course(learner, topic="SQL 课")  # goal="两周完成分析目标"
+    cid = course["course_id"]
+    goal_id = course_service.get_course(USER, cid, learner)["goal"]["goal_id"]
+    # A) 只更新 name/status/progress，不传 target → target 保留
+    learner.upsert_goal(USER, goal_id, cid, name="SQL 课", status="active", progress=0.2)
+    g = learner.repo.get_goal(USER, goal_id)
+    assert g["target"] == "两周完成分析目标"
+    assert g["progress"] == 0.2 and g["status"] == "active"
+    # B) 显式 target="" → 真正清空
+    learner.upsert_goal(USER, goal_id, cid, name="SQL 课", target="")
+    assert learner.repo.get_goal(USER, goal_id)["target"] == ""
+    # C) 显式新值 → 更新
+    learner.upsert_goal(USER, goal_id, cid, name="SQL 课", target="新的目标")
+    assert learner.repo.get_goal(USER, goal_id)["target"] == "新的目标"
+
+
+def test_generate_plan_goal_edit_stale_race(learner, monkeypatch):
+    """P1-3：Generate Plan pending 期间用户编辑 Goal → 旧请求 abort，
+    绝不把旧 goal_text 写回覆盖新 goal（deterministic：Event 阻塞 fake workflow）。"""
+    import threading
+
+    from edu_agent.application import study_plan_service as sp
+
+    course = _make_course(learner, topic="SQL 课")  # goal="两周完成分析目标"
+    cid = course["course_id"]
+    goal_id = course_service.get_course(USER, cid, learner)["goal"]["goal_id"]
+
+    entered, release = threading.Event(), threading.Event()
+    orig = sp.run_study_plan_workflow
+
+    def blocked_workflow(student_input, plan_context="", knowledge_context="无"):
+        entered.set()
+        release.wait(10)
+        return orig(student_input, plan_context=plan_context, knowledge_context=knowledge_context)
+
+    monkeypatch.setattr(sp, "run_study_plan_workflow", blocked_workflow)
+
+    result: dict = {}
+
+    def do_generate():
+        try:
+            sp.generate_plan(USER, cid, goal="两周完成分析目标",
+                             duration_days=14, daily_minutes=60, learner=learner)
+            result["r"] = "ok"
+        except Exception as exc:  # noqa: BLE001
+            result["r"] = (type(exc).__name__, str(exc))
+
+    t = threading.Thread(target=do_generate)
+    t.start()
+    assert entered.wait(5), "workflow 未进入阻塞"
+    # workflow 期间：用户编辑 goal → 新目标（已落库）
+    course_service.update_course(USER, cid, learner=learner, fields={"goal"}, goal="新目标 123")
+    assert course_service.get_course(USER, cid, learner)["current_goal"] == "新目标 123"
+    release.set()
+    t.join(10)
+    # 旧 generate 必须 abort（stale），新 goal 不被覆盖；goal_id 不变
+    assert result["r"][0] == "ValueError", result
+    g = learner.repo.get_goal(USER, goal_id)
+    assert g["target"] == "新目标 123"
+    assert course_service.get_course(USER, cid, learner)["current_goal"] == "新目标 123"

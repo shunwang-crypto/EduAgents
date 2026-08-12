@@ -392,3 +392,103 @@ def test_ready_gate_only_ready_sources_visible(client, kb, monkeypatch):
     assert all(c.source_id == ready_sid for c in chunks)
     assert not any(c.source_id == r_fail.json()["source_id"] for c in chunks)
     assert not any(c.source_id == "SRC-ORPHAN" for c in chunks)
+
+
+# ================================================================ Final Freeze: import generation race + FK
+def test_source_generation_race_old_failure_keeps_new_ready(client, kb, monkeypatch):
+    """P1-4：同 source 并发 import——旧 request 失败不得覆盖更新一代的成功（import_token guard）。"""
+    import threading
+
+    course = client.post("/api/courses", json={"topic": "Race 课"},
+                         headers={"X-User-Id": "A"}).json()
+    cid = course["course_id"]
+    url = "https://example.com/race"
+
+    a_started, release_a = threading.Event(), threading.Event()
+    state = {"calls": 0}
+
+    def extract(url_, max_chars=1_500_000):
+        state["calls"] += 1
+        if state["calls"] == 1:
+            a_started.set()
+            release_a.wait()
+            raise RuntimeError("A 失败")
+        return "# Doc\n\nB GOOD 内容"
+
+    monkeypatch.setattr(course_source_service, "extract_web", extract)
+
+    out = {}
+
+    def attempt():
+        out["r"] = course_source_service.add_source("A", cid, url)
+
+    t = threading.Thread(target=attempt)
+    t.start()
+    assert a_started.wait(5), "A 未阻塞"
+    # 新代 B 成功（经 API）
+    r_b = client.post(f"/api/courses/{cid}/sources", json={"url": url},
+                      headers={"X-User-Id": "A"})
+    assert r_b.json()["status"] == "ready"
+    release_a.set()
+    t.join(5)
+    # 旧 A 失败不得覆盖 B：仍 ready + chunk_count=B + chunks=B 内容
+    meta = client.get(f"/api/courses/{cid}/sources", headers={"X-User-Id": "A"}).json()[0]
+    assert meta["status"] == "ready" and meta["chunk_count"] == 1, meta
+    from edu_agent.tools import kb_store
+
+    chunks = kb_store.load_chunks("A", cid)
+    assert len(chunks) == 1 and "B GOOD" in chunks[0].text
+
+
+def test_course_sources_fk_cascade_and_no_revive(client, kb, monkeypatch):
+    """P1-5：删课程 → course_sources metadata 级联清除（DB FK 防线）；
+    重建同 topic 课程 → 旧 source 不复活。"""
+    _mock_web(monkeypatch)
+    course = client.post("/api/courses", json={"topic": "FK 课"},
+                         headers={"X-User-Id": "A"}).json()
+    cid = course["course_id"]
+    r = client.post(f"/api/courses/{cid}/sources", json={"url": "https://example.com/fk"},
+                    headers={"X-User-Id": "A"})
+    assert r.json()["status"] == "ready"
+    client.delete(f"/api/courses/{cid}", headers={"X-User-Id": "A"})
+    # course 不存在 → sources 404（ownership）；FK CASCADE 已清 metadata
+    assert client.get(f"/api/courses/{cid}/sources",
+                      headers={"X-User-Id": "A"}).status_code == 404
+    # 重建同 topic → 旧 source 不复活
+    c2 = client.post("/api/courses", json={"topic": "FK 课"}, headers={"X-User-Id": "A"}).json()
+    assert client.get(f"/api/courses/{c2['course_id']}/sources",
+                      headers={"X-User-Id": "A"}).json() == []
+
+
+def test_deleted_source_import_failure_returns_discarded(client, kb, monkeypatch):
+    """P2：import 失败但 source 已被删除 → 返回 discarded dict（绝不 return None）。"""
+    import threading
+
+    course = client.post("/api/courses", json={"topic": "Del 课"},
+                         headers={"X-User-Id": "A"}).json()
+    cid = course["course_id"]
+    url = "https://example.com/del3"
+
+    started, release = threading.Event(), threading.Event()
+
+    def extract(url_, max_chars=1_500_000):
+        started.set()
+        release.wait()
+        raise RuntimeError("延迟失败")
+
+    monkeypatch.setattr(course_source_service, "extract_web", extract)
+    out = {}
+
+    def attempt():
+        out["r"] = course_source_service.add_source("A", cid, url)
+
+    t = threading.Thread(target=attempt)
+    t.start()
+    assert started.wait(5)
+    # import 期间用户删除 source
+    row = client.get(f"/api/courses/{cid}/sources", headers={"X-User-Id": "A"}).json()[0]
+    client.delete(f"/api/courses/{cid}/sources/{row['source_id']}",
+                  headers={"X-User-Id": "A"})
+    release.set()
+    t.join(5)
+    assert out["r"]["status"] == "discarded" and out["r"].get("source_deleted"), out

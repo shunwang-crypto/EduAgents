@@ -169,18 +169,23 @@ def update_course(
                 goal_text = (goal or "").strip()
                 active = learner.resolve_active_goal(user_id, course_id)
                 goal_id = active.goal_id if active else resolve_goal_id(user_id, course_id)
+                # 必须用 repo 直读 existing goal row 判断旧生命周期：resolve_active_goal()
+                # 不会返回 completed goal，无法据此判断「completed → 新目标」。
+                existing_goal = learner.repo.get_goal(user_id, goal_id)
+                old_status = (existing_goal or {}).get("status")
+                old_target = (existing_goal or {}).get("target") or ""
+                completed_reactivate = (
+                    old_status == "completed"
+                    and goal_text != ""
+                    and goal_text != old_target
+                )
                 goal_name = patch.get("display_name") or row.get("display_name") or course_id
                 # goal.py 内部处理三态 + completed→新目标 reactivate（active/0.0/空 kcs）
                 learner.upsert_goal(user_id, goal_id, course_id, name=goal_name, target=goal_text)
                 learner.set_current_goal(user_id, course_id, goal_id)
-                # completed goal + 明确新非空目标 → 课程进度归零（新生命周期从 0 开始）；
+                # completed lifecycle → 明确新非空目标：course progress 一并归零；
                 # active goal 普通文字编辑（status=active）不抹进度。
-                if (
-                    active is not None
-                    and getattr(active, "status", "") == "completed"
-                    and goal_text != ""
-                    and goal_text != getattr(active, "target", "")
-                ):
+                if completed_reactivate:
                     learner.update_course_progress(user_id, course_id, 0.0)
             if patch:
                 learner.repo.upsert_user_course({**row, **patch, "updated_at": _now_iso()})

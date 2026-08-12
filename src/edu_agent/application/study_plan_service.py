@@ -84,6 +84,13 @@ def generate_plan(
                             target=goal_text)
         learner.set_current_goal(user_id, course_id, goal_id)
 
+    # 捕获 request 开始的 goal 版本信号（仅当课程已有 active goal；首次创建无旧版本可比较）。
+    # workflow 期间用户可能编辑/清空/替换 goal——用 updated_at+target 作为 version signal。
+    request_goal_sig = None
+    if active_goal is not None:
+        _g = learner.repo.get_goal(user_id, goal_id)
+        request_goal_sig = ((_g or {}).get("updated_at"), (_g or {}).get("target"))
+
     # 首次提供背景 → USER_EXPLICIT_PROFILE_FACT（画像闭环）
     if optional_background and optional_background.strip():
         learner.set_profile_fact(user_id, f"background:{course_id}", optional_background.strip(),
@@ -110,7 +117,7 @@ def generate_plan(
         from edu_agent.application.course_source_service import load_ready_course_chunks
         from edu_agent.tools.course_kb import CourseKnowledgeBase
 
-        src_chunks = load_ready_course_chunks(user_id, course_id)
+        src_chunks = load_ready_course_chunks(user_id, course_id, learner=learner)
         if src_chunks:
             src_kb = CourseKnowledgeBase.from_chunks(
                 src_chunks, user_id=user_id, course_id=course_id
@@ -137,6 +144,22 @@ def generate_plan(
     if fresh_course_row is None:
         raise KeyError(f"course not found (deleted during plan generation): {course_id}")
     fresh_name = fresh_course_row.get("display_name", course_id)
+
+    # fresh goal stale protection：workflow 期间用户可能编辑/清空/替换 goal。
+    # 若版本信号变化（target/updated_at 变、current_goal_id 换、goal 被删/completed），
+    # 这个 Plan 已不属于当前用户意图 → abort stale generation，绝不把旧 goal_text 写回。
+    if request_goal_sig is not None:
+        fresh_active = learner.resolve_active_goal(user_id, course_id)
+        fg = learner.repo.get_goal(user_id, goal_id)
+        fresh_sig = ((fg or {}).get("updated_at"), (fg or {}).get("target")) if fg else None
+        if (
+            fresh_active is None
+            or fresh_active.goal_id != goal_id
+            or fg is None
+            or fresh_sig != request_goal_sig
+        ):
+            logger.warning("[plan] goal changed during generation; discard stale result: course=%s", course_id)
+            raise ValueError("课程目标已变更，请重新生成学习计划")
 
     # 持久化 plan + steps（KnowledgeMap nodes → plan_steps；node.id 即 kc_id；
     # step_id 与 kc_id 分离：step_id=PLANSTEP-{uuid}，kc_id=KnowledgeNode.id）
@@ -453,7 +476,7 @@ def _build_lesson_context(
             from edu_agent.application.course_source_service import load_ready_course_chunks
             from edu_agent.tools.course_kb import CourseKnowledgeBase
 
-            chunks = load_ready_course_chunks(user_id, course_id)
+            chunks = load_ready_course_chunks(user_id, course_id, learner=learner)
             if chunks:
                 kb = CourseKnowledgeBase.from_chunks(chunks, user_id=user_id, course_id=course_id)
                 hits = kb.search(

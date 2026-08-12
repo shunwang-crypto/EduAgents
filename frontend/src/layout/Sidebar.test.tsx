@@ -96,7 +96,8 @@ describe("Sidebar", () => {
     expect(screen.getByText("Python")).toBeTruthy();
     expect(screen.getByText("Java")).toBeTruthy();
     expect(screen.getByText("未分类")).toBeTruthy();
-    expect(screen.getByText("1 门课程")).toBeTruthy();
+    // Python/Java/未分类 各 1 门 → 3 个计数行
+    expect(screen.getAllByText("1 门课程").length).toBe(3);
     // 分类列表不直接显示课程
     expect(screen.queryByText("Python 数据分析")).toBeNull();
 
@@ -144,9 +145,14 @@ describe("Sidebar", () => {
         />
       </MemoryRouter>
     );
-    await openPythonCategory();
-    const pyBtn = screen.getByText("Python 数据分析").closest("button");
-    expect(pyBtn?.getAttribute("aria-current")).toBe("page");
+    // 初始在 workspace 视图（route 强制），无「课程」入口；
+    // 等 workspaceCourse 加载完成（标题出现），返回按钮文案变为所属分类名「Python」
+    await waitFor(() => expect(screen.getByText("Python 数据分析")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: /Python/ }));
+    await waitFor(() => {
+      const pyBtn = screen.getByText("Python 数据分析").closest("button");
+      expect(pyBtn?.getAttribute("aria-current")).toBe("page");
+    });
     // Java 分类里没有 PY 课程
     expect(screen.queryByText("Java OOP")).toBeNull();
   });

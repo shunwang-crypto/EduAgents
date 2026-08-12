@@ -261,6 +261,10 @@ CREATE TABLE IF NOT EXISTS plan_steps (
 );
 
 -- 课程资料（Course Sources：用户导入的 Web / GitHub 学习资料；user-scoped）
+-- import_token：每次 import attempt 的 generation 身份（同 URL 多代请求并发时区分新旧，
+--   旧请求 success/failure 不得覆盖新代）。
+-- FK (user_id, course_id) → user_courses ON DELETE CASCADE：DB 最终防线——
+--   删除 Course 时 course_sources metadata 级联清除，杜绝 orphan metadata。
 CREATE TABLE IF NOT EXISTS course_sources (
     source_id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
@@ -269,13 +273,17 @@ CREATE TABLE IF NOT EXISTS course_sources (
     source_url TEXT NOT NULL,
     title TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'importing',
+    import_token TEXT NOT NULL DEFAULT '',
     chunk_count INTEGER NOT NULL DEFAULT 0,
     error_message TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     UNIQUE (user_id, course_id, source_url),
     CHECK (source_type IN ('web', 'github')),
-    CHECK (status IN ('importing', 'ready', 'failed'))
+    CHECK (status IN ('importing', 'ready', 'failed')),
+    FOREIGN KEY (user_id, course_id)
+        REFERENCES user_courses(user_id, course_id)
+        ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_course_sources_user_course
     ON course_sources(user_id, course_id, updated_at);

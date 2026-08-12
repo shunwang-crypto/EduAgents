@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -124,27 +125,35 @@ def add_source(
     source_type = detect_source_type(raw_url)
 
     # 3) 建/复用 source_id（同 URL 复用，支持 failed 重试）
+    #    import_token = 本次 import attempt 的 generation 身份：同 source 多代请求
+    #    （并发 import/retry）用它区分新旧，旧请求 success/failure 都不得覆盖新代。
     existing = learner.repo.get_course_source_by_url(user_id, course_id, raw_url)
     source_id = existing["source_id"] if existing else f"SRC-{uuid.uuid4().hex[:12]}"
     display_title = _derive_title(raw_url, source_type, title)
+    my_token = uuid.uuid4().hex
 
     now = _now_iso()
     repo = learner.repo
-    repo.upsert_course_source(
-        {
-            "source_id": source_id,
-            "user_id": user_id,
-            "course_id": course_id,
-            "source_type": source_type,
-            "source_url": raw_url,
-            "title": display_title,
-            "status": "importing",
-            "chunk_count": existing.get("chunk_count", 0) if existing else 0,
-            "error_message": "",
-            "created_at": existing.get("created_at", now) if existing else now,
-            "updated_at": now,
-        }
-    )
+    try:
+        repo.upsert_course_source(
+            {
+                "source_id": source_id,
+                "user_id": user_id,
+                "course_id": course_id,
+                "source_type": source_type,
+                "source_url": raw_url,
+                "title": display_title,
+                "status": "importing",
+                "import_token": my_token,
+                "chunk_count": existing.get("chunk_count", 0) if existing else 0,
+                "error_message": "",
+                "created_at": existing.get("created_at", now) if existing else now,
+                "updated_at": now,
+            }
+        )
+    except sqlite3.IntegrityError as exc:
+        # FK race：course 在 validate 后被并发删除（FK CASCADE 防线）→ 404 语义
+        raise KeyError(f"course not found: {course_id}") from exc
 
     # 4) 事务外：外部导入（可能很慢 / 可能失败）
     try:
@@ -154,42 +163,73 @@ def add_source(
             chunks = _import_web(user_id, course_id, source_id, raw_url, display_title)
     except Exception as exc:  # noqa: BLE001 - 导入失败：标记 failed，不泄露内部细节
         logger.warning("[source] import failed: user=%s course=%s url=%s", user_id, course_id, raw_url)
-        # 尽力清理物理 chunks（即使 JSON 清理再失败，ready gate 仍保证 failed source 永不进 RAG）
-        try:
-            kb_store.delete_source_chunks(user_id, course_id, source_id)
-        except Exception:  # noqa: BLE001
-            logger.warning("[source] chunk cleanup failed: %s", source_id, exc_info=True)
-        _mark_failed(repo, user_id, course_id, source_id, _readable_error(exc))
-        return repo.get_course_source(user_id, course_id, source_id)
+        # generation guard：仅当 metadata.import_token 仍是本 request 的 token 才标记 failed
+        # （否则是旧请求失败，不能覆盖更新一代的成功导入）
+        _discard_or_fail(repo, user_id, course_id, source_id, my_token, exc)
+        cur = repo.get_course_source(user_id, course_id, source_id)
+        if cur is None:
+            # source 已被用户删除（或 FK CASCADE）→ 返回明确的 discarded result，绝不 return None
+            return {"source_id": source_id, "status": "discarded", "source_deleted": True}
+        return cur
 
-    # 5) 重验证：导入期间课程/资料未被删除 → 否则丢弃陈旧结果
+    # 5) 重验证：导入期间课程/资料未被删除 + generation guard（旧代请求不得覆盖新代）
     if repo.get_user_course(user_id, course_id) is None:
         logger.warning("[source] course deleted during import; discard: %s", source_id)
-        kb_store.delete_source_chunks(user_id, course_id, source_id)
+        _safe_delete_chunks(user_id, course_id, source_id)
         return {"source_id": source_id, "status": "discarded", "course_deleted": True}
-    if repo.get_course_source(user_id, course_id, source_id) is None:
-        logger.warning("[source] source deleted during import; discard: %s", source_id)
-        kb_store.delete_source_chunks(user_id, course_id, source_id)
-        return {"source_id": source_id, "status": "discarded", "source_deleted": True}
+    cur = repo.get_course_source(user_id, course_id, source_id)
+    if cur is None or cur.get("import_token") != my_token:
+        # source 已删 / 已被更新一代 import 接管 → 旧代请求 discard，不改 status / 不删 chunks
+        logger.warning("[source] stale import discarded: source=%s token=%s", source_id, my_token)
+        return {"source_id": source_id, "status": "discarded",
+                "source_deleted": cur is None, "stale": True}
 
     # 6) 落库 chunks（replace 语义，杜绝重复）+ 标记 ready
-    kb_store.replace_source_chunks(user_id, course_id, source_id, chunks)
-    repo.upsert_course_source(
-        {
-            "source_id": source_id,
-            "user_id": user_id,
-            "course_id": course_id,
-            "source_type": source_type,
-            "source_url": raw_url,
-            "title": display_title,
-            "status": "ready",
-            "chunk_count": len(chunks),
-            "error_message": "",
-            "created_at": existing.get("created_at", now) if existing else now,
-            "updated_at": _now_iso(),
-        }
-    )
+    try:
+        kb_store.replace_source_chunks(user_id, course_id, source_id, chunks)
+        repo.upsert_course_source(
+            {
+                "source_id": source_id,
+                "user_id": user_id,
+                "course_id": course_id,
+                "source_type": source_type,
+                "source_url": raw_url,
+                "title": display_title,
+                "status": "ready",
+                "import_token": my_token,
+                "chunk_count": len(chunks),
+                "error_message": "",
+                "created_at": existing.get("created_at", now) if existing else now,
+                "updated_at": _now_iso(),
+            }
+        )
+    except sqlite3.IntegrityError as exc:
+        # FK race：finalize 时 course 已被并发删除（CASCADE 防线）→ 清理本 request chunks + 404 语义
+        logger.warning("[source] course deleted before finalize; discard chunks: %s", source_id)
+        _safe_delete_chunks(user_id, course_id, source_id)
+        raise KeyError(f"course not found: {course_id}") from exc
     return repo.get_course_source(user_id, course_id, source_id)
+
+
+def _safe_delete_chunks(user_id: str, course_id: str, source_id: str) -> None:
+    """尽力删除物理 chunks（失败只记日志，ready gate 是最终防线）。"""
+    try:
+        kb_store.delete_source_chunks(user_id, course_id, source_id)
+    except Exception:  # noqa: BLE001
+        logger.warning("[source] chunk cleanup failed: %s", source_id, exc_info=True)
+
+
+def _discard_or_fail(repo, user_id: str, course_id: str, source_id: str,
+                     my_token: str, exc: Exception) -> None:
+    """导入失败收尾：仅当仍是本 request 的代（import_token 匹配）才标 failed + 清 chunks。"""
+    try:
+        cur = repo.get_course_source(user_id, course_id, source_id)
+    except Exception:  # noqa: BLE001
+        return
+    if cur is None or cur.get("import_token") != my_token:
+        return  # 旧代失败 / source 已删：不覆盖新代，不删新 chunks
+    _safe_delete_chunks(user_id, course_id, source_id)
+    _mark_failed(repo, user_id, course_id, source_id, _readable_error(exc))
 
 
 def _import_github(

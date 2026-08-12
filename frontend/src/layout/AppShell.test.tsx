@@ -8,6 +8,7 @@ const { mockApi } = vi.hoisted(() => ({
   mockApi: {
     listCourses: vi.fn().mockResolvedValue([]),
     listCourseCategories: vi.fn().mockResolvedValue([]),
+    listConversations: vi.fn().mockResolvedValue([]),
     createCourseCategory: vi.fn(),
     renameCourseCategory: vi.fn(),
     deleteCourseCategory: vi.fn(),

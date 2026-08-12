@@ -131,11 +131,45 @@ def test_rag_loads_persisted_chunks_and_course_isolation(learner, tmp_path, monk
     kb_py.load_markdown("SRC-PY", "web", "https://pandas.pydata.org", "pandas 入门",
                         "# DataFrame\n\nDataFrame 是 pandas 的核心数据结构，支持 loc/iloc 索引。")
     kb_store.replace_source_chunks("A", py["course_id"], "SRC-PY", kb_py.chunks)
+    # ready gate（P1-6）：RAG 只认 metadata 存在 + status=ready 的 source，仅写 JSON chunks 不可见
+    now = "2026-08-12T00:00:00Z"
+    learner.repo.upsert_course_source(
+        {
+            "source_id": "SRC-PY",
+            "user_id": "A",
+            "course_id": py["course_id"],
+            "source_type": "web",
+            "source_url": "https://pandas.pydata.org",
+            "title": "pandas 入门",
+            "status": "ready",
+            "import_token": "T-PY",
+            "chunk_count": 1,
+            "error_message": "",
+            "created_at": now,
+            "updated_at": now,
+        }
+    )
 
     kb_java = CourseKnowledgeBase(user_id="A", course_id=java["course_id"])
     kb_java.load_markdown("SRC-JAVA", "web", "https://docs.oracle.com", "Java OOP",
                           "# 多态\n\npolymorphism 是面向对象的核心特性。")
     kb_store.replace_source_chunks("A", java["course_id"], "SRC-JAVA", kb_java.chunks)
+    learner.repo.upsert_course_source(
+        {
+            "source_id": "SRC-JAVA",
+            "user_id": "A",
+            "course_id": java["course_id"],
+            "source_type": "web",
+            "source_url": "https://docs.oracle.com",
+            "title": "Java OOP",
+            "status": "ready",
+            "import_token": "T-JAVA",
+            "chunk_count": 1,
+            "error_message": "",
+            "created_at": now,
+            "updated_at": now,
+        }
+    )
 
     svc = ChatService(learner=learner)
     hits_py = svc._rag("A", py["course_id"], "DataFrame 怎么用", top_k=3)

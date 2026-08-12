@@ -40,6 +40,8 @@ export function CourseSourcesDrawer() {
   const courseIdRef = useRef<string | null>(null);
   const apiRef = useRef(api);
   apiRef.current = api;
+  // 同一 course 内多次 load 的 latest-wins：course scope 无法区分同 course 的先后请求
+  const loadSeqRef = useRef(0);
 
   /** 当前 scope 是否有效：请求 seq 未过期 + 仍是同一 course + 仍是同一 api(user)。 */
   const isScopeCurrent = (seq: number, cid: string | null) =>
@@ -66,18 +68,22 @@ export function CourseSourcesDrawer() {
   };
 
   const loadSources = (cid: string) => {
-    const seq = scopeSeqRef.current;
+    const scopeSeq = scopeSeqRef.current;
+    const seq = ++loadSeqRef.current;
     setLoading(true);
     setError("");
     api
       .listCourseSources(cid)
       .then((list) => {
-        if (!isScopeCurrent(seq, cid)) return;
+        // 同 course 已有更新的 load 请求 → 旧响应作废（latest-wins）
+        if (seq !== loadSeqRef.current) return;
+        if (!isScopeCurrent(scopeSeq, cid)) return;
         setSources(list);
         setLoading(false);
       })
       .catch((e) => {
-        if (!isScopeCurrent(seq, cid)) return;
+        if (seq !== loadSeqRef.current) return;
+        if (!isScopeCurrent(scopeSeq, cid)) return;
         setError(e instanceof Error ? e.message : "加载失败");
         setLoading(false);
       });

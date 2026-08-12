@@ -325,15 +325,23 @@ class LearnerModelService:
                                    "payload": {"memory_id": memory_id}})
         return result
 
-    def upsert_goal(self, user_id: str, goal_id: str, course_id: str, name: str,
-                    target: str = "", priority: Optional[int] = None,
-                    target_kcs: Optional[List[str]] = None) -> Dict[str, Any]:
+    def upsert_goal(self, user_id: str, goal_id: str, course_id: str, name: str = "",
+                    target: Optional[str] = None, priority: Optional[int] = None,
+                    target_kcs: Optional[List[str]] = None,
+                    status: Optional[str] = None,
+                    progress: Optional[float] = None) -> Dict[str, Any]:
+        """Goal 创建/更新 facade，完整 forward 给 goal_updater（三态语义一致）。
+
+        target：None=本次不修改 target；""=用户显式清空；其他=设置/更新。
+        status / progress：None=不修改；显式传值才覆盖（如 regenerate 重置 active/0.0）。
+        """
         if not goal_id:
             goal_id = f"GOAL-{user_id}-{course_id}"
         if course_id:
             self.ensure_course(user_id, course_id)
         result = goal_updater.upsert_goal(self._repo, user_id, goal_id, course_id,
-                                          name, target, priority, target_kcs)
+                                          name, target, priority, target_kcs,
+                                          status=status, progress=progress)
         if result.get("operation") != "NONE":
             from edu_agent.learner_model.change_log import log_change
 

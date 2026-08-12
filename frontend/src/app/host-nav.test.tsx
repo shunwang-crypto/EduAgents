@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, beforeAll } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { LearningApp } from "./router";
 
@@ -63,6 +63,7 @@ const { mockApi } = vi.hoisted(() => ({
   mockApi: {
     listCourses: vi.fn().mockResolvedValue([]),
     listCourseCategories: vi.fn().mockResolvedValue([]),
+    listConversations: vi.fn().mockResolvedValue([]),
     createCourseCategory: vi.fn(),
     renameCourseCategory: vi.fn(),
     deleteCourseCategory: vi.fn(),
@@ -128,7 +129,11 @@ describe("host-relative navigation (CourseHeader tabs + Plan Step)", () => {
   it("CourseHeader 学习计划 tab from course chat → /host/learning/courses/PY/plan (host-relative)", async () => {
     renderHost("/host/learning/courses/PY/chat");
     await waitFor(() => expect(screen.getByText("对话")).toBeTruthy());
-    fireEvent.click(screen.getByText("学习计划"));
+    fireEvent.click(
+      within(screen.getByRole("navigation", { name: "视图切换" })).getByRole("button", {
+        name: "学习计划",
+      })
+    );
     await waitFor(() => expect(screen.getByText("阶段 1")).toBeTruthy());
   });
 

@@ -295,6 +295,8 @@ describe("StudyPlanPage", () => {
       display_name: "Python 数据分析",
       duration_days: 21,
       daily_minutes: 45,
+      // 有目标（无目标会禁用「生成学习计划」→ 本用例验证的是首生成沿用 21/45）
+      current_goal: "掌握 Pandas、NumPy 和数据分析流程",
     });
     (mockApi.getPlan as ReturnType<typeof vi.fn>).mockResolvedValueOnce(null);
     renderPage();
