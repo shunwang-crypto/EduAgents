@@ -440,6 +440,82 @@ def test_source_generation_race_old_failure_keeps_new_ready(client, kb, monkeypa
     assert len(chunks) == 1 and "B GOOD" in chunks[0].text
 
 
+def test_source_failure_cas_is_serialized_before_new_claim(client, kb, monkeypatch):
+    """失败收尾与下一代 claim 串行化，旧失败不得使用新代 token。"""
+    import threading
+    import time
+
+    course = client.post("/api/courses", json={"topic": "Failure CAS 课"},
+                         headers={"X-User-Id": "A"}).json()
+    cid = course["course_id"]
+    url = "https://example.com/failure-cas"
+    repo = LearnerModelService().repo
+    now = course_source_service._now_iso()
+    claimed_a = repo.claim_course_source({
+        "source_id": "SRC-FAIL-CAS", "user_id": "A", "course_id": cid,
+        "source_type": "web", "source_url": url, "title": "A",
+        "import_token": "TOKEN-A", "chunk_count": 0,
+        "created_at": now, "updated_at": now,
+    })
+    assert claimed_a and claimed_a["import_token"] == "TOKEN-A"
+
+    entered_failed_cas = threading.Event()
+    release_failed_cas = threading.Event()
+    original_finalize = repo.finalize_course_source_if_token
+
+    def paused_finalize(source):
+        if source.get("status") == "failed" and source.get("import_token") == "TOKEN-A":
+            entered_failed_cas.set()
+            assert release_failed_cas.wait(5)
+        return original_finalize(source)
+
+    monkeypatch.setattr(repo, "finalize_course_source_if_token", paused_finalize)
+    old_done = threading.Event()
+
+    def old_failure():
+        course_source_service._discard_or_fail(
+            repo, "A", cid, "SRC-FAIL-CAS", "TOKEN-A", RuntimeError("old failure")
+        )
+        old_done.set()
+
+    old_thread = threading.Thread(target=old_failure)
+    old_thread.start()
+    assert entered_failed_cas.wait(5)
+
+    new_result = {}
+    new_done = threading.Event()
+
+    from edu_agent.tools.course_kb import KbChunk
+    monkeypatch.setattr(
+        course_source_service,
+        "_import_web",
+        lambda user_id, course_id, source_id, source_url, title: [
+            KbChunk(user_id=user_id, course_id=course_id, source_id=source_id,
+                    source_type="web", source_url=source_url, doc_title=title,
+                    heading_path="", text="B content")
+        ],
+    )
+
+    def new_claim():
+        new_result["row"] = course_source_service.add_source("A", cid, url, title="B")
+        new_done.set()
+
+    new_thread = threading.Thread(target=new_claim)
+    new_thread.start()
+    time.sleep(0.05)
+    assert not new_done.is_set(), "new claim must wait for old failure CAS lock"
+
+    release_failed_cas.set()
+    old_thread.join(5)
+    new_thread.join(5)
+    assert old_done.is_set() and new_done.is_set()
+    assert new_result["row"]["source_id"] == "SRC-FAIL-CAS"
+    assert new_result["row"]["status"] == "ready"
+
+    final = repo.get_course_source("A", cid, "SRC-FAIL-CAS")
+    assert final["status"] == "ready"
+
+
 def test_course_sources_fk_cascade_and_no_revive(client, kb, monkeypatch):
     """P1-5：删课程 → course_sources metadata 级联清除（DB FK 防线）；
     重建同 topic 课程 → 旧 source 不复活。"""

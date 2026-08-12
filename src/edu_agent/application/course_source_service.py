@@ -137,12 +137,13 @@ def add_source(
 
     now = _now_iso()
     repo = learner.repo
-    claimed = repo.claim_course_source(
-        {"source_id": source_id, "user_id": user_id, "course_id": course_id,
-         "source_type": source_type, "source_url": raw_url, "title": display_title,
-         "import_token": my_token, "chunk_count": existing.get("chunk_count", 0) if existing else 0,
-         "created_at": existing.get("created_at", now) if existing else now, "updated_at": now}
-    )
+    with _SOURCE_FINALIZE_LOCK:
+        claimed = repo.claim_course_source(
+            {"source_id": source_id, "user_id": user_id, "course_id": course_id,
+             "source_type": source_type, "source_url": raw_url, "title": display_title,
+             "import_token": my_token, "chunk_count": existing.get("chunk_count", 0) if existing else 0,
+             "created_at": existing.get("created_at", now) if existing else now, "updated_at": now}
+        )
     if claimed is None:
         raise KeyError(f"course not found: {course_id}")
     source_id = claimed["source_id"]
@@ -219,8 +220,13 @@ def _discard_or_fail(repo, user_id: str, course_id: str, source_id: str,
             cur = repo.get_course_source(user_id, course_id, source_id)
             if cur is None or cur.get("import_token") != my_token:
                 return
-            _safe_delete_chunks(user_id, course_id, source_id)
-            _mark_failed(repo, user_id, course_id, source_id, _readable_error(exc))
+            ok = repo.finalize_course_source_if_token(
+                {"user_id": user_id, "course_id": course_id, "source_id": source_id,
+                 "import_token": my_token, "status": "failed", "chunk_count": 0,
+                 "error_message": _readable_error(exc), "updated_at": _now_iso()}
+            )
+            if ok:
+                _safe_delete_chunks(user_id, course_id, source_id)
     except Exception:  # noqa: BLE001
         logger.warning("[source] failure finalize failed: %s", source_id, exc_info=True)
 
@@ -246,16 +252,6 @@ def _import_web(
 ) -> List[Any]:
     text = extract_web(url)
     return _build_chunks(user_id, course_id, source_id, "web", url, title, text)
-
-
-def _mark_failed(repo, user_id: str, course_id: str, source_id: str, message: str) -> None:
-    row = repo.get_course_source(user_id, course_id, source_id)
-    if row is None:
-        return
-    repo.finalize_course_source_if_token(
-        {**row, "status": "failed", "chunk_count": 0,
-         "error_message": message[:200], "updated_at": _now_iso()}
-    )
 
 
 def _readable_error(exc: Exception) -> str:
