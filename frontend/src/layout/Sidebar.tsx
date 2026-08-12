@@ -5,7 +5,6 @@ import {
   BookOpen,
   GraduationCap,
   Library,
-  MessageSquare,
   MoreHorizontal,
   PanelLeftClose,
   Plus,
@@ -160,6 +159,8 @@ export function Sidebar({
   const [renaming, setRenaming] = useState<Course | null>(null);
   const [deleting, setDeleting] = useState<Course | null>(null);
   const [showCreate, setShowCreate] = useState(false);
+  // Course List 展开全部课程
+  const [showAllCourses, setShowAllCourses] = useState(false);
 
   // 三视图：course 路由 → workspace；否则保留 courseList 手动态，否则 root
   const [view, setView] = useState<SidebarView>({ kind: "root" });
@@ -204,7 +205,8 @@ export function Sidebar({
       })
       .catch((e) => {
         if (seq !== recentSeq.current) return;
-        setRecentError(e instanceof Error ? e.message : "加载失败");
+        console.error("Failed to load conversations", e);
+        setRecentError("无法加载最近对话");
         setRecentLoading(false);
       });
   };
@@ -304,32 +306,18 @@ export function Sidebar({
           >
             <Plus size={18} aria-hidden />
           </button>
-          <div className="course-scroll-area">
-            {!loading &&
-              !error &&
-              courses.map((course) => (
-                <button
-                  key={course.course_id}
-                  type="button"
-                  className={`course-avatar-collapsed ${courseActive(course.course_id) ? "active" : ""}`}
-                  onClick={() => {
-                    onClose();
-                    navigateToCourse(course.course_id);
-                  }}
-                  title={course.display_name}
-                  aria-label={course.display_name}
-                >
-                  {course.display_name?.trim().charAt(0) || "?"}
-                </button>
-              ))}
+          <div className="sidebar-rail-actions">
             <button
               type="button"
-              className="course-add-btn collapsed"
-              onClick={() => setShowCreate(true)}
-              title="新建课程"
-              aria-label="新建课程"
+              className="sidebar-rail-action"
+              onClick={() => {
+                setView({ kind: "courseList" });
+                onToggleCollapse();
+              }}
+              title="课程"
+              aria-label="课程"
             >
-              <Plus size={18} aria-hidden />
+              <Library size={18} aria-hidden />
             </button>
           </div>
         </aside>
@@ -378,32 +366,67 @@ export function Sidebar({
               <span>新对话</span>
             </button>
 
+            <button
+              type="button"
+              className="sidebar-nav-action"
+              onClick={() => {
+                setShowAllCourses(false);
+                setView({ kind: "courseList" });
+              }}
+            >
+              <Library size={18} aria-hidden />
+              <span>课程</span>
+            </button>
+
             <div className="sidebar-section recent-section">
               <div className="sidebar-section-header">
-                <span className="sidebar-section-title">
-                  <MessageSquare size={14} aria-hidden /> 最近对话
-                </span>
+                <span className="sidebar-section-title">最近</span>
               </div>
-              {recentLoading && <div className="sidebar-hint">加载中…</div>}
-              {recentError && !recentLoading && <div className="sidebar-error-inline">{recentError}</div>}
-              {!recentLoading && !recentError && recent.length === 0 && (
-                <div className="sidebar-hint">暂无对话</div>
+
+              {recentLoading && (
+                <div className="sidebar-hint">加载中…</div>
               )}
+
+              {recentError && !recentLoading && (
+                <div className="sidebar-error-inline">
+                  <span>无法加载最近对话</span>
+                  <button
+                    type="button"
+                    className="sidebar-retry-btn"
+                    onClick={() =>
+                      loadRecent(null, expandedRecent ? 20 : 6)
+                    }
+                  >
+                    重试
+                  </button>
+                </div>
+              )}
+
+              {!recentLoading &&
+                !recentError &&
+                recent.length === 0 && (
+                  <div className="sidebar-hint">
+                    暂无最近对话
+                  </div>
+                )}
+
               {recent.map((conv) => (
                 <button
                   key={conv.conversation_id}
                   type="button"
                   className="recent-item"
+                  title={conv.title}
                   onClick={() => {
                     onClose();
                     nav.openGeneralChat(conv.conversation_id);
                   }}
-                  title={conv.title}
                 >
-                  <MessageSquare size={14} aria-hidden />
-                  <span className="recent-title">{conv.title || "未命名对话"}</span>
+                  <span className="recent-title">
+                    {conv.title || "未命名对话"}
+                  </span>
                 </button>
               ))}
+
               {!recentLoading &&
                 !recentError &&
                 recent.length >= 6 &&
@@ -416,7 +439,8 @@ export function Sidebar({
                     更多
                   </button>
                 )}
-              {!recentLoading && !recentError && expandedRecent && (
+
+              {expandedRecent && (
                 <button
                   type="button"
                   className="sidebar-link-btn"
@@ -426,82 +450,46 @@ export function Sidebar({
                 </button>
               )}
             </div>
-
-            <div className="course-section-header">
-              <span className="course-section-title">我的课程</span>
-              <button
-                className="course-add-btn"
-                onClick={() => setShowCreate(true)}
-                title="新建课程"
-                aria-label="新建课程"
-              >
-                <Plus size={16} aria-hidden />
-              </button>
-            </div>
-            <div className="course-scroll-area">
-              {loading && <div className="sidebar-hint">加载中…</div>}
-              {error && !loading && <div className="sidebar-error-inline">{error}</div>}
-              {!loading &&
-                !error &&
-                courses.length === 0 && <div className="course-empty">还没有课程</div>}
-              {courses.slice(0, 5).map((course) => (
-                <CourseNavItem
-                  key={course.course_id}
-                  course={course}
-                  active={courseActive(course.course_id)}
-                  collapsed={false}
-                  onOpen={() => {
-                    setMenuOpenFor(null);
-                    onClose();
-                    navigateToCourse(course.course_id);
-                  }}
-                  onToggleMenu={() =>
-                    setMenuOpenFor((prev) => (prev === course.course_id ? null : course.course_id))
-                  }
-                  menuOpen={menuOpenFor === course.course_id}
-                  onRename={() => {
-                    setRenaming(course);
-                    setMenuOpenFor(null);
-                  }}
-                  onDelete={() => {
-                    setDeleting(course);
-                    setMenuOpenFor(null);
-                  }}
-                />
-              ))}
-              {!loading && !error && courses.length > 5 && (
-                <button
-                  type="button"
-                  className="sidebar-link-btn"
-                  onClick={() => setView({ kind: "courseList" })}
-                >
-                  查看全部课程（{courses.length}）
-                </button>
-              )}
-            </div>
           </>
         )}
 
-        {/* Course List：全部课程 */}
+        {/* Course List：默认显示 5 门 */}
         {view.kind === "courseList" && (
           <>
             <button
               type="button"
               className="sidebar-back-btn"
-              onClick={() => setView({ kind: "root" })}
+              onClick={() => {
+                setShowAllCourses(false);
+                setView({ kind: "root" });
+              }}
             >
-              <ArrowLeft size={16} aria-hidden /> 返回
+              <ArrowLeft size={16} aria-hidden />
+              <span>返回</span>
             </button>
-            <div className="course-section-header">
-              <span className="course-section-title">我的课程（{courses.length}）</span>
+
+            <button
+              type="button"
+              className="sidebar-nav-action"
+              onClick={() => setShowCreate(true)}
+            >
+              <Plus size={18} aria-hidden />
+              <span>新建课程</span>
+            </button>
+
+            <div className="sidebar-section-header">
+              <span className="sidebar-section-title">课程</span>
             </div>
+
             <div className="course-scroll-area">
               {loading && <div className="sidebar-hint">加载中…</div>}
-              {error && !loading && <div className="sidebar-error-inline">{error}</div>}
+              {error && !loading && (
+                <div className="sidebar-error-inline">无法加载课程</div>
+              )}
               {!loading &&
                 !error &&
                 courses.length === 0 && <div className="course-empty">还没有课程</div>}
-              {courses.map((course) => (
+              {(showAllCourses ? courses : courses.slice(0, 5)).map((course) => (
                 <CourseNavItem
                   key={course.course_id}
                   course={course}
@@ -526,6 +514,15 @@ export function Sidebar({
                   }}
                 />
               ))}
+              {courses.length > 5 && (
+                <button
+                  type="button"
+                  className="sidebar-link-btn"
+                  onClick={() => setShowAllCourses((v) => !v)}
+                >
+                  {showAllCourses ? "收起" : `查看全部课程（${courses.length}）`}
+                </button>
+              )}
             </div>
           </>
         )}
@@ -537,11 +534,12 @@ export function Sidebar({
               type="button"
               className="sidebar-back-btn"
               onClick={() => {
-                onClose();
-                nav.openGeneralChat();
+                setShowAllCourses(false);
+                setView({ kind: "courseList" });
               }}
             >
-              <ArrowLeft size={16} aria-hidden /> 返回
+              <ArrowLeft size={16} aria-hidden />
+              <span>所有课程</span>
             </button>
             <div className="workspace-course-title">{workspaceCourse?.display_name ?? "课程"}</div>
             <div className="workspace-actions">
@@ -579,9 +577,7 @@ export function Sidebar({
 
             <div className="sidebar-section recent-section">
               <div className="sidebar-section-header">
-                <span className="sidebar-section-title">
-                  <MessageSquare size={14} aria-hidden /> 最近对话
-                </span>
+                <span className="sidebar-section-title">最近</span>
               </div>
               {recentLoading && <div className="sidebar-hint">加载中…</div>}
               {recentError && !recentLoading && <div className="sidebar-error-inline">{recentError}</div>}
@@ -599,7 +595,6 @@ export function Sidebar({
                   }}
                   title={conv.title}
                 >
-                  <MessageSquare size={14} aria-hidden />
                   <span className="recent-title">{conv.title || "未命名对话"}</span>
                 </button>
               ))}

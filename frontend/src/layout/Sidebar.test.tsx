@@ -11,6 +11,14 @@ const { mockApi } = vi.hoisted(() => {
   ];
   const mockApi = {
     listCourses: vi.fn().mockResolvedValue(courses),
+    listConversations: vi.fn().mockResolvedValue([
+      {
+        conversation_id: "CONV-GEN-1",
+        course_id: null,
+        title: "多头注意力怎么理解",
+        updated_at: "2026-08-12T10:00:00Z",
+      },
+    ]),
     createConversation: vi.fn().mockResolvedValue({ conversation_id: "CONV-1" }),
     createCourse: vi.fn(),
     renameCourse: vi
@@ -47,6 +55,35 @@ function renderSidebar(props: Partial<React.ComponentProps<typeof Sidebar>> = {}
 describe("Sidebar", () => {
   beforeEach(() => vi.clearAllMocks());
 
+  it("root shows new chat, courses entry, and recent conversations", async () => {
+    renderSidebar();
+
+    await waitFor(() =>
+      expect(screen.getByText("多头注意力怎么理解")).toBeTruthy()
+    );
+
+    expect(screen.getByText("新对话")).toBeTruthy();
+    expect(screen.getByText("课程")).toBeTruthy();
+    expect(screen.getByText("最近")).toBeTruthy();
+
+    // Root 不应直接展示课程列表
+    expect(screen.queryByText("Python 数据分析")).toBeNull();
+  });
+
+  it("opens course list from the courses entry", async () => {
+    renderSidebar();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "课程" })
+    );
+
+    await waitFor(() =>
+      expect(screen.getByText("Python 数据分析")).toBeTruthy()
+    );
+
+    expect(screen.getByText("Java OOP")).toBeTruthy();
+  });
+
   it("active course via useLocation gets aria-current (no popstate listener)", async () => {
     render(
       <MemoryRouter initialEntries={["/courses/PY/chat"]}>
@@ -60,6 +97,8 @@ describe("Sidebar", () => {
         />
       </MemoryRouter>
     );
+    // 课程列表需先点「课程」进入（Root 不再直接展示课程）
+    fireEvent.click(screen.getByRole("button", { name: "课程" }));
     await waitFor(() => expect(screen.getByText("Python 数据分析")).toBeTruthy());
     const pyBtn = screen.getByText("Python 数据分析").closest("button");
     expect(pyBtn?.getAttribute("aria-current")).toBe("page");
@@ -67,39 +106,28 @@ describe("Sidebar", () => {
     expect(javaBtn?.getAttribute("aria-current")).toBeNull();
   });
 
-  it("collapsed header shows single logo control (no dual toggle)", async () => {
+  it("collapsed shows only top-level actions, not course avatars", async () => {
     renderSidebar({ collapsed: true });
-    await waitFor(() => expect(screen.getAllByText("P").length).toBeGreaterThan(0));
-    // 折叠态只有一个「展开侧边栏」Logo 按钮，没有收起按钮
-    expect(screen.getByRole("button", { name: "展开侧边栏" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "收起侧边栏" })).toBeNull();
-  });
 
-  it("expanded shows brand, 我的课程, and full course names", async () => {
-    renderSidebar();
-    await waitFor(() => expect(screen.getByText("EduAgents")).toBeTruthy());
-    expect(screen.getByText("我的课程")).toBeTruthy();
-    expect(screen.getByText("Python 数据分析")).toBeTruthy();
-    expect(screen.getByText("Java OOP")).toBeTruthy();
-  });
+    expect(
+      screen.getByRole("button", { name: "展开侧边栏" })
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "新对话" })
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "课程" })
+    ).toBeTruthy();
 
-  it("collapsed hides text labels, shows only avatars (no vertical text)", async () => {
-    renderSidebar({ collapsed: true });
-    await waitFor(() => expect(screen.getAllByText("P").length).toBeGreaterThan(0));
-    // 文字标签不参与布局
-    expect(screen.queryByText("EduAgents")).toBeNull();
-    expect(screen.queryByText("我的课程")).toBeNull();
     expect(screen.queryByText("Python 数据分析")).toBeNull();
-    expect(screen.queryByText("新对话")).toBeNull();
-    // avatar 首字符
-    expect(screen.getByText("P")).toBeTruthy();
-    expect(screen.getByText("J")).toBeTruthy();
+    expect(screen.queryByText("P")).toBeNull();
   });
 
-  it("has exactly one create-course action in expanded mode", async () => {
+  it("has exactly one create-course action in the course list", async () => {
     renderSidebar();
-    await waitFor(() => expect(screen.getByText("我的课程")).toBeTruthy());
-    // 顶部 section + 按钮只有 1 个业务入口（aria-label 新建课程）
+    fireEvent.click(screen.getByRole("button", { name: "课程" }));
+    await waitFor(() => expect(screen.getByText("Python 数据分析")).toBeTruthy());
+    // 新建课程只出现在课程列表视图（aria-label 新建课程）
     const addBtns = screen.getAllByRole("button", { name: "新建课程" });
     expect(addBtns.length).toBe(1);
   });
@@ -111,6 +139,7 @@ describe("Sidebar", () => {
 
   it("opens rename modal from more menu and updates sidebar state in place", async () => {
     renderSidebar();
+    fireEvent.click(screen.getByRole("button", { name: "课程" }));
     await waitFor(() => expect(screen.getByText("Python 数据分析")).toBeTruthy());
     fireEvent.click(screen.getByRole("button", { name: "更多操作：Python 数据分析" }));
     fireEvent.click(screen.getByText("重命名"));
@@ -132,6 +161,7 @@ describe("Sidebar", () => {
 
   it("opens delete dialog and removes the course from sidebar on confirm", async () => {
     renderSidebar();
+    fireEvent.click(screen.getByRole("button", { name: "课程" }));
     await waitFor(() => expect(screen.getByText("Python 数据分析")).toBeTruthy());
     fireEvent.click(screen.getByRole("button", { name: "更多操作：Python 数据分析" }));
     fireEvent.click(screen.getByText("删除课程"));

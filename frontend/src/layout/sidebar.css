@@ -332,6 +332,264 @@
   background: var(--ea-primary);
 }
 
+/* ---------- Generic sidebar navigation ---------- */
+
+.sidebar-nav-action,
+.sidebar-back-btn,
+.workspace-action,
+.recent-item,
+.sidebar-link-btn,
+.sidebar-retry-btn,
+.sidebar-rail-action {
+  appearance: none;
+  font: inherit;
+}
+
+.sidebar-nav-action {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: auto;
+  height: 40px;
+  margin: 0 10px 4px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--ea-text-primary);
+  font-size: 14px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background 150ms ease,
+    color 150ms ease;
+}
+
+.sidebar-nav-action:hover {
+  background: var(--ea-bg-hover);
+}
+
+.sidebar-nav-action svg {
+  flex-shrink: 0;
+}
+
+/* ---------- Sidebar sections ---------- */
+
+.sidebar-section {
+  min-height: 0;
+  padding: 4px 10px 8px;
+}
+
+.sidebar-section-header {
+  display: flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 6px 8px 4px;
+}
+
+.sidebar-section-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ea-text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.sidebar-hint {
+  padding: 8px 10px;
+  color: var(--ea-text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+/* ---------- Back ---------- */
+
+.sidebar-back-btn {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: auto;
+  height: 38px;
+  margin: 0 10px 6px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--ea-text-primary);
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sidebar-back-btn:hover {
+  background: var(--ea-bg-hover);
+}
+
+/* ---------- Course workspace ---------- */
+
+.workspace-course-title {
+  min-width: 0;
+  padding: 8px 18px 10px;
+  color: var(--ea-text-primary);
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.workspace-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 10px 10px;
+}
+
+.workspace-action {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 40px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--ea-text-primary);
+  font-size: 14px;
+  font-weight: 450;
+  text-align: left;
+  cursor: pointer;
+  transition: background 150ms ease;
+}
+
+.workspace-action:hover {
+  background: var(--ea-bg-hover);
+}
+
+.workspace-action svg {
+  flex-shrink: 0;
+  color: var(--ea-text-secondary);
+}
+
+/* ---------- Recent conversations ---------- */
+
+.recent-section {
+  overflow-y: auto;
+}
+
+.recent-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  height: 36px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ea-text-primary);
+  font-size: 14px;
+  font-weight: 400;
+  text-align: left;
+  cursor: pointer;
+  transition: background 150ms ease;
+}
+
+.recent-item:hover {
+  background: var(--ea-bg-hover);
+}
+
+.recent-title {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.sidebar-link-btn {
+  display: flex;
+  align-items: center;
+  width: calc(100% - 8px);
+  min-height: 32px;
+  margin: 2px 4px 0;
+  padding: 0 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ea-text-secondary);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sidebar-link-btn:hover {
+  background: var(--ea-bg-hover);
+  color: var(--ea-text-primary);
+}
+
+/* ---------- Inline errors ---------- */
+
+.sidebar-error-inline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 10px;
+  color: var(--ea-danger);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.sidebar-retry-btn {
+  flex-shrink: 0;
+  padding: 3px 6px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ea-primary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.sidebar-retry-btn:hover {
+  background: var(--ea-bg-hover);
+}
+
+/* ---------- Collapsed rail ---------- */
+
+.sidebar-rail-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+}
+
+.sidebar-rail-action {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--ea-text-secondary);
+  cursor: pointer;
+}
+
+.sidebar-rail-action:hover {
+  background: var(--ea-bg-hover);
+  color: var(--ea-text-primary);
+}
+
 /* ---------- Responsive ---------- */
 @media (max-width: 768px) {
   .header-menu-btn {
@@ -362,7 +620,13 @@
   .sidebar-skeleton-row,
   .course-nav-item,
   .sidebar-toggle,
-  .sidebar-new-chat {
+  .sidebar-new-chat,
+  .sidebar-nav-action,
+  .sidebar-back-btn,
+  .workspace-action,
+  .recent-item,
+  .sidebar-link-btn,
+  .sidebar-rail-action {
     transition: none !important;
     animation: none !important;
   }
@@ -389,12 +653,6 @@
 
 .sidebar-logo-btn:hover {
   background: var(--ea-bg-hover);
-}
-
-/* ---------- Collapsed 课程项居中（无 inline style） ---------- */
-.course-nav-item.collapsed {
-  justify-content: center;
-  padding: 8px 0;
 }
 
 /* ---------- CourseNavItem：main + more 两个 sibling 按钮（无嵌套 button） ---------- */
@@ -494,17 +752,6 @@
   background: rgba(220, 53, 69, 0.08);
 }
 
-/* Collapsed：只显示 avatar（more 按钮在折叠态隐藏，展开后再操作） */
-.course-nav-row.collapsed {
-  justify-content: center;
-}
-
-.course-nav-main.collapsed {
-  flex: 0 0 auto;
-  padding: 8px;
-  justify-content: center;
-}
-
 .sidebar-new-chat.collapsed {
   justify-content: center;
   padding: 0;
@@ -548,12 +795,6 @@
 
 .sidebar-error-icon-btn:hover {
   background: var(--ea-bg-hover);
-}
-
-.course-add-collapsed {
-  display: flex;
-  justify-content: center;
-  padding: 10px 0;
 }
 
 @keyframes pulse {

@@ -75,10 +75,16 @@ export function createApiClient(userId: string): ApiClient {
   });
 
   async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-    const res = await fetch(path, {
-      ...options,
-      headers: headers(options.headers as Record<string, string> | undefined),
-    });
+    let res: Response;
+    try {
+      res = await fetch(path, {
+        ...options,
+        headers: headers(options.headers as Record<string, string> | undefined),
+      });
+    } catch (error) {
+      console.error(`Network request failed: ${path}`, error);
+      throw new ApiError(0, "无法连接服务，请稍后重试");
+    }
     if (!res.ok) {
       let detail: string | undefined;
       let message = `请求失败（${res.status}）`;
