@@ -256,6 +256,42 @@
   font-style: italic;
 }
 
+/* ---------- 移动到分类（MoveCourseModal 选项列表） ---------- */
+.move-category-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.move-category-item {
+  appearance: none;
+  border: 1px solid var(--ea-border);
+  background: none;
+  font: inherit;
+  font-size: 14px;
+  color: var(--ea-text-primary);
+  text-align: left;
+  padding: 8px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.move-category-item:hover:not(:disabled) {
+  background: var(--ea-hover, rgba(127, 127, 127, 0.12));
+}
+
+.move-category-item.current {
+  border-color: var(--ea-primary);
+  color: var(--ea-primary);
+  font-weight: 600;
+}
+
+.move-category-item:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 .sidebar-skeleton {
   padding: 10px;
 }

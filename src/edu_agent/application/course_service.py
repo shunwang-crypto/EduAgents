@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import sqlite3
 from typing import Any, Dict, List, Optional
 
 from edu_agent.adaptive.course_resolver import resolve_course_id, resolve_goal_id
@@ -73,30 +74,35 @@ def create_course(
     dup = next((c for c in existing if c.get("normalized_topic") == normalized), None)
 
     # 全部 DB 写在一个事务（失败整体回滚，不留下半创建的课程状态）
-    with learner.repo.transaction():
-        if dup is not None:
-            course_id = dup["course_id"]
-        else:
-            course_id = resolve_course_id(topic, [c["course_id"] for c in existing])
-            learner.repo.upsert_user_course(
-                {"user_id": user_id, "course_id": course_id, "display_name": topic,
-                 "topic": topic, "normalized_topic": normalized,
-                 "category_id": category_id,  # None = 未分类
-                 "duration_days": int(duration_days), "daily_minutes": int(daily_minutes),
-                 "created_at": _now_iso(), "updated_at": _now_iso()}
-            )
-        learner.ensure_course(user_id, course_id)
+    try:
+        with learner.repo.transaction():
+            if dup is not None:
+                course_id = dup["course_id"]
+            else:
+                course_id = resolve_course_id(topic, [c["course_id"] for c in existing])
+                learner.repo.upsert_user_course(
+                    {"user_id": user_id, "course_id": course_id, "display_name": topic,
+                     "topic": topic, "normalized_topic": normalized,
+                     "category_id": category_id,  # None = 未分类
+                     "duration_days": int(duration_days), "daily_minutes": int(daily_minutes),
+                     "created_at": _now_iso(), "updated_at": _now_iso()}
+                )
+            learner.ensure_course(user_id, course_id)
 
-        # 一个课程一个 active goal（旧 active → completed）
-        goal_id = resolve_goal_id(user_id, course_id)
-        for g in learner.repo.list_goals(user_id, status="active"):
-            if g.get("course_id") == course_id and g["goal_id"] != goal_id:
-                learner.set_goal_status(user_id, g["goal_id"], "completed")
+            # 一个课程一个 active goal（旧 active → completed）
+            goal_id = resolve_goal_id(user_id, course_id)
+            for g in learner.repo.list_goals(user_id, status="active"):
+                if g.get("course_id") == course_id and g["goal_id"] != goal_id:
+                    learner.set_goal_status(user_id, g["goal_id"], "completed")
 
-        learner.upsert_goal(user_id, goal_id, course_id, name=topic, target=goal or "")
-        learner.set_current_goal(user_id, course_id, goal_id)
-        learner.record_event({"event_type": "COURSE_CREATED", "user_id": user_id,
-                              "course_id": course_id, "payload": {"topic": topic}})
+            learner.upsert_goal(user_id, goal_id, course_id, name=topic, target=goal or "")
+            learner.set_current_goal(user_id, course_id, goal_id)
+            learner.record_event({"event_type": "COURSE_CREATED", "user_id": user_id,
+                                  "course_id": course_id, "payload": {"topic": topic}})
+    except sqlite3.IntegrityError as exc:
+        # FK race：category 在 validate 后被并发删除 → DB 最终防线拒绝，
+        # 转成项目标准业务错误（404），不泄漏 sqlite FK 细节。
+        raise KeyError(f"category not found: {category_id or ''}") from exc
 
     return get_course(user_id, course_id, learner)
 
@@ -142,33 +148,48 @@ def update_course(
         raise KeyError(f"course not found: {course_id}")
     fields = fields or set()
     patch: Dict[str, Any] = {}
-    with learner.repo.transaction():
-        if "display_name" in fields and display_name is not None:
-            title = (display_name or "").strip() or row.get("display_name") or course_id
-            if title:
-                patch["display_name"] = title
-        if "category_id" in fields:
-            if category_id is None:
-                # 显式 null → 移动到未分类（不删除课程）
-                learner.repo.set_course_category(user_id, course_id, None)
-            else:
-                if learner.repo.get_course_category(user_id, category_id) is None:
-                    raise KeyError(f"category not found: {category_id}")
-                learner.repo.set_course_category(user_id, course_id, category_id)
-            # set_course_category 已直接落库；刷新 row 供事件 payload 使用
-            row = learner.repo.get_user_course(user_id, course_id) or row
-        if "goal" in fields:
-            goal_text = (goal or "").strip()
-            active = learner.resolve_active_goal(user_id, course_id)
-            goal_id = active.goal_id if active else resolve_goal_id(user_id, course_id)
-            goal_name = patch.get("display_name") or row.get("display_name") or course_id
-            learner.upsert_goal(user_id, goal_id, course_id, name=goal_name, target=goal_text)
-            learner.set_current_goal(user_id, course_id, goal_id)
-        if patch:
-            learner.repo.upsert_user_course({**row, **patch, "updated_at": _now_iso()})
-        if patch or "category_id" in fields or "goal" in fields:
-            learner.record_event({"event_type": "COURSE_UPDATED", "user_id": user_id,
-                                  "course_id": course_id, "payload": {**patch}})
+    try:
+        with learner.repo.transaction():
+            if "display_name" in fields and display_name is not None:
+                title = (display_name or "").strip() or row.get("display_name") or course_id
+                if title:
+                    patch["display_name"] = title
+            if "category_id" in fields:
+                if category_id is None:
+                    # 显式 null → 移动到未分类（不删除课程）
+                    learner.repo.set_course_category(user_id, course_id, None)
+                else:
+                    if learner.repo.get_course_category(user_id, category_id) is None:
+                        raise KeyError(f"category not found: {category_id}")
+                    learner.repo.set_course_category(user_id, course_id, category_id)
+                # set_course_category 已直接落库；刷新 row 供事件 payload 使用
+                row = learner.repo.get_user_course(user_id, course_id) or row
+            if "goal" in fields:
+                # 三态：字段被显式提供即生效——""/纯空白 = 明确清空目标，不再被当作 omitted
+                goal_text = (goal or "").strip()
+                active = learner.resolve_active_goal(user_id, course_id)
+                goal_id = active.goal_id if active else resolve_goal_id(user_id, course_id)
+                goal_name = patch.get("display_name") or row.get("display_name") or course_id
+                # goal.py 内部处理三态 + completed→新目标 reactivate（active/0.0/空 kcs）
+                learner.upsert_goal(user_id, goal_id, course_id, name=goal_name, target=goal_text)
+                learner.set_current_goal(user_id, course_id, goal_id)
+                # completed goal + 明确新非空目标 → 课程进度归零（新生命周期从 0 开始）；
+                # active goal 普通文字编辑（status=active）不抹进度。
+                if (
+                    active is not None
+                    and getattr(active, "status", "") == "completed"
+                    and goal_text != ""
+                    and goal_text != getattr(active, "target", "")
+                ):
+                    learner.update_course_progress(user_id, course_id, 0.0)
+            if patch:
+                learner.repo.upsert_user_course({**row, **patch, "updated_at": _now_iso()})
+            if patch or "category_id" in fields or "goal" in fields:
+                learner.record_event({"event_type": "COURSE_UPDATED", "user_id": user_id,
+                                      "course_id": course_id, "payload": {**patch}})
+    except sqlite3.IntegrityError as exc:
+        # FK race：category 在 validate 后被并发删除 → 转业务错误（404），不泄漏 FK 细节
+        raise KeyError(f"category not found: {category_id or ''}") from exc
     return get_course(user_id, course_id, learner)
 
 

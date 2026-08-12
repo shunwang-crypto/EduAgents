@@ -67,6 +67,7 @@ export function CourseNavItem({
   menuOpen,
   onRename,
   onDelete,
+  onMove,
 }: {
   course: Course;
   active: boolean;
@@ -76,6 +77,7 @@ export function CourseNavItem({
   menuOpen: boolean;
   onRename: () => void;
   onDelete: () => void;
+  onMove: () => void;
 }) {
   const avatar = course.display_name?.trim().charAt(0) || "?";
   return (
@@ -109,6 +111,9 @@ export function CourseNavItem({
         <div className="course-nav-menu" role="menu">
           <button type="button" className="course-nav-menu-item" role="menuitem" onClick={onRename}>
             重命名
+          </button>
+          <button type="button" className="course-nav-menu-item" role="menuitem" onClick={onMove}>
+            移动到分类
           </button>
           <button
             type="button"
@@ -275,6 +280,85 @@ function DeleteCategoryDialog({
   );
 }
 
+/** 移动到分类 Modal：列出 未分类 + 用户自己的分类（不硬编码）。
+ * 调用现有 Course PATCH { category_id }（null = 移到未分类），不新增 move endpoint。 */
+function MoveCourseModal({
+  course,
+  categories,
+  onClose,
+  onMoved,
+}: {
+  course: Course;
+  categories: CourseCategory[];
+  onClose: () => void;
+  onMoved: (categoryId: string | null) => void;
+}) {
+  const api = useApi();
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  const pick = async (categoryId: string | null) => {
+    if (categoryId === (course.category_id ?? null)) {
+      onClose();
+      return;
+    }
+    setLoading(true);
+    setError("");
+    try {
+      await api.renameCourse(course.course_id, { category_id: categoryId });
+      onMoved(categoryId);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "移动失败，请重试");
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={() => !loading && onClose()}>
+      <div
+        className="modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="move-course-title"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h3 id="move-course-title" className="modal-title">
+          移动到分类
+        </h3>
+        <p className="modal-text">{course.display_name}</p>
+        <div className="move-category-list">
+          <button
+            type="button"
+            className={`move-category-item ${!course.category_id ? "current" : ""}`}
+            onClick={() => void pick(null)}
+            disabled={loading}
+          >
+            未分类{!course.category_id ? "（当前）" : ""}
+          </button>
+          {categories.map((cat) => (
+            <button
+              key={cat.category_id}
+              type="button"
+              className={`move-category-item ${course.category_id === cat.category_id ? "current" : ""}`}
+              onClick={() => void pick(cat.category_id)}
+              disabled={loading}
+            >
+              {cat.name}
+              {course.category_id === cat.category_id ? "（当前）" : ""}
+            </button>
+          ))}
+        </div>
+        {error && <p className="form-error" role="alert">{error}</p>}
+        <div className="modal-actions">
+          <button type="button" className="ea-button" onClick={onClose} disabled={loading}>
+            取消
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 interface SidebarProps {
   open: boolean;
   collapsed: boolean;
@@ -316,10 +400,11 @@ export function Sidebar({
   const [recentLoading, setRecentLoading] = useState(false);
   const [recentError, setRecentError] = useState("");
   const [expandedRecent, setExpandedRecent] = useState(false);
-  // 课程菜单 / 重命名 / 删除 状态
+  // 课程菜单 / 重命名 / 删除 / 移动分类 状态
   const [menuOpenFor, setMenuOpenFor] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<Course | null>(null);
   const [deleting, setDeleting] = useState<Course | null>(null);
+  const [moving, setMoving] = useState<Course | null>(null);
   const [showCreate, setShowCreate] = useState(false);
 
   // 视图：course 路由 → workspace；否则保留分类视图手动态，否则 root
@@ -636,7 +721,8 @@ export function Sidebar({
         )}
 
         {/* Course List：默认显示 5 门 */}
-        {/* 分类列表：课程导航入口（Category = 用户自己创建的课程分组，纯组织层） */}
+        {/* 分类列表：课程导航入口（Category = 用户自己创建的课程分组，纯组织层）。
+            空状态（0 分类 / 0 课程）也必须能直接新建课程——Category 只是 optional 组织。 */}
         {view.kind === "categoryList" && (
           <>
             <button
@@ -646,6 +732,15 @@ export function Sidebar({
             >
               <ArrowLeft size={16} aria-hidden />
               <span>返回</span>
+            </button>
+
+            <button
+              type="button"
+              className="sidebar-nav-action"
+              onClick={() => setShowCreate(true)}
+            >
+              <Plus size={18} aria-hidden />
+              <span>新建课程</span>
             </button>
 
             <button
@@ -669,7 +764,7 @@ export function Sidebar({
               {!categoriesLoading &&
                 !categoriesError &&
                 categories.length === 0 &&
-                courses.length === 0 && <div className="course-empty">还没有课程，先创建一门吧</div>}
+                courses.length === 0 && <div className="course-empty">还没有课程分类</div>}
               {categories.map((cat) => {
                 const count = courses.filter((c) => c.category_id === cat.category_id).length;
                 const menuOpen = menuOpenFor === `cat:${cat.category_id}`;
@@ -805,6 +900,10 @@ export function Sidebar({
                     menuOpen={menuOpenFor === course.course_id}
                     onRename={() => {
                       setRenaming(course);
+                      setMenuOpenFor(null);
+                    }}
+                    onMove={() => {
+                      setMoving(course);
                       setMenuOpenFor(null);
                     }}
                     onDelete={() => {
@@ -962,6 +1061,24 @@ export function Sidebar({
             );
             setDeletingCategory(null);
             setView({ kind: "categoryList" });
+          }}
+        />
+      )}
+
+      {moving && (
+        <MoveCourseModal
+          course={moving}
+          categories={categories}
+          onClose={() => setMoving(null)}
+          onMoved={(categoryId) => {
+            // 本地同步 category_id：分类计数与当前分类列表自动刷新；
+            // 若正停留在原分类视图，该课程立即消失（课程本身不删除，Workspace 不跳走）。
+            setCourses((prev) =>
+              prev.map((c) =>
+                c.course_id === moving.course_id ? { ...c, category_id: categoryId } : c
+              )
+            );
+            setMoving(null);
           }}
         />
       )}

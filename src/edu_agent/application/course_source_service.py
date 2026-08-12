@@ -82,6 +82,29 @@ def list_sources(
     return learner.repo.list_course_sources(user_id, course_id)
 
 
+def load_ready_course_chunks(
+    user_id: str, course_id: str, learner: Optional[LearnerModelService] = None
+) -> List[Any]:
+    """RAG 唯一入口（ready-source gate）：JSON chunk 存在 ≠ 可以进入 RAG。
+
+    只有 course_sources 行存在 + 属于当前 user/course + status == ready 的 source，
+    其 chunks 才被返回；failed / importing / 无 metadata 的 orphan chunk 一律不可见。
+    正式路径（Chat / Plan / Lesson）都必须经此 helper，不要各自复制过滤逻辑。
+    """
+    learner = learner or LearnerModelService()
+    ready_ids = {
+        s["source_id"]
+        for s in learner.repo.list_course_sources(user_id, course_id)
+        if s.get("status") == "ready"
+    }
+    if not ready_ids:
+        return []
+    return [
+        chunk for chunk in kb_store.load_chunks(user_id, course_id)
+        if chunk.source_id in ready_ids
+    ]
+
+
 def add_source(
     user_id: str,
     course_id: str,
@@ -131,6 +154,11 @@ def add_source(
             chunks = _import_web(user_id, course_id, source_id, raw_url, display_title)
     except Exception as exc:  # noqa: BLE001 - 导入失败：标记 failed，不泄露内部细节
         logger.warning("[source] import failed: user=%s course=%s url=%s", user_id, course_id, raw_url)
+        # 尽力清理物理 chunks（即使 JSON 清理再失败，ready gate 仍保证 failed source 永不进 RAG）
+        try:
+            kb_store.delete_source_chunks(user_id, course_id, source_id)
+        except Exception:  # noqa: BLE001
+            logger.warning("[source] chunk cleanup failed: %s", source_id, exc_info=True)
         _mark_failed(repo, user_id, course_id, source_id, _readable_error(exc))
         return repo.get_course_source(user_id, course_id, source_id)
 
@@ -195,6 +223,7 @@ def _mark_failed(repo, user_id: str, course_id: str, source_id: str, message: st
         {
             **row,
             "status": "failed",
+            "chunk_count": 0,  # 正式不变量：status=failed → chunk_count=0 → RAG inactive
             "error_message": message[:200],
             "updated_at": _now_iso(),
         }
@@ -236,4 +265,7 @@ def search_sources(
     learner = learner or LearnerModelService()
     if learner.repo.get_user_course(user_id, course_id) is None:
         raise KeyError(f"course not found: {course_id}")
+    query = (query or "").strip()
+    if not query:
+        raise ValueError("搜索关键词不能为空")
     return search_internet(query, limit=limit)

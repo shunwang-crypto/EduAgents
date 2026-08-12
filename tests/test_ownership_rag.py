@@ -22,7 +22,7 @@ def learner(tmp_path):
 from edu_agent.tools.course_kb import CourseKnowledgeBase  # noqa: E402
 
 
-def _create(learner, user, topic, goal=""):
+def _create(learner, user, topic, goal="两周完成分析目标"):
     from edu_agent.application.course_service import create_course
 
     return create_course(user, topic, goal=goal, learner=learner)

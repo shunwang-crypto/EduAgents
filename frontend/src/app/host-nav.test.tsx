@@ -62,6 +62,10 @@ const { mockPlan } = vi.hoisted(() => ({
 const { mockApi } = vi.hoisted(() => ({
   mockApi: {
     listCourses: vi.fn().mockResolvedValue([]),
+    listCourseCategories: vi.fn().mockResolvedValue([]),
+    createCourseCategory: vi.fn(),
+    renameCourseCategory: vi.fn(),
+    deleteCourseCategory: vi.fn(),
     getCourse: vi.fn().mockResolvedValue({ course_id: "PY", display_name: "Python 数据分析" }),
     getChat: vi.fn().mockResolvedValue({ conversation_id: null, course_id: null, messages: [] }),
     getStep: vi.fn().mockImplementation((_c: string, stepId: string) =>

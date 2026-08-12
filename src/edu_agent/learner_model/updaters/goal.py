@@ -1,6 +1,11 @@
 """Goal Updater：学习目标生命周期（user_id + goal_id 联合身份）。
 
 - 字段保留语义：未提供的字段保留旧值；显式空列表才清空 target_kcs。
+- target 三态：None=调用方没有要求修改 target；""=用户明确清空；其他=明确设置。
+  禁止 truthiness 语义（`if target:` 会把显式清空误判为未提供）。
+- completed goal + 新非空 target → 重新激活（active / progress 0 / target_kcs []），
+  同一稳定 goal_id 继续作为 current_goal（不新增 history architecture）。
+- active goal 普通文字编辑只改 target，不抹 progress / target_kcs。
 - 支持进度更新、状态流转（active/paused/completed/cancelled）。
 - scope：course（与 course_id 绑定）。
 """
@@ -31,15 +36,19 @@ def upsert_goal(
     goal_id: str,
     course_id: str,
     name: str = "",
-    target: str = "",
+    target: Optional[str] = None,
     priority: Optional[int] = None,
     target_kcs: Optional[List[str]] = None,
     deadline: str = "",
     status: Optional[str] = None,
+    progress: Optional[float] = None,
 ) -> Dict[str, Any]:
     """创建或更新目标。
 
-    - 未提供的字段保留旧值；status=None 时已有 goal 不被无意复活。
+    - target 三态：None=不改；""=明确清空；其他=明确设置（禁止 `if target` truthiness）。
+    - completed goal + 明确新非空 target → 重新激活（status=active / progress=0 / kcs=[]）。
+    - active goal 普通文字编辑：只改 target，不抹 progress / target_kcs。
+    - status=None / progress=None 时已有 goal 不被无意改动。
     - 任何实际字段变化都更新 updated_at；完全无变化返回 NONE。
     """
     now = _now_iso()
@@ -50,7 +59,7 @@ def upsert_goal(
         if name and row.get("name") != name:
             row["name"] = name
             changed = True
-        if target and row.get("target") != target:
+        if target is not None and row.get("target") != target:
             row["target"] = target
             changed = True
         if priority is not None and row.get("priority") != priority:
@@ -66,6 +75,20 @@ def upsert_goal(
             changed = True
         if status is not None and row.get("status") != status:
             row["status"] = status
+            changed = True
+        if progress is not None and row.get("progress") != progress:
+            row["progress"] = progress
+            changed = True
+        # completed goal + 明确新非空 target → 重新激活生命周期（同 goal_id，不新增版本/历史）
+        if (
+            existing.get("status") == "completed"
+            and target is not None
+            and target != ""
+            and row.get("target") != (existing.get("target") or "")
+        ):
+            row["status"] = "active"
+            row["progress"] = 0.0
+            row["target_kcs_json"] = "[]"
             changed = True
         if not changed:
             return {
@@ -90,10 +113,10 @@ def upsert_goal(
             "user_id": user_id,
             "course_id": course_id,
             "name": name,
-            "target": target,
+            "target": target if target is not None else "",
             "priority": priority if priority is not None else 1,
             "status": status or "active",
-            "progress": 0.0,
+            "progress": progress if progress is not None else 0.0,
             "target_kcs_json": json.dumps(target_kcs or [], ensure_ascii=False),
             "deadline": deadline,
             "created_at": now,

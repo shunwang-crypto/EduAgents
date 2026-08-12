@@ -114,7 +114,8 @@ def test_plan_unknown_mastery_is_none(learner):
     """从未学习的主题：mastery 保持 unknown（None），不自动当 0。"""
     course = course_service.create_course(USER, "Python 数据分析", learner=learner)
     plan = study_plan_service.generate_plan(
-        USER, course["course_id"], duration_days=7, daily_minutes=30, learner=learner,
+        USER, course["course_id"], goal="数据分析基础",
+        duration_days=7, daily_minutes=30, learner=learner,
     )
     for step in plan["steps"]:
         kc = learner.repo.get_kc(USER, course["course_id"], step["step_id"])

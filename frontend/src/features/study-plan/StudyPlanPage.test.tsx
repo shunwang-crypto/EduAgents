@@ -68,12 +68,19 @@ const { mockPlan, mockApi } = vi.hoisted(() => {
     ],
   };
   const mockApi = {
+    listCourseCategories: vi.fn().mockResolvedValue([]),
+    createCourseCategory: vi.fn(),
+    renameCourseCategory: vi.fn(),
+    deleteCourseCategory: vi.fn(),
     getCourse: vi.fn((cid: string) =>
       Promise.resolve({
         course_id: cid,
         display_name: cid === "JAVA" ? "Java OOP" : "Python 数据分析",
         duration_days: 14,
         daily_minutes: 60,
+        category_id: null,
+        // 有课程目标：避免「无目标」禁用生成分支，保持既有生成流程测试语义
+        current_goal: "掌握 Pandas、NumPy 和数据分析流程",
       })
     ),
     // 参数感知：课程切换测试需要按 courseId 返回对应课程计划

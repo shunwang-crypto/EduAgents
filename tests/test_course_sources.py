@@ -319,3 +319,76 @@ def test_plan_knowledge_context_includes_source(client, kb, monkeypatch):
     assert r.status_code == 200, r.text
     # knowledge_context 已注入源资料内容（不再是无）
     assert "KNOWLEDGE_MARKER_xyz" in captured["knowledge_context"]
+
+
+# ================================================================ Final Freeze: KB 并发 + ready gate
+def test_kb_store_concurrent_replace_no_lost_update(kb):
+    """两个线程并发 replace 不同 source → 最终两份 chunks 都在（RLock 防 lost update）。"""
+    import threading
+
+    from edu_agent.tools import kb_store
+    from edu_agent.tools.course_kb import KbChunk
+
+    def mk(sid, n=2):
+        return [KbChunk(user_id="U1", course_id="C1", source_id=sid, source_type="web",
+                        source_url=f"https://e.com/{sid}", doc_title=f"doc-{sid}",
+                        heading_path="h", text=f"text-{sid}-{i}") for i in range(n)]
+
+    errors: list = []
+
+    def worker(sid):
+        try:
+            for _ in range(10):
+                kb_store.replace_source_chunks("U1", "C1", sid, mk(sid))
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    ts = [threading.Thread(target=worker, args=(s,)) for s in ("SRC-A", "SRC-B")]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    assert not errors, errors
+    chunks = kb_store.load_chunks("U1", "C1")
+    assert {c.source_id for c in chunks} == {"SRC-A", "SRC-B"}
+    assert len([c for c in chunks if c.source_id == "SRC-A"]) == 2
+    assert len([c for c in chunks if c.source_id == "SRC-B"]) == 2
+
+
+def test_ready_gate_only_ready_sources_visible(client, kb, monkeypatch):
+    """ready → 可见；failed / orphan（有 JSON 无 metadata）→ RAG 不可见（Chat/Plan/Lesson 全走 ready gate）。"""
+    from edu_agent.application.course_source_service import load_ready_course_chunks
+
+    _mock_web(monkeypatch)
+    course = client.post("/api/courses", json={"topic": "RAG gate 课"},
+                         headers={"X-User-Id": "A"}).json()
+    cid = course["course_id"]
+    # 1) ready source
+    r_ready = client.post(f"/api/courses/{cid}/sources",
+                          json={"url": "https://example.com/ready"},
+                          headers={"X-User-Id": "A"})
+    assert r_ready.json()["status"] == "ready"
+    ready_sid = r_ready.json()["source_id"]
+    # 2) failed source：导入抛错 → status=failed 且 chunk_count=0
+    monkeypatch.setattr(course_source_service, "extract_web",
+                        lambda url, max_chars=1_500_000: (_ for _ in ()).throw(RuntimeError("boom")))
+    r_fail = client.post(f"/api/courses/{cid}/sources",
+                         json={"url": "https://example.com/fail"},
+                         headers={"X-User-Id": "A"})
+    assert r_fail.json()["status"] == "failed"
+    assert r_fail.json()["chunk_count"] == 0  # 正式不变量：failed → chunk_count 0 → RAG inactive
+    # 3) orphan chunk：直接写 JSON，无 course_sources metadata（模拟 cleanup 失败 / 旧数据）
+    from edu_agent.tools import kb_store
+    from edu_agent.tools.course_kb import KbChunk
+
+    kb_store.replace_source_chunks("A", cid, "SRC-ORPHAN", [
+        KbChunk(user_id="A", course_id=cid, source_id="SRC-ORPHAN", source_type="web",
+                source_url="https://e.com/orphan", doc_title="orphan",
+                heading_path="h", text="孤儿块内容"),
+    ])
+    # ready gate：只有 ready source 的 chunks 可见
+    chunks = load_ready_course_chunks("A", cid)
+    assert len(chunks) >= 1
+    assert all(c.source_id == ready_sid for c in chunks)
+    assert not any(c.source_id == r_fail.json()["source_id"] for c in chunks)
+    assert not any(c.source_id == "SRC-ORPHAN" for c in chunks)

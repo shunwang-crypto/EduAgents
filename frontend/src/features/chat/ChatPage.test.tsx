@@ -16,10 +16,16 @@ const { mockApi, defaultChatReply } = vi.hoisted(() => {
     context: { type: "plan_step", course_id: "PY", plan_step_id: "S2", step_title: "DataFrame 基础" },
   };
   const mockApi = {
+    listCourseCategories: vi.fn().mockResolvedValue([]),
+    createCourseCategory: vi.fn(),
+    renameCourseCategory: vi.fn(),
+    deleteCourseCategory: vi.fn(),
     getCourse: vi.fn((cid: string) =>
       Promise.resolve({
         course_id: cid,
         display_name: cid === "JAVA" ? "Java OOP" : "Python 数据分析",
+        category_id: null,
+        current_goal: null,
       })
     ),
     getChat: vi.fn((cid: string, conv: string | null) =>

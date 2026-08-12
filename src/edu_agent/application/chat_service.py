@@ -432,12 +432,12 @@ class ChatService:
         return ""
 
     def _rag(self, user_id: str, course_id: str, message: str, top_k: int = 3) -> List[dict]:
-        """课程知识库检索：严格 user+course 双隔离加载 chunks，不跨用户/课程。"""
+        """课程知识库检索：ready-source gate（metadata 存在 + status=ready）+ user+course 双隔离。"""
         try:
+            from edu_agent.application.course_source_service import load_ready_course_chunks
             from edu_agent.tools.course_kb import CourseKnowledgeBase
-            from edu_agent.tools import kb_store
 
-            chunks = kb_store.load_chunks(user_id, course_id)
+            chunks = load_ready_course_chunks(user_id, course_id)
             if not chunks:
                 return []
             kb = CourseKnowledgeBase.from_chunks(chunks, user_id=user_id, course_id=course_id)

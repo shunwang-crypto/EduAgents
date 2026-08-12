@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS learners (
 
 -- 用户课程（User Course = 用户拥有/创建/加入；与共享 Domain Course 严格分离）
 -- category_id：课程分类（course_categories.category_id）；NULL = 未分类。
+-- FK ON DELETE SET NULL 是数据库最终防线：删除分类 → 课程自动未分类，课程本身绝不删除。
 -- Category 只是组织层：Course 的 Adaptive 数据（goal/state/KC/memory/plan/sources）一律 course scoped。
 CREATE TABLE IF NOT EXISTS user_courses (
     user_id TEXT NOT NULL,
@@ -42,7 +43,7 @@ CREATE TABLE IF NOT EXISTS user_courses (
     display_name TEXT NOT NULL,
     topic TEXT DEFAULT '',
     normalized_topic TEXT DEFAULT '',
-    category_id TEXT,
+    category_id TEXT REFERENCES course_categories(category_id) ON DELETE SET NULL,
     duration_days INTEGER NOT NULL DEFAULT 14 CHECK(duration_days BETWEEN 1 AND 365),
     daily_minutes INTEGER NOT NULL DEFAULT 60 CHECK(daily_minutes BETWEEN 5 AND 600),
     created_at TEXT NOT NULL,

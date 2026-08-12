@@ -5,12 +5,20 @@ import { Sidebar } from "./Sidebar";
 
 const { mockApi } = vi.hoisted(() => {
   const courses = [
-    { course_id: "PY", display_name: "Python 数据分析" },
-    { course_id: "JAVA", display_name: "Java OOP" },
-    { course_id: "TRANSFORMER", display_name: "Transformer" },
+    { course_id: "PY", display_name: "Python 数据分析", category_id: "CAT-PY", current_goal: "掌握 pandas" },
+    { course_id: "JAVA", display_name: "Java OOP", category_id: "CAT-JAVA", current_goal: "掌握面向对象" },
+    { course_id: "TRANSFORMER", display_name: "Transformer", category_id: null, current_goal: null },
+  ];
+  const categories = [
+    { category_id: "CAT-PY", name: "Python" },
+    { category_id: "CAT-JAVA", name: "Java" },
   ];
   const mockApi = {
     listCourses: vi.fn().mockResolvedValue(courses),
+    listCourseCategories: vi.fn().mockResolvedValue(categories),
+    createCourseCategory: vi.fn(),
+    renameCourseCategory: vi.fn(),
+    deleteCourseCategory: vi.fn(),
     listConversations: vi.fn().mockResolvedValue([
       {
         conversation_id: "CONV-GEN-1",
@@ -23,15 +31,15 @@ const { mockApi } = vi.hoisted(() => {
     createCourse: vi.fn(),
     renameCourse: vi
       .fn()
-      .mockResolvedValue({ course_id: "PY", display_name: "Python 进阶" }),
+      .mockResolvedValue({ course_id: "PY", display_name: "Python 进阶", category_id: "CAT-PY" }),
     deleteCourse: vi.fn().mockResolvedValue(undefined),
-    getCourse: vi.fn().mockResolvedValue({ course_id: "PY", display_name: "Python 数据分析" }),
+    getCourse: vi.fn().mockResolvedValue({ course_id: "PY", display_name: "Python 数据分析", category_id: "CAT-PY" }),
   };
   return { mockApi };
 });
 
 // 返回严格同一个 object reference：Sidebar 的 useEffect([api]) 依赖 api 引用稳定性，
-// 引用不变则 rerender 不触发 load()，rename/delete 的本地 state 更新不会被 fixture 重新加载覆盖。
+// 引用不变则 rerender 不触发 load()，rename/delete/move 的本地 state 更新不会被 fixture 重新加载覆盖。
 vi.mock("../api/ApiProvider", () => ({
   useApi: () => mockApi,
 }));
@@ -52,6 +60,14 @@ function renderSidebar(props: Partial<React.ComponentProps<typeof Sidebar>> = {}
   );
 }
 
+/** 进入 Python 分类的课程列表（真实导航路径：课程 → 分类列表 → Python）。 */
+async function openPythonCategory() {
+  fireEvent.click(screen.getByRole("button", { name: "课程" }));
+  await waitFor(() => expect(screen.getByText("Python")).toBeTruthy());
+  fireEvent.click(screen.getByText("Python"));
+  await waitFor(() => expect(screen.getByText("Python 数据分析")).toBeTruthy());
+}
+
 describe("Sidebar", () => {
   beforeEach(() => vi.clearAllMocks());
 
@@ -70,18 +86,49 @@ describe("Sidebar", () => {
     expect(screen.queryByText("Python 数据分析")).toBeNull();
   });
 
-  it("opens course list from the courses entry", async () => {
+  it("courses entry opens category list, then Python category shows its own courses", async () => {
     renderSidebar();
 
-    fireEvent.click(
-      screen.getByRole("button", { name: "课程" })
-    );
+    fireEvent.click(screen.getByRole("button", { name: "课程" }));
 
+    // 分类列表：分类行 + 计数 + 未分类 pseudo-row，不直接展开所有课程
+    await waitFor(() => expect(screen.getByText("课程分类")).toBeTruthy());
+    expect(screen.getByText("Python")).toBeTruthy();
+    expect(screen.getByText("Java")).toBeTruthy();
+    expect(screen.getByText("未分类")).toBeTruthy();
+    expect(screen.getByText("1 门课程")).toBeTruthy();
+    // 分类列表不直接显示课程
+    expect(screen.queryByText("Python 数据分析")).toBeNull();
+
+    // 进入 Python 分类 → 只显示该分类课程
+    fireEvent.click(screen.getByText("Python"));
+    await waitFor(() => expect(screen.getByText("Python 数据分析")).toBeTruthy());
+    expect(screen.queryByText("Java OOP")).toBeNull();
+  });
+
+  it("uncategorized pseudo-row shows only uncategorized courses", async () => {
+    renderSidebar();
+    fireEvent.click(screen.getByRole("button", { name: "课程" }));
+    await waitFor(() => expect(screen.getByText("未分类")).toBeTruthy());
+    fireEvent.click(screen.getByText("未分类"));
+    await waitFor(() => expect(screen.getByText("Transformer")).toBeTruthy());
+    expect(screen.queryByText("Python 数据分析")).toBeNull();
+  });
+
+  it("empty state (0 categories, 0 courses) still allows creating a course", async () => {
+    mockApi.listCourses.mockResolvedValueOnce([]);
+    mockApi.listCourseCategories.mockResolvedValueOnce([]);
+    renderSidebar();
+    fireEvent.click(screen.getByRole("button", { name: "课程" }));
+    // 空分类列表仍同时提供「新建课程」与「新建分类」
+    await waitFor(() => expect(screen.getByText("还没有课程分类")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "新建课程" }));
     await waitFor(() =>
-      expect(screen.getByText("Python 数据分析")).toBeTruthy()
+      expect(screen.getByRole("heading", { name: "新建课程" })).toBeTruthy()
     );
-
-    expect(screen.getByText("Java OOP")).toBeTruthy();
+    // 无分类上下文 → defaultCategoryId = null（未分类）
+    const categorySelect = screen.getByLabelText("分类（可选）") as HTMLSelectElement;
+    expect(categorySelect.value).toBe("");
   });
 
   it("active course via useLocation gets aria-current (no popstate listener)", async () => {
@@ -97,13 +144,11 @@ describe("Sidebar", () => {
         />
       </MemoryRouter>
     );
-    // 课程列表需先点「课程」进入（Root 不再直接展示课程）
-    fireEvent.click(screen.getByRole("button", { name: "课程" }));
-    await waitFor(() => expect(screen.getByText("Python 数据分析")).toBeTruthy());
+    await openPythonCategory();
     const pyBtn = screen.getByText("Python 数据分析").closest("button");
     expect(pyBtn?.getAttribute("aria-current")).toBe("page");
-    const javaBtn = screen.getByText("Java OOP").closest("button");
-    expect(javaBtn?.getAttribute("aria-current")).toBeNull();
+    // Java 分类里没有 PY 课程
+    expect(screen.queryByText("Java OOP")).toBeNull();
   });
 
   it("collapsed shows only top-level actions, not course avatars", async () => {
@@ -123,13 +168,14 @@ describe("Sidebar", () => {
     expect(screen.queryByText("P")).toBeNull();
   });
 
-  it("has exactly one create-course action in the course list", async () => {
+  it("category list has both create-course and create-category actions", async () => {
     renderSidebar();
     fireEvent.click(screen.getByRole("button", { name: "课程" }));
-    await waitFor(() => expect(screen.getByText("Python 数据分析")).toBeTruthy());
-    // 新建课程只出现在课程列表视图（aria-label 新建课程）
+    await waitFor(() => expect(screen.getByText("课程分类")).toBeTruthy());
+    // 新建课程只出现在分类列表视图（aria-label 新建课程）
     const addBtns = screen.getAllByRole("button", { name: "新建课程" });
     expect(addBtns.length).toBe(1);
+    expect(screen.getByRole("button", { name: "新建分类" })).toBeTruthy();
   });
 
   it("mobile open shows backdrop", async () => {
@@ -139,18 +185,18 @@ describe("Sidebar", () => {
 
   it("opens rename modal from more menu and updates sidebar state in place", async () => {
     renderSidebar();
-    fireEvent.click(screen.getByRole("button", { name: "课程" }));
-    await waitFor(() => expect(screen.getByText("Python 数据分析")).toBeTruthy());
+    await openPythonCategory();
     fireEvent.click(screen.getByRole("button", { name: "更多操作：Python 数据分析" }));
     fireEvent.click(screen.getByText("重命名"));
     await waitFor(() => expect(screen.getByText("重命名课程")).toBeTruthy());
     const input = screen.getByLabelText("课程名") as HTMLInputElement;
     fireEvent.change(input, { target: { value: "Python 进阶" } });
     fireEvent.click(screen.getByText("保存"));
+    // production contract：renameCourse(courseId, { display_name })（字段级 PATCH body）
     await waitFor(() =>
       expect((mockApi.renameCourse as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith(
         "PY",
-        "Python 进阶"
+        { display_name: "Python 进阶" }
       )
     );
     // 就地更新侧边栏状态（不重新拉取列表）
@@ -161,8 +207,7 @@ describe("Sidebar", () => {
 
   it("opens delete dialog and removes the course from sidebar on confirm", async () => {
     renderSidebar();
-    fireEvent.click(screen.getByRole("button", { name: "课程" }));
-    await waitFor(() => expect(screen.getByText("Python 数据分析")).toBeTruthy());
+    await openPythonCategory();
     fireEvent.click(screen.getByRole("button", { name: "更多操作：Python 数据分析" }));
     fireEvent.click(screen.getByText("删除课程"));
     await waitFor(() => expect(screen.getByRole("heading", { name: "删除课程" })).toBeTruthy());
@@ -171,7 +216,27 @@ describe("Sidebar", () => {
       expect((mockApi.deleteCourse as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith("PY")
     );
     await waitFor(() => expect(screen.queryByText("Python 数据分析")).toBeNull());
-    // 根因修复验证：delete 只改本地 state，useApi 引用稳定，listCourses 仅初始化调用一次
+    expect(mockApi.listCourses).toHaveBeenCalledTimes(1);
+  });
+
+  it("moves course to another category via move-category modal", async () => {
+    renderSidebar();
+    await openPythonCategory();
+    fireEvent.click(screen.getByRole("button", { name: "更多操作：Python 数据分析" }));
+    fireEvent.click(screen.getByText("移动到分类"));
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { name: "移动到分类" })).toBeTruthy()
+    );
+    // 选项来自用户自己的分类（不硬编码）：未分类 + Python + Java
+    fireEvent.click(screen.getByText("Java"));
+    await waitFor(() =>
+      expect((mockApi.renameCourse as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith(
+        "PY",
+        { category_id: "CAT-JAVA" }
+      )
+    );
+    // 从 Python 分类列表立即消失（课程本身不删除）
+    await waitFor(() => expect(screen.queryByText("Python 数据分析")).toBeNull());
     expect(mockApi.listCourses).toHaveBeenCalledTimes(1);
   });
 });

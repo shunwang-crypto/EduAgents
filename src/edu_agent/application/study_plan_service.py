@@ -74,7 +74,11 @@ def generate_plan(
     semantic_topic = (
         course_info.get("topic") or course_info.get("display_name") or course_id
     )
-    goal_text = goal or (active_goal or {}).get("target") or semantic_topic
+    # 计划必须围绕 Course 的 Active Goal 生成：显式传入 goal 优先，否则用 active goal target；
+    # 两者都没有（用户未设目标 / 目标被显式清空）→ server-side 拒绝，不能只靠前端 disabled。
+    goal_text = goal or (active_goal or {}).get("target") or ""
+    if not goal_text.strip():
+        raise ValueError("course goal is required")
     if active_goal is None:
         learner.upsert_goal(user_id, goal_id, course_id, name=course_info.get("display_name", course_id),
                             target=goal_text)
@@ -101,12 +105,12 @@ def generate_plan(
         daily_time=f"{resolved_minutes}分钟",
         goal=goal_text,
     )
-    # 课程资料（user+course 双隔离）作为计划生成的参考资料（knowledge_context）
+    # 课程资料（user+course 双隔离 + ready-source gate）作为计划生成的参考资料（knowledge_context）
     try:
-        from edu_agent.tools import kb_store
+        from edu_agent.application.course_source_service import load_ready_course_chunks
         from edu_agent.tools.course_kb import CourseKnowledgeBase
 
-        src_chunks = kb_store.load_chunks(user_id, course_id)
+        src_chunks = load_ready_course_chunks(user_id, course_id)
         if src_chunks:
             src_kb = CourseKnowledgeBase.from_chunks(
                 src_chunks, user_id=user_id, course_id=course_id
@@ -176,10 +180,14 @@ def generate_plan(
             )
         # plan_steps 持久化核心展示字段（title/objective/prerequisites/difficulty 已完整保存）。
         # target_kcs 记入 active goal 供上下文参考。
+        # 新 replacement Plan 从 0 开始：重置 goal 生命周期（status=active / progress=0.0）
+        # 与 course progress（哪怕旧 Plan 已 completed）。不提前 reset（workflow 失败不破坏旧状态）。
         if nodes:
             learner.upsert_goal(user_id, goal_id, course_id,
                                 name=fresh_name, target=goal_text,
-                                target_kcs=[n.get("id") for n in nodes if n.get("id")][:8] or None)
+                                target_kcs=[n.get("id") for n in nodes if n.get("id")][:8] or None,
+                                status="active", progress=0.0)
+        learner.update_course_progress(user_id, course_id, 0.0)
         learner.record_event({"event_type": "PLAN_CREATED", "user_id": user_id,
                               "course_id": course_id, "payload": {"plan_id": plan_id, "goal_id": goal_id}})
 
@@ -440,12 +448,12 @@ def _build_lesson_context(
         if pc.get("preferred_style"):
             lines.append(f"偏好风格：{pc['preferred_style']}")
 
-        # 课程 RAG（可选；失败不影响生成）
+        # 课程 RAG（可选；失败不影响生成）；ready-source gate：只有 metadata 存在且 status=ready 的资料可进入
         try:
-            from edu_agent.tools import kb_store
+            from edu_agent.application.course_source_service import load_ready_course_chunks
             from edu_agent.tools.course_kb import CourseKnowledgeBase
 
-            chunks = kb_store.load_chunks(user_id, course_id)
+            chunks = load_ready_course_chunks(user_id, course_id)
             if chunks:
                 kb = CourseKnowledgeBase.from_chunks(chunks, user_id=user_id, course_id=course_id)
                 hits = kb.search(

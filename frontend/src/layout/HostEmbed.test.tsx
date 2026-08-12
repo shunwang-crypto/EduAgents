@@ -8,9 +8,13 @@ import { ApiError } from "../api/ApiProvider";
 const { mockApi } = vi.hoisted(() => ({
   mockApi: {
     listCourses: vi.fn().mockResolvedValue([
-      { course_id: "PY", display_name: "Python 数据分析" },
+      { course_id: "PY", display_name: "Python 数据分析", category_id: null, current_goal: null },
     ]),
-    getCourse: vi.fn().mockResolvedValue({ course_id: "PY", display_name: "Python 数据分析" }),
+    listCourseCategories: vi.fn().mockResolvedValue([]),
+    createCourseCategory: vi.fn(),
+    renameCourseCategory: vi.fn(),
+    deleteCourseCategory: vi.fn(),
+    getCourse: vi.fn().mockResolvedValue({ course_id: "PY", display_name: "Python 数据分析", category_id: null }),
     getChat: vi.fn().mockResolvedValue({ conversation_id: "C-1", course_id: "PY", messages: [] }),
     getStep: vi.fn(),
     createConversation: vi.fn().mockResolvedValue({ conversation_id: "CONV-1" }),

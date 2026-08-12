@@ -54,8 +54,8 @@ def _stages():
     ]
 
 
-def _make_course(learner, user_id=USER, topic="Python 数据分析"):
-    return course_service.create_course(user_id, topic, learner=learner)
+def _make_course(learner, user_id=USER, topic="Python 数据分析", goal="两周完成分析目标"):
+    return course_service.create_course(user_id, topic, goal=goal, learner=learner)
 
 
 # ---------------------------------------------------------------- 1. Chat prompt once
@@ -679,3 +679,88 @@ def test_humanize_background_does_not_leak_course_id():
     assert "CUSTOM-" not in out
     # 无文本时也不暴露 id
     assert humanize_profile_fact("background:CUSTOM-x", None) == "课程背景"
+
+
+# ================================================================ Final Freeze: Goal 三态 + 生命周期
+def test_goal_explicit_clear_via_patch(learner):
+    """PATCH goal=''（显式清空）→ current_goal 为空；显式空串不能被当作字段 omitted。"""
+    course = _make_course(learner, topic="SQL 课")
+    cid = course["course_id"]
+    course_service.update_course(USER, cid, learner=learner, fields={"goal"}, goal="掌握 SQL")
+    assert course_service.get_course(USER, cid, learner)["current_goal"] == "掌握 SQL"
+    course_service.update_course(USER, cid, learner=learner, fields={"goal"}, goal="")
+    assert course_service.get_course(USER, cid, learner)["current_goal"] == ""
+
+
+def test_goal_omitted_field_keeps_target(learner):
+    """goal 字段 omitted（fields 不含 goal）→ target 不变（三态 None = 不修改）。"""
+    course = _make_course(learner, topic="SQL 课")
+    cid = course["course_id"]
+    course_service.update_course(USER, cid, learner=learner, fields={"goal"}, goal="目标A")
+    course_service.update_course(USER, cid, learner=learner,
+                                 fields={"display_name"}, display_name="改名")
+    assert course_service.get_course(USER, cid, learner)["current_goal"] == "目标A"
+
+
+def test_completed_goal_reactivates_on_new_target(learner):
+    """completed goal（progress=1.0）+ 新非空目标 → active/0.0/空 kcs/同 goal_id/course progress 0。"""
+    course = _make_course(learner, topic="SQL 课")
+    cid = course["course_id"]
+    goal_id = course_service.get_course(USER, cid, learner)["goal"]["goal_id"]
+    learner.update_goal_progress(USER, goal_id, 1.0)  # 模拟全部步骤完成
+    learner.update_course_progress(USER, cid, 1.0)
+    assert learner.repo.get_goal(USER, goal_id)["status"] == "completed"
+    updated = course_service.update_course(USER, cid, learner=learner,
+                                           fields={"goal"}, goal="熟练掌握 SQL 查询")
+    g = updated["goal"]
+    assert g["goal_id"] == goal_id  # 稳定 goal_id，无新版本/history
+    assert g["status"] == "active" and g["progress"] == 0.0
+    assert g["target"] == "熟练掌握 SQL 查询"
+    assert updated["progress"] == 0.0  # course progress 归零（新生命周期从 0 开始）
+
+
+def test_active_goal_wording_edit_keeps_progress(learner):
+    """active goal 普通文字编辑 → target 变，但 progress / target_kcs 不抹（区分生命周期与文字编辑）。"""
+    course = _make_course(learner, topic="SQL 课")
+    cid = course["course_id"]
+    goal_id = course_service.get_course(USER, cid, learner)["goal"]["goal_id"]
+    learner.update_goal_progress(USER, goal_id, 0.5)
+    updated = course_service.update_course(USER, cid, learner=learner,
+                                           fields={"goal"}, goal="熟练掌握 SQL 查询与优化")
+    assert updated["goal"]["target"] == "熟练掌握 SQL 查询与优化"
+    assert updated["goal"]["status"] == "active"
+    assert updated["goal"]["progress"] == 0.5  # 不抹进度
+
+
+def test_plan_regenerate_resets_plan_course_goal_progress(learner):
+    """旧 plan 全部完成（plan/course/goal = 1，goal completed）→ regenerate → 全部归零。"""
+    course = _make_course(learner, topic="Python 数据分析")
+    cid = course["course_id"]
+    goal_id = course_service.get_course(USER, cid, learner)["goal"]["goal_id"]
+    p1 = generate_plan(USER, cid, goal="两周完成分析", duration_days=14, daily_minutes=60,
+                       learner=learner)
+    # 模拟全部步骤完成（plan/course/goal progress=1，goal completed）
+    for step in p1["steps"]:
+        learner.repo.upsert_plan_step(
+            {**learner.repo.get_plan_step(p1["plan_id"], step["step_id"]), "status": "completed"}
+        )
+    learner.repo.update_plan_progress(p1["plan_id"], 1.0)
+    learner.update_course_progress(USER, cid, 1.0)
+    learner.update_goal_progress(USER, goal_id, 1.0)
+    assert learner.repo.get_goal(USER, goal_id)["status"] == "completed"
+    # 重新生成（无 LLM 降级路径）→ 新 replacement plan 从 0 开始
+    p2 = generate_plan(USER, cid, goal="两周完成分析", duration_days=14, daily_minutes=60,
+                       learner=learner)
+    assert p2["plan_id"] != p1["plan_id"]
+    assert p2["progress"] == 0.0
+    after = course_service.get_course(USER, cid, learner)
+    assert after["progress"] == 0.0
+    assert after["goal"]["status"] == "active" and after["goal"]["progress"] == 0.0
+    assert after["goal"]["goal_id"] == goal_id
+
+
+def test_plan_generate_rejects_empty_goal(learner):
+    """Server-side 拒绝空目标：课程无目标且不传 goal → 不能只靠前端 disabled。"""
+    course = _make_course(learner, topic="无目标课", goal="")
+    with pytest.raises(ValueError):
+        generate_plan(USER, course["course_id"], learner=learner)

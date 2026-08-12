@@ -265,3 +265,60 @@ def test_conversations_other_user_course_404(client):
         "/api/chat/conversations", params={"course_id": cid}, headers={"X-User-Id": "USER-B"}
     )
     assert r.status_code == 404, r.text
+
+
+# ================================================================ Final Freeze: Category 边界
+def test_category_delete_keeps_course(client):
+    """删除分类 → 课程保留 + category_id=null；Goal 等 Adaptive 数据不受影响。"""
+    cat = client.post("/api/course-categories", json={"name": "Python"},
+                      headers={"X-User-Id": "USER-A"}).json()
+    cid = cat["category_id"]
+    course = client.post("/api/courses", json={"topic": "Python 数据分析", "category_id": cid},
+                         headers={"X-User-Id": "USER-A"}).json()
+    assert course["category_id"] == cid
+    assert client.delete(f"/api/course-categories/{cid}",
+                         headers={"X-User-Id": "USER-A"}).status_code == 204
+    after = client.get(f"/api/courses/{course['course_id']}",
+                       headers={"X-User-Id": "USER-A"}).json()
+    assert after["category_id"] is None
+    assert after["goal"] is not None  # Goal / Adaptive 数据不变
+
+
+def test_category_ownership_user_scoped(client):
+    """USER-B 不能把课程归入 USER-A 的分类（ownership-first，404）；A 自己可以。"""
+    cat = client.post("/api/course-categories", json={"name": "私有"},
+                      headers={"X-User-Id": "USER-A"}).json()
+    cid = cat["category_id"]
+    course_b = client.post("/api/courses", json={"topic": "B 的课"},
+                           headers={"X-User-Id": "USER-B"}).json()
+    r = client.patch(f"/api/courses/{course_b['course_id']}", json={"category_id": cid},
+                     headers={"X-User-Id": "USER-B"})
+    assert r.status_code == 404, r.text
+    course_a = client.post("/api/courses", json={"topic": "A 的课"},
+                           headers={"X-User-Id": "USER-A"}).json()
+    r2 = client.patch(f"/api/courses/{course_a['course_id']}", json={"category_id": cid},
+                      headers={"X-User-Id": "USER-A"})
+    assert r2.status_code == 200 and r2.json()["category_id"] == cid
+
+
+def test_category_fk_rejects_dead_category_id(client):
+    """分类已删后再引用 → 404 且课程 category_id 保持 null（不留 orphan）。"""
+    cat = client.post("/api/course-categories", json={"name": "临时"},
+                      headers={"X-User-Id": "USER-A"}).json()
+    cid = cat["category_id"]
+    course = client.post("/api/courses", json={"topic": "FK 课"},
+                         headers={"X-User-Id": "USER-A"}).json()
+    client.delete(f"/api/course-categories/{cid}", headers={"X-User-Id": "USER-A"})
+    r = client.patch(f"/api/courses/{course['course_id']}", json={"category_id": cid},
+                     headers={"X-User-Id": "USER-A"})
+    assert r.status_code == 404, r.text
+    after = client.get(f"/api/courses/{course['course_id']}",
+                       headers={"X-User-Id": "USER-A"}).json()
+    assert after["category_id"] is None
+
+
+def test_conversations_limit_bounds(client):
+    """API limit bounds：1 <= limit <= 20（越界 422）。"""
+    assert client.get("/api/chat/conversations", params={"limit": 0}).status_code == 422
+    assert client.get("/api/chat/conversations", params={"limit": 21}).status_code == 422
+    assert client.get("/api/chat/conversations", params={"limit": 20}).status_code == 200

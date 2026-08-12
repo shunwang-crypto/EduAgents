@@ -9,7 +9,11 @@ import "./course-sources.css";
  * - 同一抽屉被两个入口打开（Sidebar 课程工作区「课程资料」、CourseHeader「···」）；
  * - Esc / 关闭按钮 / 背景点击均可关闭；
  * - 添加链接（自动判 web/github）；搜索互联网（多选导入）；已添加列表（删除 / failed 重试）；
- * - 每个资料状态独立（importing / ready / failed）。 */
+ * - 每个资料状态独立（importing / ready / failed）。
+ * - stale-async 保护：open 新课程 / 关闭 / api(user) 变化时 invalidate scope，
+ *   旧请求（loadSources / runSearch / addUrl / retrySource / removeSource / importSelected）
+ *   返回后不得修改当前 state（courseIdRef + scopeSeqRef + apiRef 三重判定）。
+ */
 export function CourseSourcesDrawer() {
   const api = useApi();
   const [open, setOpen] = useState(false);
@@ -31,44 +35,72 @@ export function CourseSourcesDrawer() {
 
   const closeRef = useRef<HTMLButtonElement>(null);
 
-  const resetTransient = () => {
-    setUrlInput("");
-    setQuery("");
+  // stale-async scope：open/close/api 变化 → invalidate，旧请求作废
+  const scopeSeqRef = useRef(0);
+  const courseIdRef = useRef<string | null>(null);
+  const apiRef = useRef(api);
+  apiRef.current = api;
+
+  /** 当前 scope 是否有效：请求 seq 未过期 + 仍是同一 course + 仍是同一 api(user)。 */
+  const isScopeCurrent = (seq: number, cid: string | null) =>
+    seq === scopeSeqRef.current && cid === courseIdRef.current && apiRef.current === api;
+
+  const close = () => {
+    // 关闭：清 scope + 全部 state，杜绝旧请求回写
+    scopeSeqRef.current += 1;
+    courseIdRef.current = null;
+    setOpen(false);
+    setCourseId(null);
+    setSources([]);
     setResults([]);
     setSelected(new Set());
     setError("");
     setUrlError("");
     setSearchError("");
-  };
-
-  const close = () => {
-    setOpen(false);
-    setCourseId(null);
-    resetTransient();
+    setUrlInput("");
+    setQuery("");
+    setLoading(false);
+    setSearching(false);
+    setAddingUrl(false);
+    setImporting(false);
   };
 
   const loadSources = (cid: string) => {
+    const seq = scopeSeqRef.current;
     setLoading(true);
     setError("");
     api
       .listCourseSources(cid)
       .then((list) => {
+        if (!isScopeCurrent(seq, cid)) return;
         setSources(list);
         setLoading(false);
       })
       .catch((e) => {
+        if (!isScopeCurrent(seq, cid)) return;
         setError(e instanceof Error ? e.message : "加载失败");
         setLoading(false);
       });
   };
 
-  // 订阅 open 事件（两个入口共用）
+  // 订阅 open 事件（两个入口共用）：打开新课程先清旧 state，B 加载中不得看到 A 的数据
   useEffect(
     () =>
       subscribeCourseSourcesOpen((cid) => {
+        scopeSeqRef.current += 1;
+        courseIdRef.current = cid;
         setCourseId(cid);
         setOpen(true);
-        resetTransient();
+        setSources([]);
+        setResults([]);
+        setSelected(new Set());
+        setLoading(false);
+        setSearching(false);
+        setError("");
+        setUrlError("");
+        setSearchError("");
+        setUrlInput("");
+        setQuery("");
         loadSources(cid);
         setTimeout(() => closeRef.current?.focus(), 0);
       }),
@@ -93,33 +125,45 @@ export function CourseSourcesDrawer() {
       setUrlError("请输入链接");
       return;
     }
+    const cid = courseId;
+    const seq = scopeSeqRef.current;
     setAddingUrl(true);
     setUrlError("");
     try {
-      await api.addCourseSource(courseId, { url });
+      await api.addCourseSource(cid, { url });
+      if (!isScopeCurrent(seq, cid)) return;
       setUrlInput("");
-      loadSources(courseId);
+      loadSources(cid);
     } catch (e) {
+      if (!isScopeCurrent(seq, cid)) return;
       setUrlError(e instanceof Error ? e.message : "添加失败");
     } finally {
-      setAddingUrl(false);
+      if (isScopeCurrent(seq, cid)) setAddingUrl(false);
     }
   };
 
   const removeSource = async (sourceId: string) => {
+    const cid = courseId;
+    const seq = scopeSeqRef.current;
     try {
-      await api.deleteCourseSource(courseId, sourceId);
-      loadSources(courseId);
+      await api.deleteCourseSource(cid, sourceId);
+      if (!isScopeCurrent(seq, cid)) return;
+      loadSources(cid);
     } catch (e) {
+      if (!isScopeCurrent(seq, cid)) return;
       setError(e instanceof Error ? e.message : "删除失败");
     }
   };
 
   const retrySource = async (url: string) => {
+    const cid = courseId;
+    const seq = scopeSeqRef.current;
     try {
-      await api.addCourseSource(courseId, { url });
-      loadSources(courseId);
+      await api.addCourseSource(cid, { url });
+      if (!isScopeCurrent(seq, cid)) return;
+      loadSources(cid);
     } catch (e) {
+      if (!isScopeCurrent(seq, cid)) return;
       setError(e instanceof Error ? e.message : "重试失败");
     }
   };
@@ -130,37 +174,48 @@ export function CourseSourcesDrawer() {
       setSearchError("请输入搜索关键词");
       return;
     }
+    const cid = courseId;
+    const seq = scopeSeqRef.current;
     setSearching(true);
     setSearchError("");
     setResults([]);
     setSelected(new Set());
     try {
-      const list = await api.searchCourseSources(courseId, q, 5);
+      const list = await api.searchCourseSources(cid, q, 5);
+      if (!isScopeCurrent(seq, cid)) return;
       setResults(list);
-      setSelected(new Set(list.map((r) => r.url)));
+      // 搜索只给候选：默认不全选，用户明确勾选才导入
+      setSelected(new Set());
     } catch (e) {
+      if (!isScopeCurrent(seq, cid)) return;
       setSearchError(e instanceof Error ? e.message : "搜索失败");
     } finally {
-      setSearching(false);
+      if (isScopeCurrent(seq, cid)) setSearching(false);
     }
   };
 
   const importSelected = async () => {
     const chosen = results.filter((r) => selected.has(r.url));
     if (chosen.length === 0) return;
+    const cid = courseId;
+    const seq = scopeSeqRef.current;
     setImporting(true);
     try {
       for (const r of chosen) {
-        await api.addCourseSource(courseId, { url: r.url, title: r.title });
+        // 导入中途切课程 → 停止剩余导入（A 的 URL 不得在 B 下继续导入）
+        if (!isScopeCurrent(seq, cid)) return;
+        await api.addCourseSource(cid, { url: r.url, title: r.title });
       }
+      if (!isScopeCurrent(seq, cid)) return;
       setQuery("");
       setResults([]);
       setSelected(new Set());
-      loadSources(courseId);
+      loadSources(cid);
     } catch (e) {
+      if (!isScopeCurrent(seq, cid)) return;
       setError(e instanceof Error ? e.message : "导入失败");
     } finally {
-      setImporting(false);
+      if (isScopeCurrent(seq, cid)) setImporting(false);
     }
   };
 

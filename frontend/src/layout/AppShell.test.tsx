@@ -7,6 +7,10 @@ import { ChatPage } from "../features/chat/ChatPage";
 const { mockApi } = vi.hoisted(() => ({
   mockApi: {
     listCourses: vi.fn().mockResolvedValue([]),
+    listCourseCategories: vi.fn().mockResolvedValue([]),
+    createCourseCategory: vi.fn(),
+    renameCourseCategory: vi.fn(),
+    deleteCourseCategory: vi.fn(),
     createConversation: vi.fn().mockResolvedValue({ conversation_id: "CONV-1" }),
     getChat: vi.fn().mockResolvedValue({ conversation_id: "C-1", course_id: null, messages: [] }),
     getCourse: vi.fn().mockResolvedValue({ course_id: "PY", display_name: "Python" }),

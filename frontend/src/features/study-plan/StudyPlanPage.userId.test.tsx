@@ -55,7 +55,10 @@ const { mockPlan, clients } = vi.hoisted(() => ({
 vi.mock("../../api/client", () => {
   const make = (userId: string): MockApiClient => ({
     userId,
-    getCourse: vi.fn().mockResolvedValue({ course_id: "PY", display_name: "Python 数据分析" }),
+    getCourse: vi.fn().mockResolvedValue({
+      course_id: "PY", display_name: "Python 数据分析",
+      category_id: null, current_goal: "掌握 Pandas、NumPy 和数据分析流程",
+    }),
     getPlan: vi.fn().mockResolvedValue(mockPlan),
     generatePlan: vi.fn().mockResolvedValue(mockPlan),
     updateStep: vi.fn().mockResolvedValue(mockPlan),

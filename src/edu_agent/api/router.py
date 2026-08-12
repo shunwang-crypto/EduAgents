@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from edu_agent.application import course_service, study_plan_service
@@ -288,13 +288,16 @@ def delete_course_source(course_id: str, source_id: str,
 
 
 @router.get("/courses/{course_id}/sources/search")
-def search_course_sources(course_id: str, q: str = "", limit: int = 5,
+def search_course_sources(course_id: str, q: str = Query("", min_length=1, max_length=300),
+                          limit: int = Query(5, ge=1, le=8),
                           user_id: str = Depends(_user_id)) -> List[Dict[str, str]]:
     """搜索互联网资料候选（不直接导入）。课程必须存在（X-User-Id + course scoped）。"""
     try:
         return course_source_service.search_sources(user_id, course_id, q, limit=limit)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -343,7 +346,7 @@ def get_chat(course_id: Optional[str] = None, conversation_id: Optional[str] = N
 
 
 @router.get("/chat/conversations")
-def list_conversations(course_id: Optional[str] = None, limit: int = 6,
+def list_conversations(course_id: Optional[str] = None, limit: int = Query(6, ge=1, le=20),
                        user_id: str = Depends(_user_id),
                        service: ChatService = Depends(_chat_service)) -> List[dict]:
     """最近对话列表：course_id 为空 = General；否则该 Course 的对话。
