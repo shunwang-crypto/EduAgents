@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from edu_agent.api.main import app  # noqa: E402
 from edu_agent.learner_model.service import LearnerModelService  # noqa: E402
+from edu_agent.config.settings import get_settings  # noqa: E402
 
 USER = "STU-API"
 
@@ -23,13 +24,32 @@ def client(tmp_path, monkeypatch):
     db = str(tmp_path / "lm.db")
     monkeypatch.setenv("LEARNER_MODEL_DB_PATH", db)
     monkeypatch.setenv("LEARNER_MODEL_USER_ID", USER)
-    # get_settings 是 lru_cache：必须清除缓存让新 env 生效
-    from edu_agent.config.settings import get_settings
 
+    # 测试环境显式 offline：清空所有外部 AI / search provider 配置，
+    # 让 production workflow / ChatService 在无 provider 时立即走确定性降级，
+    # 而非等待真实 LLM 网络 timeout（也确保有 .env 的开发机与无 .env 的 CI 行为一致）。
+    for key in (
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
+        "XINGCHEN_API_KEY",
+        "XINGCHEN_BASE_URL",
+        "XINGCHEN_MODEL",
+        "OPENCODE_ZEN_API_KEY",
+        "OPENCODE_ZEN_BASE_URL",
+        "OPENCODE_ZEN_MODEL",
+        "TAVILY_API_KEY",
+    ):
+        monkeypatch.setenv(key, "")
+
+    # get_settings 是 lru_cache：清空缓存让上面的空配置生效
     get_settings.cache_clear()
     LearnerModelService._shared_default = None  # 重置共享实例
     with TestClient(app) as c:
         yield c
+
+    # teardown：再次清缓存 + 重置共享实例，避免本测试的 offline 配置污染后续测试
+    get_settings.cache_clear()
+    LearnerModelService._shared_default = None
 
 
 def test_health(client):
