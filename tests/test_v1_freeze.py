@@ -385,3 +385,135 @@ def test_course_delete_event_persisted(learner):
     events = [e for e in learner.repo.list_events(USER) if e["event_type"] == "COURSE_DELETED"]
     assert len(events) == 1
     assert events[0]["course_id"] == course["course_id"]
+
+
+# ================================================================ P1-2 GET history latest N
+# 现有 test_recent_history_returns_latest_n_chronological 只测了 repo.list_recent_messages；
+# 这里直接测 GET /chat 实际走的 get_conversation 路径（它此前用 list_messages = 最早 N 条）。
+
+class _FakeNode:
+    def __init__(self, **kw):
+        self._d = kw
+
+    def model_dump(self):
+        return self._d
+
+
+class _FakeKnowledgeMap:
+    def __init__(self, nodes):
+        self.nodes = nodes
+
+
+@pytest.fixture()
+def mock_plan_workflow(monkeypatch):
+    """确定性假 workflow：捕获 StudentInput 并返回 3 阶段节点（不调真实 LLM）。"""
+    captured = {}
+
+    def fake_workflow(student_input, **kwargs):
+        captured["student_input"] = student_input
+        nodes = [
+            _FakeNode(id="KC1", title="概念", summary="s", learning_objective="o",
+                      prerequisites=[], stage_id="stage-1", stage_title="基础准备", stage_order=1,
+                      difficulty="easy", estimated_minutes=30),
+            _FakeNode(id="KC2", title="核心", summary="s", learning_objective="o",
+                      prerequisites=["KC1"], stage_id="stage-2", stage_title="核心学习", stage_order=2,
+                      difficulty="medium", estimated_minutes=45),
+            _FakeNode(id="KC3", title="应用", summary="s", learning_objective="o",
+                      prerequisites=["KC2"], stage_id="stage-3", stage_title="综合应用", stage_order=3,
+                      difficulty="hard", estimated_minutes=60),
+        ]
+        return {
+            "final_plan": "## 学习计划",
+            "knowledge_map": _FakeKnowledgeMap(nodes),
+            "analysis": {}, "decomposition": {}, "research": {},
+            "evaluated_research": {}, "draft_plan": {}, "validation": {},
+            "review": {"review_summary": "ok"},
+        }
+
+    monkeypatch.setattr(
+        "edu_agent.application.study_plan_service.run_study_plan_workflow",
+        fake_workflow,
+    )
+    return captured
+
+
+def test_get_conversation_returns_latest_100_not_earliest(learner):
+    course = _make_course(learner)
+    svc = ChatService(learner=learner)
+    conv = svc.create_conversation(USER, course["course_id"])
+    cid = conv["conversation_id"]
+    # 写入 120 条消息（created_at 用 6 位零填充，保证字符串排序 == 数值排序）
+    for i in range(1, 121):
+        learner.repo.insert_message({
+            "message_id": f"MSG-{i:03d}", "conversation_id": cid,
+            "role": "user" if i % 2 else "assistant", "content": f"消息{i}",
+            "created_at": f"2026-08-12T{i:06d}Z", "metadata_json": "{}",
+        })
+    res = svc.get_conversation(USER, course_id=course["course_id"])
+    msgs = res["messages"]
+    assert len(msgs) == 100
+    contents = [m["content"] for m in msgs]
+    # 最新 100 条 = 消息21..消息120，按 chronological（旧→新）
+    assert contents[0] == "消息21"
+    assert contents[-1] == "消息120"
+    assert "消息1" not in contents  # 最早 20 条被截断
+    # chronological 顺序（created_at 升序）
+    times = [m["created_at"] for m in msgs]
+    assert times == sorted(times)
+
+
+# ================================================================ P1-3 rename 不改变语义主题
+def test_rename_does_not_change_plan_semantic_topic(learner, mock_plan_workflow):
+    course = _make_course(learner, topic="Python 数据分析")
+    course_service.rename_course(USER, course["course_id"], "30天冲刺课", learner=learner)
+    plan = generate_plan(USER, course["course_id"], learner=learner)
+    # Plan 语义主题必须用稳定的 course.topic（不是 display_name）
+    assert mock_plan_workflow["student_input"].topic == "Python 数据分析"
+    # UI 标题仍用 display_name；GET course 返回 rename 后的 display_name
+    assert course_service.get_course(USER, course["course_id"], learner)["display_name"] == "30天冲刺课"
+    assert plan["title"] == "30天冲刺课 学习计划"
+
+
+# ================================================================ P1-4 删除课程清除 course-scoped background
+def test_delete_course_removes_background_fact(learner, mock_plan_workflow):
+    course = _make_course(learner, topic="SQL")
+    cid = course["course_id"]
+    # 全局技能（删除课程前写入，必须保留）
+    learner.set_profile_fact(USER, "skill:python", "Python")
+    # 生成计划时写入当前基础 → background:{course_id}
+    generate_plan(USER, cid, learner=learner, optional_background="会 Python 但不会 SQL")
+    fact = learner.get_profile_fact(USER, f"background:{cid}")
+    assert fact is not None
+    assert "会 Python 但不会 SQL" in str(fact.get("fact_value_json"))
+    # 删除课程 → background fact 必须被清除，且全局技能不受影响
+    course_service.delete_course(USER, cid, learner=learner)
+    assert learner.get_profile_fact(USER, f"background:{cid}") is None
+    assert learner.get_profile_fact(USER, "skill:python") is not None
+    # 重新创建相同 topic → 新 course_id（旧行已删），旧 background 不复活
+    course2 = _make_course(learner, topic="SQL")
+    assert course2["course_id"] != cid
+    generate_plan(USER, course2["course_id"], learner=learner)  # 不设 background
+    assert learner.get_profile_fact(USER, f"background:{cid}") is None
+    assert learner.get_profile_fact(USER, f"background:{course2['course_id']}") is None
+
+
+# ================================================================ P2-1 降级计划不泄漏内部异常
+def test_fallback_plan_no_exception_leak(monkeypatch):
+    import edu_agent.workflows.study_plan.workflow as wf
+    from edu_agent.workflows.study_plan.workflow import run_study_plan_workflow
+
+    def boom(*a, **k):
+        raise RuntimeError("LLMConfigurationError: provider unavailable")
+
+    # 让 planner 失败 → 触发 draft 降级（其他 agent 无 provider 也会各自降级）
+    monkeypatch.setattr(wf, "planner_agent", boom)
+    si = StudentInput(topic="Python 数据分析", level=None, days=14,
+                      daily_time="60分钟", goal="学会数据分析")
+    result = run_study_plan_workflow(si)
+    plan = result["final_plan"]
+    # 内部异常文本不得进入用户可见计划内容
+    for leak in ("LLMConfigurationError", "provider unavailable", "原因：",
+                 "Agent 暂时不可用", "Traceback", "Exception"):
+        assert leak not in plan, f"fallback plan leaked: {leak}"
+    # 仍保持三阶段结构
+    assert "阶段安排" in plan

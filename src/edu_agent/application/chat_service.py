@@ -209,25 +209,26 @@ class ChatService:
                 raise KeyError(f"course not found: {course_id}")
             learner.ensure_course(user_id, course_id)
 
-        # 1) 会话（ownership 校验：user + course 都必须匹配）
-        conv = self._resolve_conversation(user_id, course_id, conversation_id)
-
-        # 2) 画像修改意图（明确语义才写；course 级偏好落当前课程）
-        intents = extract_memory_intents(message)
-        applied = apply_memory_intents(user_id, course_id or "", intents, learner)
-
-        # 3) plan_step 校验：显式传入必须有效，否则 404（绝不静默降级）
+        # plan_step 校验：必须在任何副作用（建会话 / 写画像 / 写事件 / 调 LLM）之前。
+        # 显式 plan_step_id 必须伴随有效 course_id；否则无法定位归属，直接 404（绝不静默降级）。
+        # 放在 conversation 创建与画像写入之前，保证非法 step 不会留下脏数据
+        # （空 conversation / Rust profile fact / memory / step event）。
         step: Optional[dict] = None
         if plan_step_id and not course_id:
-            # 显式 plan_step_id 必须伴随有效 course_id 做 ownership 校验，
-            # 否则无法定位 step 归属，绝不能静默降级为 General Chat。
             raise KeyError("plan_step_id requires course_id")
         if course_id and plan_step_id:
             from edu_agent.application.study_plan_service import get_step
 
             step = get_step(user_id, course_id, plan_step_id, learner)  # KeyError → 404
 
-        # 4) 先加载 PRIOR history（不含当前消息）→ Prompt 中当前消息只出现一次
+        # 1) 会话（ownership 校验：user + course 都必须匹配；校验通过后才创建）
+        conv = self._resolve_conversation(user_id, course_id, conversation_id)
+
+        # 2) 画像修改意图（明确语义才写；course 级偏好落当前课程）
+        intents = extract_memory_intents(message)
+        applied = apply_memory_intents(user_id, course_id or "", intents, learner)
+
+        # 3) 先加载 PRIOR history（不含当前消息）→ Prompt 中当前消息只出现一次
         history = self._recent_history(conv["conversation_id"], limit=8)
 
         # 5) 用户消息落库（metadata 保留 step 上下文）
@@ -283,19 +284,31 @@ class ChatService:
         }
 
     def get_conversation(self, user_id: str, course_id: Optional[str] = None,
-                         conversation_id: Optional[str] = None) -> dict:
+                         conversation_id: Optional[str] = None,
+                         limit: int = 100) -> dict:
         """GET 历史：纯读取，不创建 conversation（避免 GET 产生 DB write）。
 
         没有 conversation 时返回 conversation_id=None + 空 history（200），
         前端据此显示 Empty State，而不是「无法加载历史消息」。
+
+        ownership：GET 历史也必须校验 course 归属，否则 404（与 POST 一致），
+        避免「USER-B 访问 USER-A course 返回 200/[]」把无权限与空历史混为一谈。
+        （合法 owner 的空白课程仍返回 200/[]，保留 fresh-course empty state。）
+
+        返回最近 limit 条（DESC 取最新再 reverse 成 chronological），不是最早 limit 条；
+        超长会话只回最新 N 条（与 LLM prompt 的 _recent_history 不同层级，互不破坏）。
         """
         learner = self._learner
+        if course_id:
+            # ownership 优先：当前用户不拥有该 course → 404（信息隐藏）。
+            if learner.repo.get_user_course(user_id, course_id) is None:
+                raise KeyError(f"course not found: {course_id}")
         conv = self._resolve_conversation(
             user_id, course_id, conversation_id, create_if_missing=False
         )
         if conv is None:
             return {"conversation_id": None, "course_id": course_id, "messages": []}
-        messages = learner.repo.list_messages(conv["conversation_id"])
+        messages = learner.repo.list_recent_messages(conv["conversation_id"], limit=limit)
         return {"conversation_id": conv["conversation_id"], "course_id": course_id,
                 "messages": [{"message_id": m["message_id"], "role": m["role"],
                               "content": m["content"], "created_at": m["created_at"],

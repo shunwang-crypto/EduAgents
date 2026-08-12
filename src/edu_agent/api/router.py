@@ -49,8 +49,10 @@ class UpdateCourseRequest(BaseModel):
 
 class GeneratePlanRequest(BaseModel):
     goal: str = Field(default="", description="学习目标（留空沿用课程目标）")
-    duration_days: Optional[int] = Field(default=None, description="学习周期（天）；留空沿用课程已保存默认值")
-    daily_minutes: Optional[int] = Field(default=None, description="每天学习分钟；留空沿用课程已保存默认值")
+    # 与 CreateCourseRequest 保持一致的范围：先校验，避免非法值跑完整 LLM workflow
+    # 最后才在 DB INSERT/UPDATE 因 CHECK 约束失败 → 500。
+    duration_days: Optional[int] = Field(default=None, ge=1, le=365, description="学习周期（天）；留空沿用课程已保存默认值")
+    daily_minutes: Optional[int] = Field(default=None, ge=5, le=600, description="每天学习分钟；留空沿用课程已保存默认值")
     background: str = Field(default="", description="补充背景（可选，写为 Profile Fact）")
 
 

@@ -126,3 +126,85 @@ def test_profile_intent_via_chat(client):
     r = client.post("/api/chat", json={"message": "忘记我做过 FastAPI"})
     # 第一个意图写入 fact，第二个删除（不存在则 no-op）——API 不报错
     assert r.status_code == 200
+
+
+# ---------------------------------------------------------------- P1-5.1 GET history ownership 404
+def test_get_history_other_user_course_returns_404(client):
+    # USER-A 创建课程
+    ca = client.post(
+        "/api/courses", json={"topic": "Python 数据分析"}, headers={"X-User-Id": "USER-A"}
+    ).json()
+    cid = ca["course_id"]
+    # USER-B 访问 USER-A 课程 history → 404（不能 200/[] 把无权限与空历史混为一谈）
+    r = client.get(
+        "/api/chat", params={"course_id": cid}, headers={"X-User-Id": "USER-B"}
+    )
+    assert r.status_code == 404, r.text
+    # USER-A 自己的 fresh 课程（合法 owner，无 conversation）→ 200 / []（empty state）
+    r = client.get(
+        "/api/chat", params={"course_id": cid}, headers={"X-User-Id": "USER-A"}
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["messages"] == []
+
+
+# ---------------------------------------------------------------- P1-5.3 invalid plan_step → 404, no side effects
+def test_invalid_plan_step_id_no_side_effects(client):
+    import os
+
+    from edu_agent.learner_model.service import LearnerModelService
+
+    course = client.post("/api/courses", json={"topic": "Java OOP"}).json()
+    cid = course["course_id"]
+    # 非法 step + 「我会 Rust」→ 必须 404
+    r = client.post(
+        "/api/chat",
+        json={"message": "我会 Rust", "course_id": cid, "plan_step_id": "PLANSTEP-NOPE"},
+    )
+    assert r.status_code == 404, r.text
+
+    # 校验没有留下脏数据（验证发生在建会话 / 写画像 / 写事件之前）
+    db = os.environ["LEARNER_MODEL_DB_PATH"]
+    learner = LearnerModelService(db_path=db)
+    # 没有 Rust profile fact
+    rust = [
+        f for f in learner.repo.list_profile_facts(USER)
+        if "rust" in str(f.get("fact_value_json", "")).lower()
+    ]
+    assert rust == [], "invalid plan_step 不应写入 Rust profile fact"
+    # 没有新 conversation
+    convs = learner.repo._fetchall(
+        "SELECT * FROM chat_conversations WHERE user_id=?", (USER,)
+    )
+    assert convs == [], "invalid plan_step 不应创建 conversation"
+    # 没有 step event
+    events = learner.repo.list_events(USER)
+    step_events = [
+        e for e in events
+        if e["event_type"] in ("PLAN_STEP_COMPLETED", "PLAN_STEP_STARTED")
+    ]
+    assert step_events == [], "invalid plan_step 不应写入 step event"
+
+
+# ---------------------------------------------------------------- P2-3 plan time bounds → 422
+def test_generate_plan_invalid_time_bounds_422(client):
+    course = client.post("/api/courses", json={"topic": "SQL"}).json()
+    cid = course["course_id"]
+    # duration_days 超出 [1,365] → 422（不跑完整 LLM workflow 后 DB 500）
+    r = client.post(
+        f"/api/courses/{cid}/plan/generate",
+        json={"duration_days": 999, "daily_minutes": 60},
+    )
+    assert r.status_code == 422, r.text
+    # daily_minutes 超出 [5,600] → 422
+    r = client.post(
+        f"/api/courses/{cid}/plan/generate",
+        json={"duration_days": 14, "daily_minutes": 1},
+    )
+    assert r.status_code == 422, r.text
+    # 合法值仍工作（offline fallback 路径）
+    r = client.post(
+        f"/api/courses/{cid}/plan/generate",
+        json={"duration_days": 14, "daily_minutes": 60},
+    )
+    assert r.status_code == 200, r.text

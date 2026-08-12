@@ -46,9 +46,10 @@ def _run_step(step_name: str, func: Callable[..., Any], fallback: Callable[[Exce
 
 
 def _fallback_analysis(student_input: StudentInput, exc: Exception) -> AnalysisResult:
+    # 降级只使用学生输入（topic / level / goal），不泄漏内部异常或 Agent 名称。
     return AnalysisResult(
         topic=student_input.topic,
-        level_summary=f"需求分析 Agent 暂时不可用，已保留学生原始基础描述：{student_input.level or '（未提供，按首次学习处理）'}",
+        level_summary=student_input.level or "（未提供，按首次学习处理）",
         goal_summary=student_input.goal,
         prerequisites=["根据学习主题补充必要基础知识", "准备可运行的学习环境"],
         need_web_search=False,
@@ -57,9 +58,10 @@ def _fallback_analysis(student_input: StudentInput, exc: Exception) -> AnalysisR
 
 
 def _fallback_research(exc: Exception) -> ResearchResult:
+    # 降级不泄漏异常文本；只说明将基于学生输入生成。
     return ResearchResult(
         search_enabled=False,
-        summary=f"资料搜索步骤未完成，原因：{exc}。将只基于学生输入生成学习规划。",
+        summary="将只基于学生输入生成学习规划。",
         key_points=[],
         resources=[],
     )
@@ -106,7 +108,7 @@ def _fallback_decomposition(
         application_directions=[
             f"完成一个和 {topic} 直接相关的小案例",
             "每天保留笔记、代码、截图或讲解记录作为检查证据",
-            f"内容拆解步骤使用降级结果，原因：{exc}",
+            "内容拆解步骤使用降级模板生成",
         ],
     )
 
@@ -129,7 +131,7 @@ def _fallback_evaluated_research(
     ]
     return EvaluatedResearchResult(
         search_enabled=research.search_enabled,
-        summary=f"资源质量评估步骤未完成，原因：{exc}。已使用 Researcher 原始结果降级。",
+        summary="已使用 Researcher 原始结果降级。",
         key_points=research.key_points,
         resources=resources if research.search_enabled else [],
     )
@@ -182,7 +184,7 @@ def _fallback_draft(
 
     markdown = f"""# {topic} 学习规划
 
-> 初版计划由降级模板生成，原因：{exc}
+> 初版计划由降级模板生成。
 
 ## 一、计划摘要
 
@@ -257,15 +259,16 @@ def _fallback_draft(
 def _fallback_validation(exc: Exception) -> PlanValidationResult:
     return PlanValidationResult(
         passed=False,
-        issues=[f"规则校验步骤未完成，原因：{exc}。"],
+        issues=["规则校验步骤未完成，请人工检查计划章节、每日天数、任务量、应用任务和资源链接。"],
         suggestions=["请人工检查计划章节、每日天数、任务量、应用任务和资源链接。"],
         checked_rules=[],
     )
 
 
 def _fallback_review(draft_plan: DraftPlan, exc: Exception) -> ReviewResult:
+    # 降级不泄漏内部 Agent 名称或异常文本，只说明已返回初版计划。
     return ReviewResult(
-        review_summary=f"Reviewer Agent 暂时不可用，已直接返回初版计划。原因：{exc}",
+        review_summary="已直接返回初版计划，请人工确认任务量和资源推荐是否合适。",
         problems_found=["未完成 LLM 自动审查，请人工确认任务量和资源推荐是否合适。"],
         final_plan_markdown=draft_plan.plan_markdown,
     )
@@ -354,7 +357,7 @@ def run_study_plan_workflow(
 
     print(
         f"[study_plan] 完成学习计划，总耗时 {time.time() - workflow_start:.1f}s "
-        f"（review 是否走降级: {review.review_summary.startswith('Reviewer Agent 暂时不可用')}）",
+        f"（review 是否走降级: {review.review_summary.startswith('已直接返回初版计划')}）",
         flush=True,
     )
     return {

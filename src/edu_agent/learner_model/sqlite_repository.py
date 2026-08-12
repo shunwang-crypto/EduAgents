@@ -157,6 +157,13 @@ class SQLiteLearnerRepository(LearnerRepository):
         self._conn().execute(
             "DELETE FROM profile_change_log WHERE user_id=? AND course_id=?", (user_id, course_id)
         )
+        # 课程级背景事实（background:{course_id}）属于本课程的 scoped key，
+        # 删除课程时必须一并清除；绝不动 global skills / global preferences /
+        # global facts / semantic global memory / 其他 course memories / 其他 course goals。
+        self._conn().execute(
+            "DELETE FROM learner_profile_facts WHERE user_id=? AND fact_key=?",
+            (user_id, f"background:{course_id}"),
+        )
         self._commit()
 
     # ---- profile facts ----------------------------------------------------
