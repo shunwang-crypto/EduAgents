@@ -106,6 +106,14 @@ def generate_plan(
         plan_context=plan_context,
     )
     final_plan = result.get("final_plan", "")
+    # 并发安全：LLM workflow 很慢，执行期间课程可能被删除（复活）或被改名（旧名覆盖新名）。
+    # finalize 前必须重读 fresh 快照；所有 finalize 一律用 fresh，不得再用上方陈旧的
+    # course_row / course_info。若课程在生成期间被删除，则丢弃本次 LLM 结果并抛出 KeyError，
+    # 绝不复活已删课程。
+    fresh_course_row = learner.repo.get_user_course(user_id, course_id)
+    if fresh_course_row is None:
+        raise KeyError(f"course not found (deleted during plan generation): {course_id}")
+    fresh_name = fresh_course_row.get("display_name", course_id)
 
     # 持久化 plan + steps（KnowledgeMap nodes → plan_steps；node.id 即 kc_id；
     # step_id 与 kc_id 分离：step_id=PLANSTEP-{uuid}，kc_id=KnowledgeNode.id）
@@ -124,12 +132,12 @@ def generate_plan(
             learner.repo.delete_plan(old_plan["plan_id"])
         # 把本次解析出的周期/每日时长写回课程，作为新的默认值（沿用或覆盖都保持一致）
         learner.repo.upsert_user_course(
-            {**course_row, "duration_days": resolved_days, "daily_minutes": resolved_minutes,
+            {**fresh_course_row, "duration_days": resolved_days, "daily_minutes": resolved_minutes,
              "updated_at": _now_iso()}
         )
         learner.repo.upsert_plan(
             {"plan_id": plan_id, "user_id": user_id, "course_id": course_id,
-             "goal_id": goal_id, "title": f"{course_info.get('display_name', course_id)} 学习计划",
+             "goal_id": goal_id, "title": f"{fresh_name} 学习计划",
              "summary": summary, "plan_markdown": final_plan, "progress": 0.0,
              "created_at": _now_iso(), "updated_at": _now_iso()}
         )
@@ -151,7 +159,7 @@ def generate_plan(
         # target_kcs 记入 active goal 供上下文参考。
         if nodes:
             learner.upsert_goal(user_id, goal_id, course_id,
-                                name=course_info.get("display_name", course_id), target=goal_text,
+                                name=fresh_name, target=goal_text,
                                 target_kcs=[n.get("id") for n in nodes if n.get("id")][:8] or None)
         learner.record_event({"event_type": "PLAN_CREATED", "user_id": user_id,
                               "course_id": course_id, "payload": {"plan_id": plan_id, "goal_id": goal_id}})

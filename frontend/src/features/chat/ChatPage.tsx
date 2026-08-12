@@ -208,16 +208,27 @@ export function ChatPage() {
   }, [retryText, retryMsgId, loading, runChat]);
 
   const retryHistory = useCallback(() => {
+    const seq = ++chatSeq.current;
+    const reqScope = scopeSeq.current;
     setHistoryError(null);
     setHistoryLoading(true);
     api
       .getChat(courseId ?? null, conversationParam)
-      .then((conv) => setMessages(conv.messages))
+      .then((conv) => {
+        // 串课保护：retry 期间切到别的课程，过期的 A 响应不许覆盖 B 的消息列表
+        if (seq !== chatSeq.current || reqScope !== scopeSeq.current) return;
+        setMessages(conv.messages);
+      })
       .catch((e) => {
+        // 串课保护：过期响应的错误也不许污染当前页面
+        if (reqScope !== scopeSeq.current) return;
         if (import.meta.env.DEV) console.error("[chat] getChat retry failed", e);
         setHistoryError(e instanceof Error ? e : new Error(String(e)));
       })
-      .finally(() => setHistoryLoading(false));
+      .finally(() => {
+        // 仅在仍属于当前 scope 时收尾 loading，避免清掉其他课程的 historyLoading 态
+        if (reqScope === scopeSeq.current) setHistoryLoading(false);
+      });
   }, [courseId, conversationParam, api]);
 
   // 失效对话（404）：新建 General Chat 会话并离开当前（可能错配的）路由，避免无限 Retry 同一坏 conversation

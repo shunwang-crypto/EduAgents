@@ -500,25 +500,38 @@ def test_delete_course_removes_background_fact(learner, mock_plan_workflow):
     learner.set_profile_fact(USER, "skill:python", "Python")
     # 生成计划时写入当前基础 → background:{course_id}
     generate_plan(USER, cid, learner=learner, optional_background="会 Python 但不会 SQL")
-    fact = learner.get_profile_fact(USER, f"background:{cid}")
+    fact = learner.repo.get_profile_fact(USER, f"background:{cid}")
     assert fact is not None
     assert "会 Python 但不会 SQL" in str(fact.get("fact_value_json"))
     # 删除课程 → background fact 必须被清除，且全局技能不受影响
     course_service.delete_course(USER, cid, learner=learner)
-    assert learner.get_profile_fact(USER, f"background:{cid}") is None
-    assert learner.get_profile_fact(USER, "skill:python") is not None
-    # 重新创建相同 topic → 新 course_id（旧行已删），旧 background 不复活
+    assert learner.repo.get_profile_fact(USER, f"background:{cid}") is None
+    assert learner.repo.get_profile_fact(USER, "skill:python") is not None
+    # 重新创建相同 topic（course_id 确定性复用，故与 cid 相同），旧 background 不复活；
+    # 注意：不依赖「ID 必须改变」，只验证旧背景事实不残留、重建且不带 background 时不写入新背景。
     course2 = _make_course(learner, topic="SQL")
-    assert course2["course_id"] != cid
     generate_plan(USER, course2["course_id"], learner=learner)  # 不设 background
-    assert learner.get_profile_fact(USER, f"background:{cid}") is None
-    assert learner.get_profile_fact(USER, f"background:{course2['course_id']}") is None
+    assert learner.repo.get_profile_fact(USER, f"background:{cid}") is None
+    assert learner.repo.get_profile_fact(USER, f"background:{course2['course_id']}") is None
 
 
-# ================================================================ P2-1 降级计划不泄漏内部异常
+# ================================================================ P2-1 降级计划不泄漏内部异常（final_plan + knowledge_map 节点）
 def test_fallback_plan_no_exception_leak(monkeypatch):
     import edu_agent.workflows.study_plan.workflow as wf
+    from edu_agent.config.settings import get_settings
     from edu_agent.workflows.study_plan.workflow import run_study_plan_workflow
+
+    # 强制 offline：清空所有外部 AI / search provider 配置，
+    # 让 analyzer/decomposer 在无 provider 时立即走确定性降级，
+    # 而非联网真实模型（也不产生费用）。planner 仍被强制失败以验证降级不泄漏异常。
+    for key in (
+        "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL",
+        "XINGCHEN_API_KEY", "XINGCHEN_BASE_URL", "XINGCHEN_MODEL",
+        "OPENCODE_ZEN_API_KEY", "OPENCODE_ZEN_BASE_URL", "OPENCODE_ZEN_MODEL",
+        "TAVILY_API_KEY",
+    ):
+        monkeypatch.setenv(key, "")
+    get_settings.cache_clear()
 
     def boom(*a, **k):
         raise RuntimeError("LLMConfigurationError: provider unavailable")
@@ -531,7 +544,138 @@ def test_fallback_plan_no_exception_leak(monkeypatch):
     plan = result["final_plan"]
     # 内部异常文本不得进入用户可见计划内容
     for leak in ("LLMConfigurationError", "provider unavailable", "原因：",
-                 "Agent 暂时不可用", "Traceback", "Exception"):
-        assert leak not in plan, f"fallback plan leaked: {leak}"
+                 "Agent 暂时不可用", "Traceback", "Exception", "降级生成"):
+        assert leak not in plan, f"fallback plan leaked into final_plan: {leak}"
+    # 同样不得进入 knowledge_map 的任何节点（标题/摘要/目标），否则会被前端渲染成学习步骤
+    km = result.get("knowledge_map")
+    assert km is not None, "workflow must return a knowledge_map"
+    for node in km.nodes:
+        blob = " ".join(str(x) for x in (
+            getattr(node, "title", ""), getattr(node, "summary", ""),
+            getattr(node, "learning_objective", ""), getattr(node, "difficulty", ""),
+        ))
+        for leak in ("LLMConfigurationError", "provider unavailable", "原因：",
+                     "Agent 暂时不可用", "Traceback", "Exception", "降级生成"):
+            assert leak not in blob, f"fallback plan leaked into knowledge_map node: {leak}"
     # 仍保持三阶段结构
     assert "阶段安排" in plan
+
+
+# ================================================================ P1-2 降级分解本身不把异常写进内容字段
+def test_fallback_decomposition_no_exception_leak_in_nodes(monkeypatch):
+    """直接触发 agents._fallback_decomposition（带真实 exception reason），
+    验证降级结果 application_directions 与经 build_knowledge_map 生成的 Stage-3 节点都不含异常文本。"""
+    from edu_agent.workflows.study_plan import agents
+    from edu_agent.workflows.study_plan.knowledge_map import build_knowledge_map
+    from edu_agent.workflows.study_plan.schemas import AnalysisResult
+
+    def boom(*a, **k):
+        raise RuntimeError("LLMConfigurationError: provider unavailable")
+
+    # 强制 decomposer 的真实 LLM 调用失败 → 触达 _fallback_decomposition(student_input, analysis, exc)
+    monkeypatch.setattr(agents, "invoke_structured_output", boom)
+    si = StudentInput(topic="Python 数据分析", level=None, days=14,
+                      daily_time="60分钟", goal="学会数据分析")
+    analysis = AnalysisResult(
+        topic="Python 数据分析", level_summary="", goal_summary="",
+        prerequisites=[], need_web_search=False, search_queries=[],
+    )
+    dec = agents.decomposer_agent(si, analysis)
+    for leak in ("LLMConfigurationError", "provider unavailable", "原因：",
+                 "Agent 暂时不可用", "Traceback", "Exception", "降级生成"):
+        joined = " ".join(dec.application_directions)
+        assert leak not in joined, f"fallback decomposition leaked into application_directions: {leak}"
+    # 经 build_knowledge_map 转换后，Stage-3 节点也不得泄漏
+    km = build_knowledge_map(student_input=si, decomposition=dec)
+    for node in km.nodes:
+        blob = " ".join(str(x) for x in (
+            getattr(node, "title", ""), getattr(node, "summary", ""),
+            getattr(node, "learning_objective", ""), getattr(node, "difficulty", ""),
+        ))
+        for leak in ("LLMConfigurationError", "provider unavailable", "原因：",
+                     "Agent 暂时不可用", "Traceback", "Exception", "降级生成"):
+            assert leak not in blob, f"fallback plan leaked into knowledge_map node: {leak}"
+
+
+# ================================================================ P1-1 生成期间删除/改名 → 不复活/不覆盖
+class _P1FakeNode:
+    def __init__(self, **kw):
+        self._d = kw
+
+    def model_dump(self):
+        return self._d
+
+
+class _P1FakeKnowledgeMap:
+    def __init__(self, nodes):
+        self.nodes = nodes
+
+
+def _p1_fake_workflow(nodes):
+    def _wf(student_input, **kwargs):
+        return {
+            "final_plan": "## 学习计划",
+            "knowledge_map": _P1FakeKnowledgeMap(nodes),
+            "analysis": {}, "decomposition": {}, "research": {},
+            "evaluated_research": {}, "draft_plan": {}, "validation": {},
+            "review": {"review_summary": "ok"},
+        }
+    return _wf
+
+
+def test_generate_plan_deleted_during_workflow_discards_result(learner, monkeypatch):
+    """生成计划期间课程被删除 → 必须抛出 KeyError 丢弃陈旧结果，绝不复活已删课程。"""
+    course = _make_course(learner, topic="SQL")
+    cid = course["course_id"]
+    nodes = [_P1FakeNode(id="KC1", title="概念", summary="s", learning_objective="o",
+                         prerequisites=[], stage_id="stage-1", stage_title="基础准备", stage_order=1,
+                         difficulty="easy", estimated_minutes=30)]
+
+    def fake_workflow_delete_midway(student_input, **kwargs):
+        # 模拟「LLM 很慢期间」用户删除了课程
+        course_service.delete_course(USER, cid, learner=learner)
+        return _p1_fake_workflow(nodes)(student_input, **kwargs)
+
+    monkeypatch.setattr(
+        "edu_agent.application.study_plan_service.run_study_plan_workflow",
+        fake_workflow_delete_midway,
+    )
+    # course 在 finalize 前已被删 → get_user_course 返回 None → 抛 KeyError（结果被丢弃）
+    with pytest.raises(KeyError):
+        generate_plan(USER, cid, learner=learner)
+    # 课程确实保持删除状态（无残留 plan / course 行）
+    assert learner.repo.get_user_course(USER, cid) is None
+    assert learner.repo.get_plan(USER, cid) is None
+
+
+def test_generate_plan_renamed_during_workflow_uses_fresh_name(learner, monkeypatch):
+    """生成计划期间课程被改名 → finalize 必须用 fresh 新名，不能拿开头捕获的旧名覆盖。"""
+    course = _make_course(learner, topic="Python 数据分析")
+    cid = course["course_id"]
+    nodes = [_P1FakeNode(id="KC1", title="概念", summary="s", learning_objective="o",
+                         prerequisites=[], stage_id="stage-1", stage_title="基础准备", stage_order=1,
+                         difficulty="easy", estimated_minutes=30)]
+
+    def fake_workflow_rename_midway(student_input, **kwargs):
+        course_service.rename_course(USER, cid, "Py 数据科学课", learner=learner)
+        return _p1_fake_workflow(nodes)(student_input, **kwargs)
+
+    monkeypatch.setattr(
+        "edu_agent.application.study_plan_service.run_study_plan_workflow",
+        fake_workflow_rename_midway,
+    )
+    plan = generate_plan(USER, cid, learner=learner)
+    # title 必须用改名后的 fresh 名，而非开头捕获的旧 display_name
+    assert "Py 数据科学课" in plan["title"]
+    assert "Python 数据分析" not in plan["title"]
+    # 课程行本身也应为新名（upsert 用了 fresh_course_row）
+    assert learner.repo.get_user_course(USER, cid)["display_name"] == "Py 数据科学课"
+
+
+# ================================================================ P2-1 background 不泄漏内部 course id
+def test_humanize_background_does_not_leak_course_id():
+    out = humanize_profile_fact("background:CUSTOM-sql-2064cb64", '"会 Python，不熟悉 pandas"')
+    assert out == "课程背景：会 Python，不熟悉 pandas"
+    assert "CUSTOM-" not in out
+    # 无文本时也不暴露 id
+    assert humanize_profile_fact("background:CUSTOM-x", None) == "课程背景"

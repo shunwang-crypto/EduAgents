@@ -1,7 +1,10 @@
 import json
+import logging
 import re
 import time
 from typing import List
+
+logger = logging.getLogger(__name__)
 
 from edu_agent.core.agent_runner import (
     invoke_structured_output,
@@ -66,7 +69,10 @@ def _fallback_decomposition(
         f"{topic} 相关术语和基本概念",
         "准备可运行的学习环境",
     ]
-    suffix = f"（降级生成：{reason}）" if reason else ""
+    # 内部异常（reason）只记录日志，绝不得进入任何返回内容字段 —— 否则会被
+    # build_knowledge_map 转换为面向用户的 Stage-3 Plan Step。
+    if reason is not None:
+        logger.warning("fallback decomposition used due to error: %r", reason)
 
     return DecompositionResult(
         core_concepts=[
@@ -107,13 +113,6 @@ def _fallback_decomposition(
             ),
         ],
         application_directions=[
-            f"围绕 {topic} 制作一份概念卡片和错误清单",
-            f"完成一个能体现学习目标的 {topic} 小案例",
-            "每天保留一条可检查产出，例如笔记、代码、截图或讲解录音",
-            suffix,
-        ]
-        if suffix
-        else [
             f"围绕 {topic} 制作一份概念卡片和错误清单",
             f"完成一个能体现学习目标的 {topic} 小案例",
             "每天保留一条可检查产出，例如笔记、代码、截图或讲解录音",

@@ -131,6 +131,9 @@ export function StudyPlanPage() {
     setError("");
     setPlanStatus("loading");
     setPlan(null);
+    // 切换课程时清空旧 course：getCourse(B) 与 getPlan(B) 并行，B 加载完成前若仍保留 A 的
+    // course（含 A 的 30/90 设置），一次抢先的「生成」会用 A 的设置去生成 B 的计划。
+    setCourse(null);
     // 切换课程时清空 Lesson 展开/缓存，避免串课；并使进行中的 Lesson 请求失效
     setExpandedStepId(null);
     setLessonByStep({});
@@ -184,6 +187,8 @@ export function StudyPlanPage() {
   const generate = useCallback(
     async (override?: { duration_days?: number; daily_minutes?: number; background?: string }) => {
       if (!courseId) return;
+      // course 尚未加载完成（切课途中）：禁止用旧 course 的设置生成新计划
+      if (!course) return;
       const reqScope = scopeSeq.current;
       setGenerating(true);
       setError("");
@@ -218,7 +223,7 @@ export function StudyPlanPage() {
         if (reqScope === scopeSeq.current) setGenerating(false);
       }
     },
-    [courseId, api, settings]
+    [courseId, api, settings, course]
   );
 
   const toggleStep = useCallback(
@@ -381,7 +386,7 @@ export function StudyPlanPage() {
                   onChange={(patch) => setSettings((s) => ({ ...s, ...patch }))}
                 />
               </div>
-              <button className="ea-button primary" onClick={() => generate()} disabled={generating}>
+              <button className="ea-button primary" onClick={() => generate()} disabled={course === null || generating}>
                 {generating ? (
                   <span className="loading-btn">
                     <LoaderCircle size={14} className="spin" aria-hidden /> 正在生成…
@@ -587,7 +592,7 @@ export function StudyPlanPage() {
                           daily_minutes: settings.daily_minutes,
                         })
                       }
-                      disabled={generating}
+                      disabled={course === null || generating}
                     >
                       确认重新生成
                     </button>
@@ -604,7 +609,7 @@ export function StudyPlanPage() {
                     type="button"
                     className="ea-button secondary"
                     onClick={() => setConfirmRegenerate(true)}
-                    disabled={generating}
+                    disabled={course === null || generating}
                   >
                     <LoaderCircle size={14} className={generating ? "spin" : ""} aria-hidden /> 重新生成计划
                   </button>

@@ -285,16 +285,25 @@ def test_three_stage_edge_input(learner):
 
 
 # ---------------------------------------------------------------- API smoke（fresh DB）
-def test_api_smoke_ownership(learner, tmp_path):
+def test_api_smoke_ownership(learner, tmp_path, monkeypatch):
     import os
 
-    # 重置进程级单例与 settings 缓存，避免其他测试污染
     from edu_agent.config.settings import get_settings
     from edu_agent.learner_model.service import LearnerModelService
 
-    LearnerModelService._shared_default = None
+    # 强制 offline：清空所有外部 AI / search provider 配置，
+    # 让 /plan/generate 走确定性降级，而非联网真实模型（避免产生费用）。
+    for key in (
+        "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL",
+        "XINGCHEN_API_KEY", "XINGCHEN_BASE_URL", "XINGCHEN_MODEL",
+        "OPENCODE_ZEN_API_KEY", "OPENCODE_ZEN_BASE_URL", "OPENCODE_ZEN_MODEL",
+        "TAVILY_API_KEY",
+    ):
+        monkeypatch.setenv(key, "")
+    monkeypatch.setenv("LEARNER_MODEL_DB_PATH", str(tmp_path / "api.db"))
+    # 重置进程级单例与 settings 缓存，让上面的空配置生效，避免其他测试污染
     get_settings.cache_clear()
-    os.environ["LEARNER_MODEL_DB_PATH"] = str(tmp_path / "api.db")
+    LearnerModelService._shared_default = None
     from fastapi.testclient import TestClient
     from edu_agent.api.main import app
 

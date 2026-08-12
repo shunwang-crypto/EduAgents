@@ -28,7 +28,7 @@ def humanize_profile_fact(fact_key: str, fact_value_json: Optional[str]) -> str:
     例：
       skill:python  "Python"        → "已掌握 Python"
       no_python     {"level":"none"} → "无 Python 基础"
-      background:PY "数据分析"       → "PY 课程背景：数据分析"
+      background:PY "数据分析"       → "课程背景：数据分析"
     """
     key = fact_key or ""
     value = parse_fact_value_json(fact_value_json)
@@ -39,8 +39,9 @@ def humanize_profile_fact(fact_key: str, fact_value_json: Optional[str]) -> str:
     if key.startswith("no_"):
         return f"无 {key[len('no_'):]} 基础"
     if key.startswith("background:"):
-        course = key[len("background:"):]
-        return f"{course} 课程背景：{text}" if text else f"{course} 课程背景"
+        # 不暴露内部 course id（CUSTOM-xxx）：PlanContext 已按 background:{current_course_id}
+        # 做课程过滤，输出里再带 id 既冗余又会泄漏内部标识。
+        return f"课程背景：{text}" if text else "课程背景"
     # 通用兜底：字符串直接用；dict 只取人类字段
     if isinstance(value, str):
         return value
