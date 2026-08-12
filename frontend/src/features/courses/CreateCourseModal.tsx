@@ -1,18 +1,24 @@
 import { useEffect, useRef, useState } from "react";
 import { useApi } from "../../api/ApiProvider";
-import type { Course } from "../../api/types";
+import type { Course, CourseCategory } from "../../api/types";
 import "./courses.css";
 
 interface Props {
   onClose: () => void;
   onCreated: (course: Course) => void;
+  /** 当前分类上下文（可选）：从某分类进入时自动预选该分类；仍可手动修改。 */
+  defaultCategoryId?: string | null;
 }
 
-/** 新建课程 Modal：清晰字段式（课程主题 + 学习目标可选）。无障碍 dialog。 */
-export function CreateCourseModal({ onClose, onCreated }: Props) {
+/** 新建课程 Modal：课程名称 + 学习目标（可选）+ 分类（可选）。无障碍 dialog。
+ * 分类是纯组织层（用户自己创建的 CourseCategory 列表，绝不硬编码 Python/Java/AI）。 */
+export function CreateCourseModal({ onClose, onCreated, defaultCategoryId = null }: Props) {
   const api = useApi();
   const [topic, setTopic] = useState("");
   const [goal, setGoal] = useState("");
+  const [categories, setCategories] = useState<CourseCategory[]>([]);
+  // "" = 未分类（category_id 为 null）
+  const [selectedCategoryId, setSelectedCategoryId] = useState<string>(defaultCategoryId ?? "");
   const [loading, setLoading] = useState(false);
   const loadingRef = useRef(false);
   const [error, setError] = useState("");
@@ -20,6 +26,20 @@ export function CreateCourseModal({ onClose, onCreated }: Props) {
   const closeBtnRef = useRef<HTMLButtonElement>(null);
   const modalRef = useRef<HTMLDivElement>(null);
   const prevFocus = useRef<HTMLElement | null>(null);
+
+  // 分类下拉选项（纯组织层；加载失败静默降级为只有「未分类」）
+  useEffect(() => {
+    let alive = true;
+    api
+      .listCourseCategories()
+      .then((list) => {
+        if (alive) setCategories(list);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [api]);
 
   // 打开时记录焦点并自动聚焦 topic；Esc 关闭；Tab 焦点循环（focus trap）
   useEffect(() => {
@@ -66,7 +86,11 @@ export function CreateCourseModal({ onClose, onCreated }: Props) {
     loadingRef.current = true;
     setError("");
     try {
-      const course = await api.createCourse({ topic: topic.trim(), goal: goal.trim() });
+      const course = await api.createCourse({
+        topic: topic.trim(),
+        goal: goal.trim(),
+        category_id: selectedCategoryId || null,
+      });
       onCreated(course);
     } catch (e) {
       setError(e instanceof Error ? e.message : "创建失败，请重试");
@@ -95,7 +119,7 @@ export function CreateCourseModal({ onClose, onCreated }: Props) {
         </h3>
         <form onSubmit={handleSubmit}>
         <label className="modal-label" htmlFor="course-topic">
-          课程主题
+          课程名称
         </label>
         <input
           id="course-topic"
@@ -115,6 +139,21 @@ export function CreateCourseModal({ onClose, onCreated }: Props) {
           rows={2}
           placeholder="两周内掌握 pandas 并完成数据分析报告"
         />
+        <label className="modal-label" htmlFor="course-category">
+          分类（可选）
+        </label>
+        <select
+          id="course-category"
+          value={selectedCategoryId}
+          onChange={(e) => setSelectedCategoryId(e.target.value)}
+        >
+          <option value="">未分类</option>
+          {categories.map((cat) => (
+            <option key={cat.category_id} value={cat.category_id}>
+              {cat.name}
+            </option>
+          ))}
+        </select>
         {error && <p className="form-error" role="alert">{error}</p>}
         <div className="modal-actions">
           <button ref={closeBtnRef} type="button" className="ea-button" onClick={onClose} disabled={loading}>

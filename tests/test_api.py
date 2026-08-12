@@ -68,10 +68,10 @@ def test_course_flow(client):
     courses = client.get("/api/courses").json()
     assert len(courses) == 1
 
-    # 获取/重命名
+    # 获取/重命名（PATCH 字段：display_name，见 UpdateCourseRequest）
     cid = course["course_id"]
     assert client.get(f"/api/courses/{cid}").status_code == 200
-    r = client.patch(f"/api/courses/{cid}", json={"title": "Python 数据分析进阶"})
+    r = client.patch(f"/api/courses/{cid}", json={"display_name": "Python 数据分析进阶"})
     assert r.json()["display_name"] == "Python 数据分析进阶"
 
     # 生成计划（无 LLM 降级路径也能产出步骤）

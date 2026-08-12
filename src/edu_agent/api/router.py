@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from edu_agent.application import course_service, study_plan_service
-from edu_agent.application import course_source_service
+from edu_agent.application import course_category_service, course_source_service
 from edu_agent.application.chat_service import ChatService
 from edu_agent.config.settings import get_settings
 
@@ -42,10 +42,26 @@ class CreateCourseRequest(BaseModel):
     goal: str = Field(default="", description="学习目标（可选）")
     duration_days: int = Field(default=14, ge=1, le=365)
     daily_minutes: int = Field(default=60, ge=5, le=600)
+    category_id: Optional[str] = Field(default=None, description="课程分类（可选；必须是当前用户的）")
 
 
 class UpdateCourseRequest(BaseModel):
-    title: str = Field(description="新的课程名")
+    """课程更新（PATCH，字段级）：用 model_fields_set 区分「omitted」与「显式 null」。
+    - display_name：重命名（显式 null 不处理）
+    - category_id：显式 null = 移动到未分类
+    - goal：更新当前课程 Active Goal（唯一 Source of Truth，不新增第二套 Goal 数据）
+    """
+    display_name: Optional[str] = Field(default=None, description="新的课程名（可选）")
+    category_id: Optional[str] = Field(default=None, description="课程分类；显式 null = 移到未分类")
+    goal: Optional[str] = Field(default=None, description="学习目标文本（更新 Active Goal）")
+
+
+class CreateCategoryRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=60, description="分类名称")
+
+
+class RenameCategoryRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=60, description="新的分类名称")
 
 
 class GeneratePlanRequest(BaseModel):
@@ -84,7 +100,10 @@ def create_course(req: CreateCourseRequest, user_id: str = Depends(_user_id)) ->
         return course_service.create_course(
             user_id, req.topic, goal=req.goal,
             duration_days=req.duration_days, daily_minutes=req.daily_minutes,
+            category_id=req.category_id,
         )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -98,18 +117,63 @@ def get_course(course_id: str, user_id: str = Depends(_user_id)) -> dict:
 
 
 @router.patch("/courses/{course_id}")
-def rename_course(course_id: str, req: UpdateCourseRequest,
+def update_course(course_id: str, req: UpdateCourseRequest,
                   user_id: str = Depends(_user_id)) -> dict:
+    """字段级更新：display_name / category_id（显式 null=未分类）/ goal（Active Goal）。"""
     try:
-        return course_service.rename_course(user_id, course_id, req.title)
+        return course_service.update_course(
+            user_id, course_id, fields=set(req.model_fields_set),
+            display_name=req.display_name, category_id=req.category_id, goal=req.goal,
+        )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.delete("/courses/{course_id}", status_code=204)
 def delete_course(course_id: str, user_id: str = Depends(_user_id)) -> None:
     try:
         course_service.delete_course(user_id, course_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
+# Course Categories（纯组织层：把用户创建的课程分组；零 Adaptive 语义）
+# ---------------------------------------------------------------------------
+
+
+@router.get("/course-categories")
+def list_course_categories(user_id: str = Depends(_user_id)) -> List[dict]:
+    return course_category_service.list_categories(user_id)
+
+
+@router.post("/course-categories")
+def create_course_category(req: CreateCategoryRequest,
+                           user_id: str = Depends(_user_id)) -> dict:
+    try:
+        return course_category_service.create_category(user_id, req.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.patch("/course-categories/{category_id}")
+def rename_course_category(category_id: str, req: RenameCategoryRequest,
+                           user_id: str = Depends(_user_id)) -> dict:
+    try:
+        return course_category_service.rename_category(user_id, category_id, req.name)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.delete("/course-categories/{category_id}", status_code=204)
+def delete_course_category(category_id: str, user_id: str = Depends(_user_id)) -> None:
+    """删除分类：分类下课程自动移到未分类（category_id=NULL），课程绝不删除。"""
+    try:
+        course_category_service.delete_category(user_id, category_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

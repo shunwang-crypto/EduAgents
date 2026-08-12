@@ -4,12 +4,21 @@
 
 EduAgents 只提供三个用户可见核心能力：
 
-1. **我的课程** — 创建 / 查看 / 切换 / 重命名 / 删除课程
+1. **我的课程** — 创建 / 查看 / 切换 / 重命名 / 删除课程，并按用户自己创建的**课程分类**（Category）整理
 2. **学习计划** — 每门课程一个个性化学习计划（目标 / 阶段 / 步骤 / 状态）
 3. **普通 AI 对话** — 无课程普通对话，或带当前课程上下文的对话
 
 后台保留轻量 **Dynamic Learner Model**（SQLite），用于让学习计划更贴合用户背景、让对话更个性化。
 **不提供**：今日学习、最近学习、学习画像页面、学习路径、Topic Tutor、KB QA、Quiz/Practice/Mistake、排行榜等任何复杂教育平台功能。
+
+## 课程分类（Course Categories）
+
+**Category 只是纯组织层**：把用户自己创建的课程分组整理（Python / Java / AI / 工作技能…）。
+
+- 系统**不自动创建子课程**、不按课程名自动分类（绝不 `if "python" in title`）、不生成 Module / 课程树 / DAG；分类完全由用户决定，创建后 0 门课程也是合法状态。
+- Category **不拥有** mastery / KC / goal / learner state / semantic memory / study plan / progress / RAG / sources / conversation / evidence 中的任何一项；所有 Adaptive 数据继续严格绑定 `(user_id, course_id)`。
+- **删除分类** = 分类下课程 `category_id` 置 NULL（移到未分类），课程与全部 Adaptive 数据（Goal / KC / Mastery / Memory / Plan / Sources / Conversations / Lessons / Progress）一律不动；**重命名分类**只改 `course_categories.name`。
+- 「未分类」是前端 pseudo-category（`category_id = null`），不是数据库行。
 
 ## 技术栈
 
@@ -27,6 +36,7 @@ FastAPI (src/edu_agent/api)
     ↓
 Application Services (src/edu_agent/application)
     ├─ CourseService
+    ├─ CourseCategoryService（纯组织层 CRUD；零 Adaptive 语义）
     ├─ StudyPlanService
     ├─ ChatService
     └─ LearningContextService
@@ -81,7 +91,7 @@ LLM（或回退）→ chat_messages 落库
 ```
 src/edu_agent/
 ├── api/               FastAPI 路由（courses / plan / chat）
-├── application/       CourseService / StudyPlanService / ChatService / LearningContextService
+├── application/       CourseService / CourseCategoryService / StudyPlanService / ChatService / LearningContextService
 ├── learner_model/     SQLite Dynamic Learner Model（唯一画像真值）
 ├── adaptive/          plan_context.py / chat_context.py / course_resolver.py / service.py
 ├── domain/learning/   Course / KC / KCRelation / course_builder / kc_graph

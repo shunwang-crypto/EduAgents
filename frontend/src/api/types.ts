@@ -8,11 +8,22 @@ export interface Goal {
   target_kcs: string[];
 }
 
+/** 课程分类（纯组织层，用户自己创建；不拥有任何 Adaptive 数据）。 */
+export interface CourseCategory {
+  category_id: string;
+  name: string;
+}
+
 export interface Course {
   course_id: string;
   display_name: string;
   topic: string;
+  /** 完整 Active Goal 对象（后端 Active Goal Resolver 的唯一解）。 */
   goal: Goal | null;
+  /** 当前课程目标文本；null / "" = 未设置。 */
+  current_goal: string | null;
+  /** 所属分类（null = 未分类）。 */
+  category_id: string | null;
   progress: number;
   plan_summary: string;
   duration_days: number;

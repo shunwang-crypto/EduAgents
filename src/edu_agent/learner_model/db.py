@@ -34,12 +34,15 @@ CREATE TABLE IF NOT EXISTS learners (
 );
 
 -- 用户课程（User Course = 用户拥有/创建/加入；与共享 Domain Course 严格分离）
+-- category_id：课程分类（course_categories.category_id）；NULL = 未分类。
+-- Category 只是组织层：Course 的 Adaptive 数据（goal/state/KC/memory/plan/sources）一律 course scoped。
 CREATE TABLE IF NOT EXISTS user_courses (
     user_id TEXT NOT NULL,
     course_id TEXT NOT NULL,
     display_name TEXT NOT NULL,
     topic TEXT DEFAULT '',
     normalized_topic TEXT DEFAULT '',
+    category_id TEXT,
     duration_days INTEGER NOT NULL DEFAULT 14 CHECK(duration_days BETWEEN 1 AND 365),
     daily_minutes INTEGER NOT NULL DEFAULT 60 CHECK(daily_minutes BETWEEN 5 AND 600),
     created_at TEXT NOT NULL,
@@ -48,6 +51,21 @@ CREATE TABLE IF NOT EXISTS user_courses (
     UNIQUE (user_id, normalized_topic)
 );
 CREATE INDEX IF NOT EXISTS idx_user_courses_user ON user_courses(user_id);
+
+-- 课程分类（Course Category）：纯组织层（用户自己创建的课程分组）。
+-- 唯一职责是把 Course 分组；不拥有 mastery / KC / goal / state / memory /
+-- plan / progress / RAG / sources / conversation / evidence 中的任何一项。
+-- V1 只有一层（无 parent_category_id / level / path / tree）。
+CREATE TABLE IF NOT EXISTS course_categories (
+    category_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (user_id, name)
+);
+CREATE INDEX IF NOT EXISTS idx_course_categories_user
+    ON course_categories(user_id, updated_at);
 
 CREATE TABLE IF NOT EXISTS learner_profile_facts (
     fact_id TEXT PRIMARY KEY,

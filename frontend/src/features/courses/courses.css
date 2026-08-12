@@ -37,7 +37,8 @@
 }
 
 .modal input,
-.modal textarea {
+.modal textarea,
+.modal select {
   width: 100%;
   border: 1px solid var(--ea-border);
   border-radius: var(--ea-radius-sm);
@@ -52,7 +53,8 @@
 }
 
 .modal input:focus,
-.modal textarea:focus {
+.modal textarea:focus,
+.modal select:focus {
   border-color: var(--ea-primary);
   box-shadow: 0 0 0 3px rgba(23, 107, 85, 0.1);
 }

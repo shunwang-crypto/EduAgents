@@ -363,6 +363,90 @@
   white-space: nowrap;
 }
 
+/* ---------- 课程目标（Active Goal 文本；唯一 Source of Truth = 后端 Course.current_goal） ---------- */
+.plan-goal {
+  margin: 4px 0 24px;
+  padding: 16px 18px;
+  border: 1px solid var(--ea-border);
+  border-radius: 12px;
+  background: var(--ea-bg-hover);
+}
+
+.plan-goal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.plan-goal-title {
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--ea-text-primary);
+}
+
+.plan-goal-edit-btn {
+  appearance: none;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ea-primary);
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 6px;
+}
+
+.plan-goal-edit-btn:hover {
+  background: var(--ea-bg-hover);
+}
+
+.plan-goal-text {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--ea-text-primary);
+  white-space: pre-wrap;
+}
+
+.plan-goal-empty-text {
+  margin: 0 0 10px;
+  font-size: 14px;
+  color: var(--ea-text-secondary);
+}
+
+.plan-goal-input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--ea-border);
+  border-radius: var(--ea-radius-sm);
+  padding: 10px 12px;
+  font-size: 14px;
+  font-family: inherit;
+  color: var(--ea-text-primary);
+  background: #ffffff;
+  resize: vertical;
+  outline: none;
+  margin-bottom: 10px;
+}
+
+.plan-goal-input:focus {
+  border-color: var(--ea-primary);
+  box-shadow: 0 0 0 3px rgba(23, 107, 85, 0.1);
+}
+
+.plan-goal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.plan-goal-required-hint {
+  margin-top: 10px;
+  font-size: 13px;
+  color: var(--ea-text-muted);
+}
+
 /* ---------- 计划设置 ---------- */
 .plan-settings {
   display: flex;

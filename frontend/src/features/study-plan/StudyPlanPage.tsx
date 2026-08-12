@@ -96,6 +96,11 @@ export function StudyPlanPage() {
   const [error, setError] = useState("");
   const [showMarkdown, setShowMarkdown] = useState(false);
   const [confirmRegenerate, setConfirmRegenerate] = useState(false);
+  // 课程目标（Active Goal 文本；后端 Course.current_goal 是唯一 Source of Truth）
+  const [editingGoal, setEditingGoal] = useState(false);
+  const [goalDraft, setGoalDraft] = useState("");
+  const [savingGoal, setSavingGoal] = useState(false);
+  const [goalError, setGoalError] = useState("");
 
   // 计划设置（周期/每日时长/当前基础）：首次生成落库，重新生成复用为默认
   const [settings, setSettings] = useState<{
@@ -181,8 +186,31 @@ export function StudyPlanPage() {
         daily_minutes: course.daily_minutes || 60,
         background: "",
       });
+      // 切换课程时重置目标编辑态（目标文本来自后端 Active Goal，不本地缓存）
+      setEditingGoal(false);
+      setGoalDraft(course.current_goal ?? "");
+      setGoalError("");
     }
   }, [course]);
+
+  /** 保存课程目标：PATCH { goal } → 后端复用现有 Goal updater 更新 Active Goal（唯一 Source of Truth）。 */
+  const saveGoal = useCallback(async () => {
+    if (!courseId || !course) return;
+    const reqScope = scopeSeq.current;
+    setSavingGoal(true);
+    setGoalError("");
+    try {
+      const updated = await api.renameCourse(courseId, { goal: goalDraft.trim() });
+      if (reqScope !== scopeSeq.current) return;
+      setCourse(updated);
+      setEditingGoal(false);
+    } catch (e) {
+      if (reqScope !== scopeSeq.current) return;
+      setGoalError(e instanceof Error ? e.message : "保存失败，请重试");
+    } finally {
+      if (reqScope === scopeSeq.current) setSavingGoal(false);
+    }
+  }, [courseId, api, course, goalDraft]);
 
   const generate = useCallback(
     async (override?: { duration_days?: number; daily_minutes?: number; background?: string }) => {
@@ -337,6 +365,9 @@ export function StudyPlanPage() {
     return norm(d) !== norm(step.title);
   };
 
+  // 课程目标是否存在（后端 Active Goal 文本；null/空串 = 未设置）
+  const hasGoal = !!(course?.current_goal && course.current_goal.trim());
+
   const lessonForStep = (stepId: string): LessonCache => {
     const cached = lessonByStep[stepId];
     if (cached) return cached;
@@ -354,6 +385,90 @@ export function StudyPlanPage() {
             <div className="inline-error" role="alert">
               无法加载课程
             </div>
+          )}
+
+          {/* 课程目标（需求 B）：课程名下、计划设置之前；Active Goal 是唯一 Source of Truth */}
+          {course && !courseError && (
+            <section className="plan-goal">
+              <div className="plan-goal-head">
+                <span className="plan-goal-title">课程目标</span>
+                {hasGoal && !editingGoal && (
+                  <button
+                    type="button"
+                    className="plan-goal-edit-btn"
+                    onClick={() => {
+                      setGoalDraft(course.current_goal ?? "");
+                      setEditingGoal(true);
+                      setGoalError("");
+                    }}
+                  >
+                    编辑
+                  </button>
+                )}
+              </div>
+
+              {!hasGoal && !editingGoal && (
+                <div className="plan-goal-empty">
+                  <p className="plan-goal-empty-text">还没有设置课程目标。</p>
+                  <textarea
+                    className="plan-goal-input"
+                    rows={3}
+                    value={goalDraft}
+                    onChange={(e) => setGoalDraft(e.target.value)}
+                    placeholder="例如：掌握 Pandas、NumPy 和数据分析流程，能够独立完成数据清洗与分析。"
+                  />
+                  <div className="plan-goal-actions">
+                    <button
+                      type="button"
+                      className="ea-button primary"
+                      disabled={savingGoal}
+                      onClick={() => void saveGoal()}
+                    >
+                      {savingGoal ? "保存中…" : "保存目标"}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {hasGoal && !editingGoal && (
+                <div className="plan-goal-text">{course.current_goal}</div>
+              )}
+
+              {editingGoal && (
+                <div className="plan-goal-editing">
+                  <textarea
+                    className="plan-goal-input"
+                    rows={3}
+                    value={goalDraft}
+                    onChange={(e) => setGoalDraft(e.target.value)}
+                  />
+                  <div className="plan-goal-actions">
+                    <button
+                      type="button"
+                      className="ea-button"
+                      onClick={() => setEditingGoal(false)}
+                      disabled={savingGoal}
+                    >
+                      取消
+                    </button>
+                    <button
+                      type="button"
+                      className="ea-button primary"
+                      disabled={savingGoal}
+                      onClick={() => void saveGoal()}
+                    >
+                      {savingGoal ? "保存中…" : "保存目标"}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {goalError && (
+                <div className="inline-error" role="alert">
+                  {goalError}
+                </div>
+              )}
+            </section>
           )}
 
           {!courseError && planStatus === "loading" && (
@@ -386,7 +501,11 @@ export function StudyPlanPage() {
                   onChange={(patch) => setSettings((s) => ({ ...s, ...patch }))}
                 />
               </div>
-              <button className="ea-button primary" onClick={() => generate()} disabled={course === null || generating}>
+              <button
+                className="ea-button primary"
+                onClick={() => generate()}
+                disabled={course === null || generating || !hasGoal}
+              >
                 {generating ? (
                   <span className="loading-btn">
                     <LoaderCircle size={14} className="spin" aria-hidden /> 正在生成…
@@ -395,6 +514,9 @@ export function StudyPlanPage() {
                   "生成学习计划"
                 )}
               </button>
+              {!hasGoal && (
+                <div className="plan-goal-required-hint">请先设置课程目标。</div>
+              )}
               {generating && <div className="plan-generating-note">正在分析学习目标并拆解内容</div>}
             </div>
           )}

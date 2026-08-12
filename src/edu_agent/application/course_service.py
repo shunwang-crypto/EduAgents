@@ -44,15 +44,21 @@ def create_course(
     goal: str = "",
     duration_days: int = 14,
     daily_minutes: int = 60,
+    category_id: Optional[str] = None,
     learner: Optional[LearnerModelService] = None,
 ) -> dict:
     """按主题创建用户课程：同用户同主题复用；写入 user_courses（不写共享 domain）。
 
     支持自然语言（方案 B）："我想两周学习 Python 数据分析，每天 1 小时"
     → 内部 parse_course_intent 提取 topic/goal/days/minutes。
+
+    category_id（可选）：必须属于当前 user（不存在/别人的 → KeyError → 404）。
+    Category 只是组织层，不影响任何 Adaptive 数据。系统绝不按课程名自动分类。
     """
     learner = learner or LearnerModelService()
     learner.ensure_learner(user_id)
+    if category_id and learner.repo.get_course_category(user_id, category_id) is None:
+        raise KeyError(f"category not found: {category_id}")
     topic = (topic or "").strip()
     if not topic:
         raise ValueError("topic is required")
@@ -75,6 +81,7 @@ def create_course(
             learner.repo.upsert_user_course(
                 {"user_id": user_id, "course_id": course_id, "display_name": topic,
                  "topic": topic, "normalized_topic": normalized,
+                 "category_id": category_id,  # None = 未分类
                  "duration_days": int(duration_days), "daily_minutes": int(daily_minutes),
                  "created_at": _now_iso(), "updated_at": _now_iso()}
             )
@@ -106,16 +113,62 @@ def get_course(user_id: str, course_id: str,
 
 def rename_course(user_id: str, course_id: str, new_title: str,
                   learner: Optional[LearnerModelService] = None) -> dict:
-    """只改 user_courses.display_name，绝不触碰共享 Built-in Domain title。"""
+    """兼容旧调用：只改 user_courses.display_name（绝不触碰共享 Built-in Domain title）。"""
+    return update_course(user_id, course_id, learner=learner,
+                         fields={"display_name"}, display_name=new_title)
+
+
+def update_course(
+    user_id: str,
+    course_id: str,
+    learner: Optional[LearnerModelService] = None,
+    *,
+    fields: Optional[set] = None,
+    display_name: Optional[str] = None,
+    category_id: Optional[str] = None,
+    goal: Optional[str] = None,
+) -> dict:
+    """更新课程字段（PATCH 语义）。fields 由调用方按 model_fields_set 提供，
+    用于区分「字段 omitted（不处理）」与「显式 null（如 category_id=None → 移到未分类）」。
+
+    - display_name：重命名（非空才生效）
+    - category_id：None=未分类；非 None 必须属于当前 user，否则 KeyError → 404
+    - goal：更新当前 Course 的 Active Goal（复用现有 Goal updater + current_goal_id，
+      唯一 Source of Truth；不新增 user_courses.goal 第二套数据，不产生多余 active goal）
+    """
     learner = learner or LearnerModelService()
     row = learner.repo.get_user_course(user_id, course_id)
     if row is None:
         raise KeyError(f"course not found: {course_id}")
-    title = (new_title or "").strip() or row["display_name"]
+    fields = fields or set()
+    patch: Dict[str, Any] = {}
     with learner.repo.transaction():
-        learner.repo.upsert_user_course({**row, "display_name": title, "updated_at": _now_iso()})
-        learner.record_event({"event_type": "COURSE_UPDATED", "user_id": user_id,
-                              "course_id": course_id, "payload": {"title": title}})
+        if "display_name" in fields and display_name is not None:
+            title = (display_name or "").strip() or row.get("display_name") or course_id
+            if title:
+                patch["display_name"] = title
+        if "category_id" in fields:
+            if category_id is None:
+                # 显式 null → 移动到未分类（不删除课程）
+                learner.repo.set_course_category(user_id, course_id, None)
+            else:
+                if learner.repo.get_course_category(user_id, category_id) is None:
+                    raise KeyError(f"category not found: {category_id}")
+                learner.repo.set_course_category(user_id, course_id, category_id)
+            # set_course_category 已直接落库；刷新 row 供事件 payload 使用
+            row = learner.repo.get_user_course(user_id, course_id) or row
+        if "goal" in fields:
+            goal_text = (goal or "").strip()
+            active = learner.resolve_active_goal(user_id, course_id)
+            goal_id = active.goal_id if active else resolve_goal_id(user_id, course_id)
+            goal_name = patch.get("display_name") or row.get("display_name") or course_id
+            learner.upsert_goal(user_id, goal_id, course_id, name=goal_name, target=goal_text)
+            learner.set_current_goal(user_id, course_id, goal_id)
+        if patch:
+            learner.repo.upsert_user_course({**row, **patch, "updated_at": _now_iso()})
+        if patch or "category_id" in fields or "goal" in fields:
+            learner.record_event({"event_type": "COURSE_UPDATED", "user_id": user_id,
+                                  "course_id": course_id, "payload": {**patch}})
     return get_course(user_id, course_id, learner)
 
 
@@ -160,7 +213,10 @@ def _compose_course(user_id: str, course_id: str, row: dict,
         "course_id": course_id,
         "display_name": row.get("display_name") or row.get("title") or course_id,
         "topic": row.get("topic", ""),
+        "category_id": row.get("category_id") or None,
         "goal": goal,
+        # 当前课程目标文本（Active Goal Resolver 的唯一解）；无目标 = None
+        "current_goal": active_goal.target if active_goal is not None else None,
         "progress": float(state.get("progress", 0.0)),
         "plan_summary": (plan or {}).get("summary", ""),
         "duration_days": int(row.get("duration_days") or 14),

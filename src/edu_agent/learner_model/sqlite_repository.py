@@ -170,6 +170,63 @@ class SQLiteLearnerRepository(LearnerRepository):
         )
         self._commit()
 
+    # ---- course categories（纯组织层，user scoped；零 adaptive 数据）--------
+    def create_course_category(self, user_id: str, category_id: str, name: str) -> None:
+        now = _now_iso()
+        self._insert_or_update(
+            "course_categories",
+            {"category_id": category_id, "user_id": user_id, "name": name,
+             "created_at": now, "updated_at": now},
+            ["category_id"],
+        )
+
+    def list_course_categories(self, user_id: str) -> List[dict]:
+        return self._fetchall(
+            "SELECT * FROM course_categories WHERE user_id=? ORDER BY name COLLATE NOCASE",
+            (user_id,),
+        )
+
+    def get_course_category(self, user_id: str, category_id: str) -> Optional[dict]:
+        return self._fetchone(
+            "SELECT * FROM course_categories WHERE user_id=? AND category_id=?",
+            (user_id, category_id),
+        )
+
+    def rename_course_category(self, user_id: str, category_id: str, name: str) -> None:
+        self._conn().execute(
+            "UPDATE course_categories SET name=?, updated_at=? WHERE user_id=? AND category_id=?",
+            (name, _now_iso(), user_id, category_id),
+        )
+        self._commit()
+
+    def delete_course_category(self, user_id: str, category_id: str) -> None:
+        """原子删除分类：分类下课程移到未分类（category_id=NULL），绝不删除课程/
+        Plan/Chat/Sources/Learner State。"""
+        with self.transaction():
+            self._conn().execute(
+                "UPDATE user_courses SET category_id=NULL WHERE user_id=? AND category_id=?",
+                (user_id, category_id),
+            )
+            self._conn().execute(
+                "DELETE FROM course_categories WHERE user_id=? AND category_id=?",
+                (user_id, category_id),
+            )
+
+    def set_course_category(self, user_id: str, course_id: str,
+                            category_id: Optional[str]) -> None:
+        """把课程归入分类；None = 移到未分类（category_id=NULL）。"""
+        if category_id is None:
+            self._conn().execute(
+                "UPDATE user_courses SET category_id=NULL WHERE user_id=? AND course_id=?",
+                (user_id, course_id),
+            )
+        else:
+            self._conn().execute(
+                "UPDATE user_courses SET category_id=? WHERE user_id=? AND course_id=?",
+                (category_id, user_id, course_id),
+            )
+        self._commit()
+
     # ---- profile facts ----------------------------------------------------
     def upsert_profile_fact(self, fact: Dict[str, Any]) -> None:
         existing = self.get_profile_fact(fact.get("user_id", ""), fact.get("fact_key", ""))

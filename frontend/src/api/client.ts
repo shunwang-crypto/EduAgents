@@ -5,6 +5,7 @@ import type {
   Conversation,
   ConversationSummary,
   Course,
+  CourseCategory,
   CourseSource,
   PlanStep,
   SourceSearchResult,
@@ -27,10 +28,27 @@ export class ApiError extends Error {
 export interface ApiClient {
   // Courses
   listCourses: () => Promise<Course[]>;
-  createCourse: (body: { topic: string; goal?: string; duration_days?: number; daily_minutes?: number }) => Promise<Course>;
+  createCourse: (body: {
+    topic: string;
+    goal?: string;
+    duration_days?: number;
+    daily_minutes?: number;
+    category_id?: string | null;
+  }) => Promise<Course>;
   getCourse: (courseId: string) => Promise<Course>;
-  renameCourse: (courseId: string, title: string) => Promise<Course>;
+  /** 字段级更新（PATCH）：display_name / category_id（显式 null = 移到未分类）/ goal（Active Goal）。 */
+  renameCourse: (courseId: string, body: {
+    display_name?: string;
+    category_id?: string | null;
+    goal?: string;
+  }) => Promise<Course>;
   deleteCourse: (courseId: string) => Promise<void>;
+
+  // Course Categories（纯组织层：整理用户创建的课程）
+  listCourseCategories: () => Promise<CourseCategory[]>;
+  createCourseCategory: (name: string) => Promise<CourseCategory>;
+  renameCourseCategory: (categoryId: string, name: string) => Promise<CourseCategory>;
+  deleteCourseCategory: (categoryId: string) => Promise<void>;
 
   // Study Plan
   generatePlan: (courseId: string, body: { goal?: string; duration_days?: number; daily_minutes?: number; background?: string }) => Promise<StudyPlan>;
@@ -114,10 +132,22 @@ export function createApiClient(userId: string): ApiClient {
     createCourse: (body) =>
       request<Course>("/api/courses", { method: "POST", body: JSON.stringify(body) }),
     getCourse: (courseId) => request<Course>(`/api/courses/${courseId}`),
-    renameCourse: (courseId, title) =>
-      request<Course>(`/api/courses/${courseId}`, { method: "PATCH", body: JSON.stringify({ title }) }),
+    renameCourse: (courseId, body) =>
+      request<Course>(`/api/courses/${courseId}`, { method: "PATCH", body: JSON.stringify(body) }),
     deleteCourse: (courseId) =>
       request<void>(`/api/courses/${courseId}`, { method: "DELETE" }),
+
+    // Course Categories
+    listCourseCategories: () => request<CourseCategory[]>("/api/course-categories"),
+    createCourseCategory: (name) =>
+      request<CourseCategory>("/api/course-categories", { method: "POST", body: JSON.stringify({ name }) }),
+    renameCourseCategory: (categoryId, name) =>
+      request<CourseCategory>(`/api/course-categories/${categoryId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ name }),
+      }),
+    deleteCourseCategory: (categoryId) =>
+      request<void>(`/api/course-categories/${categoryId}`, { method: "DELETE" }),
 
     // Study Plan
     generatePlan: (courseId, body) =>

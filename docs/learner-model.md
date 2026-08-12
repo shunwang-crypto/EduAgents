@@ -25,7 +25,8 @@
 | `profile_change_log` | 画像变更记录（before/after 数值） |
 | `chat_conversations` / `chat_messages` | 对话历史（按 user + course 隔离） |
 | `study_plans` / `plan_steps` | 学习计划与步骤（progress 正式来源） |
-| `user_courses` | 用户课程（user-scoped；共享 Built-in Domain 为纯代码模板） |
+| `user_courses` | 用户课程（user-scoped；`category_id` 可空=未分类；共享 Built-in Domain 为纯代码模板） |
+| `course_categories` | 课程分类（纯组织层，user scoped；不拥有任何 Adaptive 数据） |
 
 ## 事件 → 状态更新（统一事务）
 
@@ -59,8 +60,19 @@ PROFILE_FACT_DELETED / MEMORY_CREATED / MEMORY_DELETED / FEEDBACK_GIVEN`
 
 ## 多课程
 
-- `user_courses`（user_id, course_id, display_name, topic, normalized_topic）持久化用户课程；
+- `user_courses`（user_id, course_id, display_name, topic, normalized_topic, category_id）持久化用户课程；
   `course_resolver.py` 将 topic 稳定映射到 `CUSTOM-{slug}-{hash8}`，但 ownership 由 user_courses membership 决定。
 - Java 课程的状态 / 计划 / 记忆不会进入 Python 课程的上下文；不同用户的同名课程完全隔离。
 - 删除用户课程 = 级联删除该用户在该课程的全部数据（user_courses / states / goals / plans /
   steps / conversations / messages / kc_states / preferences / memories），共享模板不受影响。
+
+## 课程分类（Course Categories）：纯组织层，零 Adaptive 语义
+
+- `course_categories`（category_id, user_id, name；`UNIQUE(user_id, name)`）只做**整理用户创建的课程**；
+  所有操作 user scoped（USER-B 不能访问 USER-A 的分类）。
+- Category 不拥有 mastery / KC / goal / state / memory / plan / progress / RAG / sources /
+  conversation / evidence 中的任何一项——这些继续严格绑定 `(user_id, course_id)`，不因 Category 相同而共享。
+- 删除分类（原子）：`UPDATE user_courses SET category_id=NULL` + `DELETE FROM course_categories`，
+  **不删除 Course / Plan / Chat / Sources / Learner State**；重命名只改 `name`。
+- 课程目标继续以 `learning_goals` + `course_state.current_goal_id`（`resolve_active_goal()`）为唯一 Source of Truth，
+  不在 `user_courses` 上另建第二套 goal 字段；更新目标一律走 `LearnerModelService.upsert_goal` + `set_current_goal`。

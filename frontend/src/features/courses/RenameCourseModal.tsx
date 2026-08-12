@@ -43,7 +43,7 @@ export function RenameCourseModal({ course, onClose, onRenamed }: Props) {
     loadingRef.current = true;
     setError("");
     try {
-      await api.renameCourse(course.course_id, next);
+      await api.renameCourse(course.course_id, { display_name: next });
       onRenamed(course.course_id, next);
     } catch (e) {
       setError(e instanceof Error ? e.message : "重命名失败，请重试");
