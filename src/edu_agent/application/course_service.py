@@ -58,8 +58,7 @@ def create_course(
     """
     learner = learner or LearnerModelService()
     learner.ensure_learner(user_id)
-    if category_id and learner.repo.get_course_category(user_id, category_id) is None:
-        raise KeyError(f"category not found: {category_id}")
+    from edu_agent.application.course_source_service import _SOURCE_FINALIZE_LOCK
     topic = (topic or "").strip()
     if not topic:
         raise ValueError("topic is required")
@@ -70,23 +69,36 @@ def create_course(
         duration_days = intent["duration_days"] or duration_days
         daily_minutes = intent["daily_minutes"] or daily_minutes
     normalized = _normalize_topic(topic)
-    existing = learner.repo.list_user_courses(user_id)
-    dup = next((c for c in existing if c.get("normalized_topic") == normalized), None)
+    # Include the idempotent duplicate read in the same identity lock as
+    # delete/cleanup and creation. Otherwise a delete in progress could be
+    # observed as an old existing course and return before cleanup completes.
+    with _SOURCE_FINALIZE_LOCK:
+        existing = learner.repo.list_user_courses(user_id)
+        dup = next((c for c in existing if c.get("normalized_topic") == normalized), None)
+        resolved_course_id = resolve_course_id(topic, [c["course_id"] for c in existing])
+        dup = dup or next((c for c in existing if c.get("course_id") == resolved_course_id), None)
+        if dup is not None:
+            return get_course(user_id, dup["course_id"], learner)
+    if category_id and learner.repo.get_course_category(user_id, category_id) is None:
+        raise KeyError(f"category not found: {category_id}")
 
     # 全部 DB 写在一个事务（失败整体回滚，不留下半创建的课程状态）
     try:
-        with learner.repo.transaction():
-            if dup is not None:
-                course_id = dup["course_id"]
-            else:
-                course_id = resolve_course_id(topic, [c["course_id"] for c in existing])
-                learner.repo.upsert_user_course(
-                    {"user_id": user_id, "course_id": course_id, "display_name": topic,
-                     "topic": topic, "normalized_topic": normalized,
-                     "category_id": category_id,  # None = 未分类
-                     "duration_days": int(duration_days), "daily_minutes": int(daily_minutes),
-                     "created_at": _now_iso(), "updated_at": _now_iso()}
-                )
+        # Course identity and physical KB cleanup share the same process lock.
+        # This prevents delete(old) cleanup from racing recreate(same ID).
+        with _SOURCE_FINALIZE_LOCK, learner.repo.transaction():
+            course_id = resolved_course_id
+            # Re-check under the lock for concurrent duplicate creates.
+            current = learner.repo.get_user_course(user_id, course_id)
+            if current is not None:
+                return get_course(user_id, course_id, learner)
+            learner.repo.upsert_user_course(
+                {"user_id": user_id, "course_id": course_id, "display_name": topic,
+                 "topic": topic, "normalized_topic": normalized,
+                 "category_id": category_id,  # None = 未分类
+                 "duration_days": int(duration_days), "daily_minutes": int(daily_minutes),
+                 "created_at": _now_iso(), "updated_at": _now_iso()}
+            )
             learner.ensure_course(user_id, course_id)
 
             # 一个课程一个 active goal（旧 active → completed）
@@ -204,19 +216,21 @@ def delete_course(user_id: str, course_id: str,
     learner = learner or LearnerModelService()
     if learner.repo.get_user_course(user_id, course_id) is None:
         raise KeyError(f"course not found: {course_id}")
-    with learner.repo.transaction():
-        learner.repo.delete_user_course_data(user_id, course_id)
-        # 审计事件在删除之后写入；delete_user_course_data 不删 events，事件留存
-        learner.record_event({"event_type": "COURSE_DELETED", "user_id": user_id,
-                              "course_id": course_id, "payload": {}})
-
-    # 课程资料块（user+course 双隔离）也须清除，避免孤儿 chunks 残留
-    try:
-        from edu_agent.tools import kb_store
-
-        kb_store.delete_course_chunks(user_id, course_id)
-    except Exception:  # noqa: BLE001 - 资料清理失败不影响课程已删除
-        logger.warning("[course] delete course chunks failed: %s/%s", user_id, course_id, exc_info=True)
+    from edu_agent.application.course_source_service import _SOURCE_FINALIZE_LOCK
+    from edu_agent.tools import kb_store
+    # Physical KB cleanup must complete before releasing the course identity.
+    # Creation also takes _SOURCE_FINALIZE_LOCK, so deterministic course IDs
+    # cannot be recreated between DB deletion and this cleanup.
+    with _SOURCE_FINALIZE_LOCK:
+        try:
+            kb_store.delete_course_chunks(user_id, course_id)
+        except Exception:  # noqa: BLE001 - DB deletion remains authoritative
+            logger.warning("[course] delete course chunks failed: %s/%s", user_id, course_id, exc_info=True)
+        with learner.repo.transaction():
+            learner.repo.delete_user_course_data(user_id, course_id)
+            # 审计事件在删除之后写入；delete_user_course_data 不删 events，事件留存
+            learner.record_event({"event_type": "COURSE_DELETED", "user_id": user_id,
+                                  "course_id": course_id, "payload": {}})
 
 
 def _compose_course(user_id: str, course_id: str, row: dict,

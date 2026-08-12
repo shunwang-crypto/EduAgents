@@ -141,6 +141,7 @@ export function ChatPage() {
   const runChat = useCallback(
     async (text: string, userMsgId: string) => {
       const reqScope = scopeSeq.current;
+      const reqChatSeq = chatSeq.current;
       setLoading(true);
       setSendError("");
       setRetryText("");
@@ -154,7 +155,7 @@ export function ChatPage() {
           plan_step_id: step?.step_id ?? null,
         });
         // 串课保护：发送期间切到别的课程/用户，旧回复不许写消息、改 URL、写错误
-        if (reqScope !== scopeSeq.current) return;
+        if (reqScope !== scopeSeq.current || reqChatSeq !== chatSeq.current) return;
         // conversation_id 写回 URL（replace），刷新后恢复同会话；
         // 记录写回值，effect 据此跳过重复加载历史
         if (reply.conversation_id && reply.conversation_id !== conversationParam) {
@@ -174,14 +175,14 @@ export function ChatPage() {
         notifyConversationUpdated({ courseId: courseId ?? null, conversationId: reply.conversation_id });
       } catch (e) {
         // 串课保护：过期响应的错误也不许污染当前页面
-        if (reqScope !== scopeSeq.current) return;
+        if (reqScope !== scopeSeq.current || reqChatSeq !== chatSeq.current) return;
         const msg = e instanceof Error ? e.message : "发送失败，请重试";
         setSendError(msg);
         setRetryText(text);
         setRetryMsgId(userMsgId); // 原 user 消息保留，retry 不重复
       } finally {
         // 仅在仍属于当前 scope 时收尾 loading
-        if (reqScope === scopeSeq.current) setLoading(false);
+        if (reqScope === scopeSeq.current && reqChatSeq === chatSeq.current) setLoading(false);
       }
     },
     [courseId, conversationParam, step, searchParams, setSearchParams, api]

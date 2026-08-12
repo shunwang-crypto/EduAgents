@@ -257,6 +257,67 @@ def test_delete_course_cascades_sources(client, kb, monkeypatch):
     assert kb_store.load_chunks("A", cid) == []
 
 
+def test_delete_cleanup_serializes_same_id_recreate(client, kb, monkeypatch):
+    """旧课程 cleanup 未完成时，同 topic 重建必须等待，避免删掉新 chunks。"""
+    import threading
+
+    _mock_web(monkeypatch, "# Old\n\nOLD-CONTENT")
+    course = client.post("/api/courses", json={"topic": "Cleanup Race 课"},
+                         headers={"X-User-Id": "A"}).json()
+    cid = course["course_id"]
+    old = client.post(f"/api/courses/{cid}/sources", json={"url": "https://example.com/old"},
+                      headers={"X-User-Id": "A"}).json()
+    assert old["status"] == "ready"
+
+    from edu_agent.application import course_service
+    from edu_agent.learner_model.service import LearnerModelService
+
+    cleanup_started = threading.Event()
+    release_cleanup = threading.Event()
+    original_cleanup = kb_store.delete_course_chunks
+
+    def paused_cleanup(user_id, course_id):
+        cleanup_started.set()
+        assert release_cleanup.wait(5)
+        return original_cleanup(user_id, course_id)
+
+    monkeypatch.setattr(kb_store, "delete_course_chunks", paused_cleanup)
+    delete_done = threading.Event()
+
+    def delete_old():
+        course_service.delete_course("A", cid, learner=LearnerModelService())
+        delete_done.set()
+
+    delete_thread = threading.Thread(target=delete_old)
+    delete_thread.start()
+    assert cleanup_started.wait(5)
+
+    recreate_done = threading.Event()
+    recreated = {}
+
+    def recreate():
+        recreated["course"] = course_service.create_course("A", "Cleanup Race 课")
+        recreate_done.set()
+
+    recreate_thread = threading.Thread(target=recreate)
+    recreate_thread.start()
+    assert not recreate_done.wait(0.1), "recreate must wait for old physical cleanup"
+
+    release_cleanup.set()
+    delete_thread.join(5)
+    recreate_thread.join(5)
+    assert delete_done.is_set() and recreate_done.is_set()
+    assert recreated["course"]["course_id"] == cid
+
+    _mock_web(monkeypatch, "# New\n\nNEW-CONTENT")
+    fresh = client.post(f"/api/courses/{cid}/sources", json={"url": "https://example.com/new"},
+                        headers={"X-User-Id": "A"}).json()
+    assert fresh["status"] == "ready"
+    chunks = kb_store.load_chunks("A", cid)
+    assert len(chunks) == fresh["chunk_count"]
+    assert any("NEW-CONTENT" in c.text for c in chunks)
+
+
 # ---------------------------------------------------------------- 互联网搜索候选（不导入）
 def test_search_internet_returns_candidates(client, kb, monkeypatch):
     monkeypatch.setattr(

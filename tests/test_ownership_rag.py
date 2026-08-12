@@ -73,7 +73,8 @@ def test_same_user_same_topic_reuses_course(learner):
     c1 = create_course("A", "Python 数据分析", learner=learner)
     c2 = create_course("A", "Python 数据分析", goal="换目标", learner=learner)
     assert c1["course_id"] == c2["course_id"]
-    assert c2["goal"]["target"] == "换目标"
+    # Duplicate create is idempotent/read-only; goal updates go through PATCH.
+    assert c2["goal"]["target"] == c1["goal"]["target"]
 
 
 # ---------------------------------------------------------------- conversation ownership

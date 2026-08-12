@@ -42,6 +42,7 @@ export function CourseSourcesDrawer() {
   apiRef.current = api;
   // 同一 course 内多次 load 的 latest-wins：course scope 无法区分同 course 的先后请求
   const loadSeqRef = useRef(0);
+  const searchSeqRef = useRef(0);
 
   /** 当前 scope 是否有效：请求 seq 未过期 + 仍是同一 course + 仍是同一 api(user)。 */
   const isScopeCurrent = (seq: number, cid: string | null) =>
@@ -175,6 +176,7 @@ export function CourseSourcesDrawer() {
   };
 
   const runSearch = async () => {
+    if (searching) return;
     const q = query.trim();
     if (!q) {
       setSearchError("请输入搜索关键词");
@@ -182,21 +184,22 @@ export function CourseSourcesDrawer() {
     }
     const cid = courseId;
     const seq = scopeSeqRef.current;
+    const searchSeq = ++searchSeqRef.current;
     setSearching(true);
     setSearchError("");
     setResults([]);
     setSelected(new Set());
     try {
       const list = await api.searchCourseSources(cid, q, 5);
-      if (!isScopeCurrent(seq, cid)) return;
+      if (searchSeq !== searchSeqRef.current || !isScopeCurrent(seq, cid)) return;
       setResults(list);
       // 搜索只给候选：默认不全选，用户明确勾选才导入
       setSelected(new Set());
     } catch (e) {
-      if (!isScopeCurrent(seq, cid)) return;
+      if (searchSeq !== searchSeqRef.current || !isScopeCurrent(seq, cid)) return;
       setSearchError(e instanceof Error ? e.message : "搜索失败");
     } finally {
-      if (isScopeCurrent(seq, cid)) setSearching(false);
+      if (searchSeq === searchSeqRef.current && isScopeCurrent(seq, cid)) setSearching(false);
     }
   };
 

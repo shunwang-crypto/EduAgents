@@ -184,4 +184,32 @@ describe("ChatPage send / retry", () => {
       (mockApi.chat as ReturnType<typeof vi.fn>).mockResolvedValue(defaultChatReply);
     }
   });
+
+  it("conversation switch: pending reply from CONV-A does not mutate CONV-B", async () => {
+    const chatDefer = deferred<typeof defaultChatReply>();
+    (mockApi.chat as ReturnType<typeof vi.fn>).mockReturnValue(chatDefer.promise);
+    const router = renderNavigableChat("/courses/PY/chat?conversation=CONV-A");
+    try {
+      await waitFor(() => expect(screen.getByPlaceholderText(/继续问关于 Python 数据分析/)).toBeTruthy());
+      const input = screen.getByLabelText("消息输入框");
+      fireEvent.change(input, { target: { value: "A 请求" } });
+      fireEvent.click(screen.getByRole("button", { name: "发送" }));
+      await waitFor(() => expect(mockApi.chat).toHaveBeenCalled());
+
+      await act(async () => { router.navigate("/courses/PY/chat?conversation=CONV-B"); });
+      await waitFor(() => expect(mockApi.getChat).toHaveBeenCalledWith("PY", "CONV-B"));
+      await act(async () => {
+        chatDefer.resolve({
+          message_id: "MSG-A", conversation_id: "CONV-A", content: "A 的迟到回答",
+          course_id: "PY", created_at: "2026-08-11T00:00:00Z", profile_updates: [],
+          context: { type: "course", course_id: "PY", plan_step_id: "", step_title: "" },
+        });
+      });
+      await waitFor(() => expect(screen.queryByText("A 的迟到回答")).toBeNull());
+      expect(router.state.location.search).toContain("CONV-B");
+      expect(router.state.location.search).not.toContain("CONV-A");
+    } finally {
+      (mockApi.chat as ReturnType<typeof vi.fn>).mockResolvedValue(defaultChatReply);
+    }
+  });
 });

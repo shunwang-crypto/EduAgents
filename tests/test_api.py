@@ -97,6 +97,48 @@ def test_course_flow(client):
     assert client.get("/api/courses").json() == []
 
 
+def test_duplicate_course_create_is_read_only(client):
+    first = client.post(
+        "/api/courses",
+        json={"topic": "Python", "goal": "掌握 Python", "duration_days": 30, "daily_minutes": 90},
+    )
+    assert first.status_code == 200, first.text
+    original = first.json()
+
+    duplicate = client.post(
+        "/api/courses",
+        json={"topic": "Python", "goal": "", "duration_days": 14, "daily_minutes": 60},
+    )
+    assert duplicate.status_code == 200, duplicate.text
+    current = duplicate.json()
+    assert current["course_id"] == original["course_id"]
+    assert current["display_name"] == original["display_name"]
+    assert current["goal"]["target"] == "掌握 Python"
+    assert current["duration_days"] == 30
+    assert current["daily_minutes"] == 90
+
+
+def test_duplicate_builtin_alias_create_preserves_course_configuration(client):
+    category = client.post("/api/course-categories", json={"name": "后端"}).json()
+    first = client.post(
+        "/api/courses",
+        json={"topic": "Java", "goal": "掌握 OOP", "category_id": category["category_id"],
+              "duration_days": 30, "daily_minutes": 90},
+    )
+    assert first.status_code == 200, first.text
+    original = first.json()
+
+    duplicate = client.post("/api/courses", json={"topic": "Java OOP"})
+    assert duplicate.status_code == 200, duplicate.text
+    current = duplicate.json()
+    assert current["course_id"] == original["course_id"] == "JAVA-OOP"
+    assert current["display_name"] == original["display_name"]
+    assert current["goal"]["target"] == "掌握 OOP"
+    assert current["category_id"] == category["category_id"]
+    assert current["duration_days"] == 30
+    assert current["daily_minutes"] == 90
+
+
 def test_chat_flow(client):
     r = client.post("/api/chat", json={"message": "你好"})
     assert r.status_code == 200, r.text

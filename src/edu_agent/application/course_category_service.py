@@ -17,6 +17,7 @@ study plan / progress / RAG / sources / conversation / evidence 中的任何一�
 from __future__ import annotations
 
 import logging
+import sqlite3
 import uuid
 from typing import List, Optional
 
@@ -59,10 +60,13 @@ def create_category(
     if any(c.get("name", "").strip().lower() == name.lower() for c in existing):
         raise ValueError(f"分类「{name}」已存在")
     category_id = f"CAT-{uuid.uuid4().hex[:12]}"
-    with learner.repo.transaction():
-        learner.repo.create_course_category(user_id, category_id, name)
-        learner.record_event({"event_type": "CATEGORY_CREATED", "user_id": user_id,
-                              "course_id": "", "payload": {"category_id": category_id, "name": name}})
+    try:
+        with learner.repo.transaction():
+            learner.repo.create_course_category(user_id, category_id, name)
+            learner.record_event({"event_type": "CATEGORY_CREATED", "user_id": user_id,
+                                  "course_id": "", "payload": {"category_id": category_id, "name": name}})
+    except sqlite3.IntegrityError as exc:
+        raise ValueError(f"分类「{name}」已存在") from exc
     return learner.repo.get_course_category(user_id, category_id) or {
         "category_id": category_id, "user_id": user_id, "name": name}
 
