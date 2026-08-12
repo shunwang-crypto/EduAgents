@@ -474,6 +474,24 @@ def test_rename_does_not_change_plan_semantic_topic(learner, mock_plan_workflow)
     assert plan["title"] == "30天冲刺课 学习计划"
 
 
+def test_empty_topic_never_leaks_internal_course_id(learner, mock_plan_workflow):
+    """退化场景：topic 为空串时，语义主题必须回落 display_name，
+    绝不能把内部 course_id（CUSTOM-xxx）或空串当作 Plan 主题（P1-3 + P2-2）。"""
+    course = _make_course(learner, topic="Python 数据分析")
+    cid = course["course_id"]
+    # 人为把 topic 置空（模拟脏数据 / 未来写入路径遗漏）
+    learner.repo._conn().execute(
+        "UPDATE user_courses SET topic='' WHERE user_id=? AND course_id=?", (USER, cid)
+    )
+    learner.repo._commit()
+    generate_plan(USER, cid, learner=learner)
+    used = mock_plan_workflow["student_input"].topic
+    assert used == "Python 数据分析"  # 回落 display_name
+    assert used != ""
+    assert not used.startswith("CUSTOM-")
+    assert cid not in used
+
+
 # ================================================================ P1-4 删除课程清除 course-scoped background
 def test_delete_course_removes_background_fact(learner, mock_plan_workflow):
     course = _make_course(learner, topic="SQL")

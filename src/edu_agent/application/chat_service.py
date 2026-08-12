@@ -209,7 +209,7 @@ class ChatService:
                 raise KeyError(f"course not found: {course_id}")
             learner.ensure_course(user_id, course_id)
 
-        # plan_step 校验：必须在任何副作用（建会话 / 写画像 / 写事件 / 调 LLM）之前。
+        # 1) plan_step 校验：必须在任何副作用（建会话 / 写画像 / 写事件 / 调 LLM）之前。
         # 显式 plan_step_id 必须伴随有效 course_id；否则无法定位归属，直接 404（绝不静默降级）。
         # 放在 conversation 创建与画像写入之前，保证非法 step 不会留下脏数据
         # （空 conversation / Rust profile fact / memory / step event）。
@@ -221,14 +221,14 @@ class ChatService:
 
             step = get_step(user_id, course_id, plan_step_id, learner)  # KeyError → 404
 
-        # 1) 会话（ownership 校验：user + course 都必须匹配；校验通过后才创建）
+        # 2) 会话（ownership 校验：user + course 都必须匹配；校验通过后才创建）
         conv = self._resolve_conversation(user_id, course_id, conversation_id)
 
-        # 2) 画像修改意图（明确语义才写；course 级偏好落当前课程）
+        # 3) 画像修改意图（明确语义才写；course 级偏好落当前课程）
         intents = extract_memory_intents(message)
         applied = apply_memory_intents(user_id, course_id or "", intents, learner)
 
-        # 3) 先加载 PRIOR history（不含当前消息）→ Prompt 中当前消息只出现一次
+        # 4) 先加载 PRIOR history（不含当前消息）→ Prompt 中当前消息只出现一次
         history = self._recent_history(conv["conversation_id"], limit=8)
 
         # 5) 用户消息落库（metadata 保留 step 上下文）
@@ -257,7 +257,7 @@ class ChatService:
         context_text = self._build_context(user_id, course_id, message, step)
         reply = self._llm_reply(message, context_text, history)
 
-        # 5) AI 回复落库
+        # 7) AI 回复落库
         ai_msg_id = f"MSG-{uuid.uuid4().hex[:12]}"
         learner.repo.insert_message(
             {"message_id": ai_msg_id, "conversation_id": conv["conversation_id"],

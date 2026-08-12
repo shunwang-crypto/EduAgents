@@ -65,9 +65,16 @@ def generate_plan(
     resolved_days = int(duration_days) if duration_days else saved_days
     resolved_minutes = int(daily_minutes) if daily_minutes else saved_minutes
     active_goal = course_info.get("goal")
-    # goal 语义默认也用稳定 course.topic（而非 display_name），避免 rename 后
-    # 计划目标/内容围绕「30天冲刺课」这类 UI label 而非真实主题。
-    goal_text = goal or (active_goal or {}).get("target") or course_info.get("topic", course_id)
+    # 语义主题：稳定的 course.topic（rename 只改 display_name，不改 topic），
+    # 避免 rename 后计划目标/内容围绕「30天冲刺课」这类 UI label 而非真实主题。
+    # 注意用 `or` 而非 .get(key, default)：_compose_course 总会带 "topic" 键，
+    # 默认值永不生效；topic 为空串时必须继续回落，不能把 "" 当主题。
+    # 最后才回落 course_id（内部 CUSTOM-xxx），仅为兜底，正常路径不可达
+    # （create_course 强制 topic 非空）。
+    semantic_topic = (
+        course_info.get("topic") or course_info.get("display_name") or course_id
+    )
+    goal_text = goal or (active_goal or {}).get("target") or semantic_topic
     if active_goal is None:
         learner.upsert_goal(user_id, goal_id, course_id, name=course_info.get("display_name", course_id),
                             target=goal_text)
@@ -87,10 +94,8 @@ def generate_plan(
     )
 
     student_input = StudentInput(
-        # 语义主题必须用稳定的 course.topic（rename 只改 display_name，不改 topic），
-        # 否则重生成 Plan 会围绕 display_name（如「30天冲刺课」）而非真实主题。
-        # UI 标题仍可显示 display_name（见下方 plan title）。
-        topic=course_info.get("topic", course_id),
+        # 语义主题用上面解析的 semantic_topic；UI 标题仍显示 display_name（见下方 plan title）。
+        topic=semantic_topic,
         level=None,
         days=resolved_days,
         daily_time=f"{resolved_minutes}分钟",
