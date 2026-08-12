@@ -44,6 +44,15 @@ export function ChatPage() {
   //  stale-async 保护：courseId / conversation 快速切换时，旧响应不许覆盖新页面
   const chatSeq = useRef(0);
   const stepSeq = useRef(0);
+  //  scope 代际：仅随 courseId / user(api) 变化；不随 conversationParam 变化，
+  //  否则 runChat 自己写回 URL 会误触发 stale 失效（破坏 lastWrittenConvRef 逻辑）。
+  //  runChat 在 await 前后比对 scope，过期响应直接丢弃，避免串课污染。
+  const scopeSeq = useRef(0);
+
+  // scope 仅在课程/用户切换时自增（与 history 加载 effect 解耦，避免 conversation 写回误触发）
+  useEffect(() => {
+    scopeSeq.current++;
+  }, [courseId, api]);
   // 本组件写回 URL 的 conversation_id：写回后消息已在本地 state，跳过重新加载，
   // 避免 setMessages([]) 清空当前对话（retry/首条消息成功后 user bubble 消失、骨架闪烁）。
   // 初始为 undefined（哨兵）：mount 时 conversationParam 为 null，若用 null 会误判为"自己写回"而跳过首次加载
@@ -130,6 +139,7 @@ export function ChatPage() {
   // 核心发送（retry 复用：不再 append 新 user bubble）
   const runChat = useCallback(
     async (text: string, userMsgId: string) => {
+      const reqScope = scopeSeq.current;
       setLoading(true);
       setSendError("");
       setRetryText("");
@@ -142,6 +152,8 @@ export function ChatPage() {
           conversation_id: conversationParam ?? null,
           plan_step_id: step?.step_id ?? null,
         });
+        // 串课保护：发送期间切到别的课程/用户，旧回复不许写消息、改 URL、写错误
+        if (reqScope !== scopeSeq.current) return;
         // conversation_id 写回 URL（replace），刷新后恢复同会话；
         // 记录写回值，effect 据此跳过重复加载历史
         if (reply.conversation_id && reply.conversation_id !== conversationParam) {
@@ -158,12 +170,15 @@ export function ChatPage() {
         };
         setMessages((prev) => [...prev, aiMsg]);
       } catch (e) {
+        // 串课保护：过期响应的错误也不许污染当前页面
+        if (reqScope !== scopeSeq.current) return;
         const msg = e instanceof Error ? e.message : "发送失败，请重试";
         setSendError(msg);
         setRetryText(text);
         setRetryMsgId(userMsgId); // 原 user 消息保留，retry 不重复
       } finally {
-        setLoading(false);
+        // 仅在仍属于当前 scope 时收尾 loading
+        if (reqScope === scopeSeq.current) setLoading(false);
       }
     },
     [courseId, conversationParam, step, searchParams, setSearchParams, api]

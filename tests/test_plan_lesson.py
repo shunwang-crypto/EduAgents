@@ -325,6 +325,67 @@ def test_lesson_timestamp_consistent_with_plan(client, monkeypatch):
     assert persisted["lesson_generated_at"] == lesson_ts
 
 
+def test_lesson_does_not_rollback_step_status(client, monkeypatch):
+    # 模拟 Lesson 生成期间 step 被并发标记为 completed：
+    # fake LLM 在返回前把 step 置为 completed（同一线程，避免跨线程 SQLite 锁竞争）。
+    captured: dict = {}
+
+    def gen_that_completes_step(step, context_text):
+        from edu_agent.application.study_plan_service import update_step_status
+
+        # step 初始为 in_progress（下方已置），此处模拟并发完成
+        update_step_status("USER-A", cid, step["step_id"], "completed")
+        captured["completed"] = True
+        return "## 本节要学什么\n这是讲解内容。"
+
+    monkeypatch.setattr(
+        "edu_agent.application.study_plan_service._generate_lesson_markdown",
+        gen_that_completes_step,
+    )
+
+    r = client.post(
+        "/api/courses", json={"topic": "Python 数据分析"}, headers={"X-User-Id": "USER-A"}
+    )
+    assert r.status_code == 200, r.text
+    cid = r.json()["course_id"]
+    r = client.post(
+        f"/api/courses/{cid}/plan/generate", json={}, headers={"X-User-Id": "USER-A"}
+    )
+    assert r.status_code == 200, r.text
+    step = r.json()["steps"][0]
+    # 先把 step 设为 in_progress（模拟用户「开始学习」）
+    r = client.patch(
+        f"/api/courses/{cid}/plan/steps/{step['step_id']}",
+        json={"status": "in_progress"},
+        headers={"X-User-Id": "USER-A"},
+    )
+    assert r.status_code == 200, r.text
+
+    # 触发生成：fake 内部会把 step 置 completed，落库必须以重读后的 fresh(completed) 为基准，
+    # 绝不能把 status 用最初 step snapshot 回滚成 in_progress / not_started。
+    r = client.post(
+        f"/api/courses/{cid}/plan/steps/{step['step_id']}/lesson",
+        headers={"X-User-Id": "USER-A"},
+    )
+    assert r.status_code == 200, r.text
+    assert captured.get("completed") is True
+
+    plan = client.get(f"/api/courses/{cid}/plan", headers={"X-User-Id": "USER-A"}).json()
+    persisted = next(s for s in plan["steps"] if s["step_id"] == step["step_id"])
+    # 关键回归：status 必须为 completed（不被旧 snapshot 回滚）
+    assert persisted["status"] == "completed"
+    # lesson 已落地
+    assert persisted["lesson_markdown"].startswith("## 本节要学什么")
+    assert persisted["lesson_generated_at"]
+    # progress 反映 completed（1 / 总步骤数）
+    total = len(plan["steps"])
+    assert plan["progress"] == round(1 / total, 3)
+    # mastery 仍未改变（UNKNOWN 仍为 None）
+    kc_id = step["kc_id"]
+    kc = LearnerModelService().repo.get_kc("USER-A", cid, kc_id)
+    assert kc is None or kc.get("mastery") is None
+
+
 # ---------------------------------------------------------------------------
 # 计划设置持久化：create_course 保存 / generate 解析 / 写回
 # ---------------------------------------------------------------------------

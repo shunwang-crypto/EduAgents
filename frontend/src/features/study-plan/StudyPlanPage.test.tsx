@@ -1,11 +1,17 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
+import {
+  MemoryRouter,
+  Route,
+  Routes,
+  createMemoryRouter,
+  RouterProvider,
+} from "react-router-dom";
 import { StudyPlanPage } from "./StudyPlanPage";
 
 // vi.mock factory 会被提升到文件顶部，mock 数据必须用 vi.hoisted 定义
-const { mockPlan } = vi.hoisted(() => ({
-  mockPlan: {
+const { mockPlan, mockApi } = vi.hoisted(() => {
+  const mockPlan = {
     plan_id: "PLAN-1",
     course_id: "PY",
     goal_id: "G-1",
@@ -60,28 +66,37 @@ const { mockPlan } = vi.hoisted(() => ({
         ],
       },
     ],
-  },
-}));
-
-const { mockApi } = vi.hoisted(() => ({
-  mockApi: {
-    getCourse: vi.fn().mockResolvedValue({
-      course_id: "PY",
-      display_name: "Python 数据分析",
-      duration_days: 14,
-      daily_minutes: 60,
-    }),
-    getPlan: vi.fn().mockResolvedValue(mockPlan),
+  };
+  const mockApi = {
+    getCourse: vi.fn((cid: string) =>
+      Promise.resolve({
+        course_id: cid,
+        display_name: cid === "JAVA" ? "Java OOP" : "Python 数据分析",
+        duration_days: 14,
+        daily_minutes: 60,
+      })
+    ),
+    // 参数感知：课程切换测试需要按 courseId 返回对应课程计划
+    getPlan: vi.fn((cid: string) =>
+      Promise.resolve(
+        cid === "JAVA"
+          ? { ...mockPlan, course_id: "JAVA", title: "Java OOP 学习计划" }
+          : mockPlan
+      )
+    ),
     generatePlan: vi.fn().mockResolvedValue(mockPlan),
     updateStep: vi.fn().mockResolvedValue(mockPlan),
-    getLesson: vi.fn().mockResolvedValue({
-      step_id: "S1",
-      lesson_markdown: "## 本节要学什么\nNumPy 数组是…",
-      lesson_generated_at: "2026-08-11T00:00:00Z",
-      title: "NumPy 数组基础",
-    }),
-  },
-}));
+    getLesson: vi.fn((_cid: string, stepId: string) =>
+      Promise.resolve({
+        step_id: stepId,
+        lesson_markdown: "## 本节要学什么\nNumPy 数组是…",
+        lesson_generated_at: "2026-08-11T00:00:00Z",
+        title: "NumPy 数组基础",
+      })
+    ),
+  };
+  return { mockPlan, mockApi };
+});
 
 vi.mock("../../api/ApiProvider", () => ({ useApi: () => mockApi }));
 
@@ -93,6 +108,25 @@ function renderPage(initialPath = "/courses/PY/plan") {
       </Routes>
     </MemoryRouter>
   );
+}
+
+// 可导航 router（用于跨课程切换的 stale-async 回归测试）
+function renderNavigablePlan(initialPath: string) {
+  const router = createMemoryRouter(
+    [{ path: "/courses/:courseId/plan", element: <StudyPlanPage /> }],
+    { initialEntries: [initialPath] }
+  );
+  render(<RouterProvider router={router} />);
+  return router;
+}
+
+// 可控 deferred Promise：模拟「请求已发出但尚未 resolve」再切换课程
+function deferred<T = unknown>() {
+  let resolve!: (v: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
 }
 
 describe("StudyPlanPage", () => {
@@ -280,5 +314,121 @@ describe("StudyPlanPage", () => {
         })
       )
     );
+  });
+
+  it("cross-course: pending updateStep(A) then switch B does not mutate B (A)", async () => {
+    const upDefer = deferred<typeof mockPlan>();
+    (mockApi.updateStep as ReturnType<typeof vi.fn>).mockReturnValue(upDefer.promise);
+    const router = renderNavigablePlan("/courses/PY/plan");
+    try {
+      await waitFor(() => expect(screen.getAllByText("开始学习").length).toBe(3));
+      // 在 A 上点「开始学习」→ toggleStep(A) 发出（pending）
+      fireEvent.click(screen.getAllByText("开始学习")[0]);
+      await waitFor(() =>
+        expect((mockApi.updateStep as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith(
+          "PY", "S1", "in_progress"
+        )
+      );
+      // 切换到 B（JAVA）
+      await act(async () => { router.navigate("/courses/JAVA/plan"); });
+      await waitFor(() =>
+        expect((mockApi.getPlan as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith("JAVA")
+      );
+      // 解析迟到的 A 响应：应被 scope 守卫丢弃
+      await act(async () => { upDefer.resolve(mockPlan); });
+      // B 页面不应显示 A 的计划标题
+      await waitFor(() =>
+        expect(screen.queryByText("Python 数据分析 学习计划")).toBeNull()
+      );
+      // 旧 toggleStep(A) 过期 → 返回 false → 不会触发 openLesson(A)
+      expect(
+        (mockApi.getLesson as ReturnType<typeof vi.fn>).mock.calls.some((c) => c[0] === "PY")
+      ).toBe(false);
+    } finally {
+      (mockApi.updateStep as ReturnType<typeof vi.fn>).mockResolvedValue(mockPlan);
+    }
+  });
+
+  it("cross-course: pending generatePlan(A) then switch B does not mutate B (B)", async () => {
+    const genDefer = deferred<typeof mockPlan>();
+    (mockApi.generatePlan as ReturnType<typeof vi.fn>).mockReturnValue(genDefer.promise);
+    // EMPTY 课程返回无计划，进入 empty 态
+    (mockApi.getPlan as ReturnType<typeof vi.fn>).mockImplementation((cid: string) =>
+      Promise.resolve(
+        cid === "EMPTY"
+          ? null
+          : cid === "JAVA"
+            ? { ...mockPlan, course_id: "JAVA", title: "Java OOP 学习计划" }
+            : mockPlan
+      )
+    );
+    const router = renderNavigablePlan("/courses/EMPTY/plan");
+    try {
+      await waitFor(() => expect(screen.getByText("还没有学习计划")).toBeTruthy());
+      fireEvent.click(screen.getByText("生成学习计划"));
+      await waitFor(() =>
+        expect((mockApi.generatePlan as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith(
+          "EMPTY", expect.objectContaining({})
+        )
+      );
+      // 切换到 B（JAVA）
+      await act(async () => { router.navigate("/courses/JAVA/plan"); });
+      await waitFor(() =>
+        expect((mockApi.getPlan as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith("JAVA")
+      );
+      // 解析迟到的 A 生成响应：应被 scope 守卫丢弃
+      await act(async () => { genDefer.resolve(mockPlan); });
+      // B 页面应显示自己的计划，且不应被 A 的计划污染
+      await waitFor(() => expect(screen.getByText("Java OOP 学习计划")).toBeTruthy());
+      expect(screen.queryByText("Python 数据分析 学习计划")).toBeNull();
+    } finally {
+      (mockApi.generatePlan as ReturnType<typeof vi.fn>).mockResolvedValue(mockPlan);
+      (mockApi.getPlan as ReturnType<typeof vi.fn>).mockImplementation((cid: string) =>
+        Promise.resolve(
+          cid === "JAVA"
+            ? { ...mockPlan, course_id: "JAVA", title: "Java OOP 学习计划" }
+            : mockPlan
+        )
+      );
+    }
+  });
+
+  it("cross-course: pending openLesson(A) then switch B does not show A lesson (C)", async () => {
+    const lessonDefer = deferred<{
+      step_id: string; lesson_markdown: string; lesson_generated_at: string; title: string;
+    }>();
+    (mockApi.getLesson as ReturnType<typeof vi.fn>).mockReturnValue(lessonDefer.promise);
+    const router = renderNavigablePlan("/courses/PY/plan");
+    try {
+      await waitFor(() => expect(screen.getAllByText("开始学习").length).toBe(3));
+      // 点「开始学习」：toggleStep 默认 resolve → 触发 openLesson(PY)（pending）
+      fireEvent.click(screen.getAllByText("开始学习")[0]);
+      await waitFor(() =>
+        expect((mockApi.getLesson as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith("PY", "S1")
+      );
+      // 切换到 B（JAVA）
+      await act(async () => { router.navigate("/courses/JAVA/plan"); });
+      await waitFor(() =>
+        expect((mockApi.getPlan as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith("JAVA")
+      );
+      // 解析迟到的 A lesson
+      await act(async () => {
+        lessonDefer.resolve({
+          step_id: "S1",
+          lesson_markdown: "## 本节要学什么\nPY专属讲解",
+          lesson_generated_at: "2026-08-11T00:00:00Z",
+          title: "NumPy 数组基础",
+        });
+      });
+      // B 页面不应出现 A 的 lesson 内容（stale 保护仍有效）
+      await waitFor(() => expect(screen.queryByText("PY专属讲解")).toBeNull());
+    } finally {
+      (mockApi.getLesson as ReturnType<typeof vi.fn>).mockResolvedValue({
+        step_id: "S1",
+        lesson_markdown: "## 本节要学什么\nNumPy 数组是…",
+        lesson_generated_at: "2026-08-11T00:00:00Z",
+        title: "NumPy 数组基础",
+      });
+    }
   });
 });

@@ -1,25 +1,40 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { render, screen, waitFor, fireEvent, act } from "@testing-library/react";
+import {
+  MemoryRouter,
+  Route,
+  Routes,
+  createMemoryRouter,
+  RouterProvider,
+} from "react-router-dom";
 import { ChatPage } from "./ChatPage";
 
-const { mockApi } = vi.hoisted(() => ({
-  mockApi: {
-    getCourse: vi.fn().mockResolvedValue({ course_id: "PY", display_name: "Python 数据分析" }),
-    getChat: vi.fn().mockResolvedValue({ conversation_id: "C-1", course_id: "PY", messages: [] }),
+const { mockApi, defaultChatReply } = vi.hoisted(() => {
+  const defaultChatReply = {
+    message_id: "MSG-1", conversation_id: "C-1", content: "**回答**",
+    course_id: "PY", created_at: "2026-08-11T00:00:00Z", profile_updates: [],
+    context: { type: "plan_step", course_id: "PY", plan_step_id: "S2", step_title: "DataFrame 基础" },
+  };
+  const mockApi = {
+    getCourse: vi.fn((cid: string) =>
+      Promise.resolve({
+        course_id: cid,
+        display_name: cid === "JAVA" ? "Java OOP" : "Python 数据分析",
+      })
+    ),
+    getChat: vi.fn((cid: string, conv: string | null) =>
+      Promise.resolve({ conversation_id: conv || "C-1", course_id: cid, messages: [] })
+    ),
     getStep: vi.fn().mockResolvedValue({
       step_id: "S2", seq: 2, stage_id: "stage-2", stage_title: "核心学习",
       stage_order: 2, kc_id: "knowledge-2", title: "DataFrame 基础",
       description: "行列与索引", learning_objective: "能读写 DataFrame",
       prerequisites: [], difficulty: "中等", minutes: 45, status: "not_started",
     }),
-    chat: vi.fn().mockResolvedValue({
-      message_id: "MSG-1", conversation_id: "C-1", content: "**回答**",
-      course_id: "PY", created_at: "2026-08-11T00:00:00Z", profile_updates: [],
-      context: { type: "plan_step", course_id: "PY", plan_step_id: "S2", step_title: "DataFrame 基础" },
-    }),
-  },
-}));
+    chat: vi.fn().mockResolvedValue(defaultChatReply),
+  };
+  return { mockApi, defaultChatReply };
+});
 
 vi.mock("../../api/ApiProvider", () => ({ useApi: () => mockApi }));
 
@@ -31,6 +46,25 @@ function renderChat(initialPath: string) {
       </Routes>
     </MemoryRouter>
   );
+}
+
+// 可导航 router（用于跨课程切换的 stale-async 回归测试）
+function renderNavigableChat(initialPath: string) {
+  const router = createMemoryRouter(
+    [{ path: "/courses/:courseId/chat", element: <ChatPage /> }],
+    { initialEntries: [initialPath] }
+  );
+  render(<RouterProvider router={router} />);
+  return router;
+}
+
+// 可控 deferred Promise：模拟「请求已发出但尚未 resolve」再切换课程
+function deferred<T = unknown>() {
+  let resolve!: (v: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
 }
 
 describe("ChatPage plan step context", () => {
@@ -106,5 +140,42 @@ describe("ChatPage send / retry", () => {
     const calls = (mockApi.chat as ReturnType<typeof vi.fn>).mock.calls;
     // 第二次发送携带第一次返回的 conversation_id（URL 已写回）
     expect(calls[1][0].conversation_id).toBe("CONV-NEW");
+  });
+
+  it("cross-course: pending chat(A) then switch B does not mutate B", async () => {
+    const chatDefer = deferred<typeof defaultChatReply>();
+    (mockApi.chat as ReturnType<typeof vi.fn>).mockReturnValue(chatDefer.promise);
+    const router = renderNavigableChat("/courses/PY/chat");
+    try {
+      await waitFor(() =>
+        expect(screen.getByPlaceholderText(/继续问关于 Python 数据分析/)).toBeTruthy()
+      );
+      // 在 A 上发送消息
+      const input = screen.getByLabelText("消息输入框");
+      fireEvent.change(input, { target: { value: "解释 Attention" } });
+      fireEvent.click(screen.getByRole("button", { name: "发送" }));
+      await waitFor(() =>
+        expect((mockApi.chat as ReturnType<typeof vi.fn>)).toHaveBeenCalled()
+      );
+      // 切换到 B（JAVA）
+      await act(async () => { router.navigate("/courses/JAVA/chat"); });
+      await waitFor(() =>
+        expect(screen.getByPlaceholderText(/继续问关于 Java OOP/)).toBeTruthy()
+      );
+      // 解析迟到的 A 回复：应被 scope 守卫丢弃
+      await act(async () => {
+        chatDefer.resolve({
+          message_id: "MSG-A", conversation_id: "C-A", content: "**A的回答**",
+          course_id: "PY", created_at: "2026-08-11T00:00:00Z", profile_updates: [],
+          context: { type: "course", course_id: "PY", plan_step_id: "", step_title: "" },
+        });
+      });
+      // B 不应显示 A 的回答
+      await waitFor(() => expect(screen.queryByText("A的回答")).toBeNull());
+      // B 的 URL 不应包含 A 的 conversation（stale 写回被拦截）
+      expect(router.state.location.search).not.toContain("C-A");
+    } finally {
+      (mockApi.chat as ReturnType<typeof vi.fn>).mockResolvedValue(defaultChatReply);
+    }
   });
 });

@@ -119,10 +119,14 @@ export function StudyPlanPage() {
   const loadSeq = useRef(0);
   //  Lesson 请求级 stale 保护：一次只保留最后一个 Lesson 响应，过期响应丢弃
   const lessonRequestSeq = useRef(0);
+  //  scope 代际：courseId / api(user) 改变时自增；generate/toggleStep/openLesson
+  //  在 await 前后比对 scope，过期响应直接丢弃，避免串课污染
+  const scopeSeq = useRef(0);
 
   useEffect(() => {
     if (!courseId) return;
     const seq = ++loadSeq.current;
+    scopeSeq.current++;
     setCourseError(false);
     setError("");
     setPlanStatus("loading");
@@ -180,6 +184,7 @@ export function StudyPlanPage() {
   const generate = useCallback(
     async (override?: { duration_days?: number; daily_minutes?: number; background?: string }) => {
       if (!courseId) return;
+      const reqScope = scopeSeq.current;
       setGenerating(true);
       setError("");
       try {
@@ -189,6 +194,8 @@ export function StudyPlanPage() {
           background: override?.background ?? settings.background,
         };
         const p = await api.generatePlan(courseId, body);
+        // 串课保护：生成期间切到别的课程，旧响应不许覆盖当前页面
+        if (reqScope !== scopeSeq.current) return;
         setPlan(p);
         setPlanStatus("ready");
         setShowMarkdown(false);
@@ -203,9 +210,12 @@ export function StudyPlanPage() {
         // 当前基础（background）是一次性的画像事实，生成后清空输入
         setSettings((s) => ({ ...s, background: "" }));
       } catch (e) {
+        // 串课保护：过期响应的错误也不许污染当前页面
+        if (reqScope !== scopeSeq.current) return;
         setError(e instanceof Error ? e.message : "生成失败");
       } finally {
-        setGenerating(false);
+        // 仅在仍属于当前 scope 时收尾 loading，避免清掉其他课程的 generating 态
+        if (reqScope === scopeSeq.current) setGenerating(false);
       }
     },
     [courseId, api, settings]
@@ -214,11 +224,16 @@ export function StudyPlanPage() {
   const toggleStep = useCallback(
     async (stepId: string, status: string): Promise<boolean> => {
       if (!courseId) return false;
+      const reqScope = scopeSeq.current;
       try {
         const p = await api.updateStep(courseId, stepId, status);
+        // 串课保护：更新期间切到别的课程，旧响应必须返回 false，
+        // 否则外层 handleStart 会误以为成功而继续展开旧课程的 Lesson
+        if (reqScope !== scopeSeq.current) return false;
         setPlan(p);
         return true;
       } catch (e) {
+        if (reqScope !== scopeSeq.current) return false;
         setError(e instanceof Error ? e.message : "更新失败");
         return false;
       }
@@ -231,6 +246,7 @@ export function StudyPlanPage() {
     async (stepId: string) => {
       if (!courseId) return;
       const reqSeq = ++lessonRequestSeq.current;
+      const reqScope = scopeSeq.current;
       setExpandedStepId(stepId);
       if (lessonByStep[stepId]?.markdown) return;
       const s = plan?.stages.flatMap((st) => st.steps).find((x) => x.step_id === stepId);
@@ -248,17 +264,19 @@ export function StudyPlanPage() {
         const res = await api.getLesson(courseId, stepId);
         // stale 保护：过期响应（课程/用户已切换、或已有更新的 Lesson 请求）直接丢弃
         if (reqSeq !== lessonRequestSeq.current) return;
+        if (reqScope !== scopeSeq.current) return;
         setLessonByStep((prev) => ({
           ...prev,
           [stepId]: { markdown: res.lesson_markdown, generatedAt: res.lesson_generated_at },
         }));
       } catch (e) {
         if (reqSeq !== lessonRequestSeq.current) return;
+        if (reqScope !== scopeSeq.current) return;
         const status = e instanceof ApiError ? e.status : 0;
         setLessonErrorKind(status === 404 ? "stale" : "error");
         setLessonErrorStep(stepId);
       } finally {
-        if (reqSeq === lessonRequestSeq.current)
+        if (reqSeq === lessonRequestSeq.current && reqScope === scopeSeq.current)
           setLessonLoadingStep((curr) => (curr === stepId ? null : curr));
       }
     },

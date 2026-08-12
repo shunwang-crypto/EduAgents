@@ -114,6 +114,13 @@ def test_chat_flow(client):
     assert len(history["messages"]) == 2
 
 
+def test_plan_step_id_requires_course_id(client):
+    # 显式 plan_step_id 但缺少 course_id → 必须 404，
+    # 绝不能静默降级为 General Chat（service contract：plan_step_id 必须有有效 course_id 做归属校验）
+    r = client.post("/api/chat", json={"message": "你好", "plan_step_id": "S1"})
+    assert r.status_code == 404, r.text
+
+
 def test_profile_intent_via_chat(client):
     client.post("/api/chat", json={"message": "我会 Python 基础"})
     r = client.post("/api/chat", json={"message": "忘记我做过 FastAPI"})

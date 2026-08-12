@@ -218,6 +218,10 @@ class ChatService:
 
         # 3) plan_step 校验：显式传入必须有效，否则 404（绝不静默降级）
         step: Optional[dict] = None
+        if plan_step_id and not course_id:
+            # 显式 plan_step_id 必须伴随有效 course_id 做 ownership 校验，
+            # 否则无法定位 step 归属，绝不能静默降级为 General Chat。
+            raise KeyError("plan_step_id requires course_id")
         if course_id and plan_step_id:
             from edu_agent.application.study_plan_service import get_step
 

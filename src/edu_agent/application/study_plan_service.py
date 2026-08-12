@@ -328,7 +328,9 @@ def get_or_generate_step_lesson(
     if not markdown or not markdown.strip():
         raise RuntimeError("lesson generation returned empty content")
 
-    # Stale 保护：重验证 step 仍属于当前 user/course/current plan 后再写
+    # Stale 保护：重验证 step 仍属于当前 user/course/current plan 后再写。
+    # 必须以「重读后的 fresh」为基准落库，而非最初的 step snapshot——
+    # 否则 Lesson 生成期间 step status 从 in_progress 变为 completed 会被旧 snapshot 回滚。
     fresh = learner.repo.get_plan_step_by_id(user_id, course_id, step_id)
     if fresh is None or fresh.get("plan_id") != step.get("plan_id"):
         raise RuntimeError("plan step changed during lesson generation; discard stale lesson")
@@ -336,10 +338,10 @@ def get_or_generate_step_lesson(
     generated_at = _now_iso()
     with learner.repo.transaction():
         learner.repo.upsert_plan_step(
-            {**step, "lesson_markdown": markdown, "lesson_generated_at": generated_at,
+            {**fresh, "lesson_markdown": markdown, "lesson_generated_at": generated_at,
              "updated_at": generated_at}
         )
-    return _lesson_payload(step, markdown, generated_at)
+    return _lesson_payload(fresh, markdown, generated_at)
 
 
 def _lesson_payload(step: dict, markdown: str, generated_at: Optional[str] = None) -> dict:
