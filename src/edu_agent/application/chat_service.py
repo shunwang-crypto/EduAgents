@@ -35,6 +35,14 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _conversation_title(message: str) -> str:
+    """首条用户消息 → 对话标题（V1 不调 LLM，纯规则：去空白 + 36 字截断）。"""
+    text = re.sub(r"\s+", " ", message).strip()
+    if len(text) <= 36:
+        return text
+    return text[:36].rstrip() + "\u2026"
+
+
 # ---------------------------------------------------------------------------
 # UserMemoryIntentExtractor：明确画像修改语义
 # ---------------------------------------------------------------------------
@@ -182,6 +190,28 @@ class ChatService:
         )
         return {"conversation_id": conv_id, "course_id": course_id}
 
+    def list_conversations(
+        self, user_id: str, course_id: Optional[str], limit: int = 6
+    ) -> List[dict]:
+        """最近对话列表：course_id 为空 = General；否则该 Course 的对话。
+
+        title 已由 repository 做 COALESCE(fallback 首条 user 消息)，这里再 normalize/truncate。
+        给定 course_id 时先校验归属（ownership 优先），否则 KeyError → 404（信息隐藏）。
+        """
+        if course_id:
+            if self._learner.repo.get_user_course(user_id, course_id) is None:
+                raise KeyError(f"course not found: {course_id}")
+        rows = self._learner.repo.list_conversations(user_id, course_id or "", limit)
+        return [
+            {
+                "conversation_id": r["conversation_id"],
+                "course_id": r["course_id"] or None,
+                "title": _conversation_title(r.get("title") or ""),
+                "updated_at": r["updated_at"],
+            }
+            for r in rows
+        ]
+
     def chat(
         self,
         user_id: str,
@@ -244,6 +274,13 @@ class ChatService:
              "role": "user", "content": message, "created_at": _now_iso(),
              "metadata_json": json.dumps(metadata, ensure_ascii=False)}
         )
+        # 标题：第一次用户消息后，若 title 仍为空 → 生成（V1 不调 LLM，纯规则截断）；
+        # 之后不随聊天自动修改。兼容旧开发数据（title=NULL）由 repository COALESCE 处理。
+        if not (conv.get("title") or "").strip():
+            conv_title = _conversation_title(message)
+            if conv_title:
+                learner.repo.set_conversation_title(conv["conversation_id"], conv_title)
+                conv = {**conv, "title": conv_title}
         # 事件：有 step 时 kc_id = step.kc_id（真实 KC，不是 PLANSTEP id）
         learner.record_event({"event_type": "CHAT_MESSAGE_SENT", "user_id": user_id,
                               "course_id": course_id or "",
@@ -362,7 +399,7 @@ class ChatService:
             query = message
             if plan_step and plan_step.get("title"):
                 query = f"{plan_step['title']} {message}".strip()
-            rag_hits = self._rag(course_id, query, top_k=3)
+            rag_hits = self._rag(user_id, course_id, query, top_k=3)
             ctx = build_chat_context(bundle, repo, course_id,
                                      course_title=course_title,
                                      plan_summary=plan_summary or "",
@@ -394,20 +431,20 @@ class ChatService:
             logger.warning("[chat] resolve active goal failed", exc_info=True)
         return ""
 
-    def _rag(self, course_id: str, message: str, top_k: int = 3) -> List[dict]:
-        """课程知识库检索：真加载持久化 chunks（load_chunks(course_id)），不跨课程。"""
+    def _rag(self, user_id: str, course_id: str, message: str, top_k: int = 3) -> List[dict]:
+        """课程知识库检索：严格 user+course 双隔离加载 chunks，不跨用户/课程。"""
         try:
             from edu_agent.tools.course_kb import CourseKnowledgeBase
             from edu_agent.tools import kb_store
 
-            chunks = kb_store.load_chunks(course_id)
+            chunks = kb_store.load_chunks(user_id, course_id)
             if not chunks:
                 return []
-            kb = CourseKnowledgeBase.from_chunks(chunks, course_id=course_id)
+            kb = CourseKnowledgeBase.from_chunks(chunks, user_id=user_id, course_id=course_id)
             hits = kb.search(message, top_k=top_k)
-            return [{"title": h.doc_title, "text": h.text[:400]} for h in hits]
+            return [{"title": h.doc_title, "text": h.text[:400], "url": h.source_url} for h in hits]
         except Exception:  # noqa: BLE001 - RAG 失败不影响聊天
-            logger.warning("[chat] rag search failed: course=%s", course_id, exc_info=True)
+            logger.warning("[chat] rag search failed: user=%s course=%s", user_id, course_id, exc_info=True)
             return []
 
     def _recent_history(self, conversation_id: str, limit: int = 8) -> List[Dict[str, str]]:

@@ -240,6 +240,26 @@ CREATE TABLE IF NOT EXISTS plan_steps (
     CHECK (stage_order BETWEEN 1 AND 3),
     CHECK (minutes > 0)
 );
+
+-- 课程资料（Course Sources：用户导入的 Web / GitHub 学习资料；user-scoped）
+CREATE TABLE IF NOT EXISTS course_sources (
+    source_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    course_id TEXT NOT NULL,
+    source_type TEXT NOT NULL,
+    source_url TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'importing',
+    chunk_count INTEGER NOT NULL DEFAULT 0,
+    error_message TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (user_id, course_id, source_url),
+    CHECK (source_type IN ('web', 'github')),
+    CHECK (status IN ('importing', 'ready', 'failed'))
+);
+CREATE INDEX IF NOT EXISTS idx_course_sources_user_course
+    ON course_sources(user_id, course_id, updated_at);
 """
 
 

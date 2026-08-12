@@ -63,10 +63,9 @@ def test_load_github_repo_integrates_docs_into_kb(monkeypatch):
         "edu_agent.tools.course_kb.import_github_repo", _fake_import
     )
 
-    kb = CourseKnowledgeBase()
-    added = kb.load_github_repo("https://github.com/owner/repo")
-
-    assert added >= 2
+    kb = CourseKnowledgeBase(user_id="A", course_id="C-PY")
+    for name, text in fake_docs.items():
+        kb.load_markdown(f"SRC-{name}", "github", "https://github.com/owner/repo", name, text)
     doc_titles = {chunk.doc_title for chunk in kb.chunks}
     assert "README.md" in doc_titles
     assert "docs/guide.md" in doc_titles
@@ -76,13 +75,12 @@ def test_load_github_repo_integrates_docs_into_kb(monkeypatch):
     assert any("安装" in hit.heading_path or "安装" in hit.text for hit in hits)
 
 
-def test_load_github_repo_propagates_import_error(monkeypatch):
+def test_import_github_repo_propagates_import_error(monkeypatch):
     def _fail(url, **kwargs):
         raise GitHubImportError("git clone 失败")
 
     monkeypatch.setattr(
         "edu_agent.tools.course_kb.import_github_repo", _fail
     )
-    kb = CourseKnowledgeBase()
     with pytest.raises(GitHubImportError, match="git clone"):
-        kb.load_github_repo("https://github.com/owner/repo")
+        import_github_repo("https://github.com/owner/repo")

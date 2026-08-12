@@ -3,8 +3,11 @@
 import type {
   ChatResponse,
   Conversation,
+  ConversationSummary,
   Course,
+  CourseSource,
   PlanStep,
+  SourceSearchResult,
   StudyPlan,
 } from "./types";
 
@@ -48,6 +51,18 @@ export interface ApiClient {
     plan_step_id?: string | null;
   }) => Promise<ChatResponse>;
   getChat: (courseId?: string | null, conversationId?: string | null) => Promise<Conversation>;
+
+  // Conversations（最近对话列表）
+  listConversations: (courseId?: string | null, limit?: number) => Promise<ConversationSummary[]>;
+
+  // Course Sources（Web / GitHub / Internet Search）
+  listCourseSources: (courseId: string) => Promise<CourseSource[]>;
+  addCourseSource: (
+    courseId: string,
+    body: { url: string; title?: string },
+  ) => Promise<CourseSource>;
+  deleteCourseSource: (courseId: string, sourceId: string) => Promise<void>;
+  searchCourseSources: (courseId: string, q: string, limit?: number) => Promise<SourceSearchResult[]>;
 }
 
 /** 按 userId 创建 ApiClient（X-User-Id 头随请求发送）。
@@ -127,6 +142,31 @@ export function createApiClient(userId: string): ApiClient {
       if (courseId) params.set("course_id", courseId);
       if (conversationId) params.set("conversation_id", conversationId);
       return request<Conversation>(`/api/chat?${params.toString()}`);
+    },
+
+    // Conversations
+    listConversations: (courseId, limit = 6) => {
+      const params = new URLSearchParams();
+      if (courseId) params.set("course_id", courseId);
+      params.set("limit", String(limit));
+      return request<ConversationSummary[]>(`/api/chat/conversations?${params.toString()}`);
+    },
+
+    // Course Sources
+    listCourseSources: (courseId) =>
+      request<CourseSource[]>(`/api/courses/${courseId}/sources`),
+    addCourseSource: (courseId, body) =>
+      request<CourseSource>(`/api/courses/${courseId}/sources`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    deleteCourseSource: (courseId, sourceId) =>
+      request<void>(`/api/courses/${courseId}/sources/${sourceId}`, { method: "DELETE" }),
+    searchCourseSources: (courseId, q, limit = 5) => {
+      const params = new URLSearchParams();
+      params.set("q", q);
+      params.set("limit", String(limit));
+      return request<SourceSearchResult[]>(`/api/courses/${courseId}/sources/search?${params.toString()}`);
     },
   };
 }

@@ -208,3 +208,51 @@ def test_generate_plan_invalid_time_bounds_422(client):
         json={"duration_days": 14, "daily_minutes": 60},
     )
     assert r.status_code == 200, r.text
+
+
+# ---------------------------------------------------------------- Conversations（GPT 式最近对话）
+def test_conversations_empty(client):
+    assert client.get("/api/chat/conversations").json() == []
+
+
+def test_conversation_title_listed(client):
+    msg = "我想学习 Python 的数据分析基础"
+    r = client.post("/api/chat", json={"message": msg})
+    assert r.status_code == 200, r.text
+    convs = client.get("/api/chat/conversations").json()
+    assert len(convs) == 1
+    # 首条用户消息后生成标题（<=36 字不截断）；course_id 为空=General
+    assert convs[0]["title"] == msg
+    assert convs[0]["course_id"] is None
+
+
+def test_conversations_limit(client):
+    for i in range(8):
+        client.post("/api/chat", json={"message": f"普通对话第 {i} 条"})
+    assert len(client.get("/api/chat/conversations", params={"limit": 6}).json()) == 6
+    assert len(client.get("/api/chat/conversations", params={"limit": 20}).json()) == 8
+
+
+def test_conversation_course_filter(client):
+    course = client.post("/api/courses", json={"topic": "Java OOP"}).json()
+    cid = course["course_id"]
+    client.post("/api/chat", json={"message": "普通问题"})  # General
+    r = client.post("/api/chat", json={"message": "多态是什么", "course_id": cid})
+    assert r.status_code == 200
+
+    general = client.get("/api/chat/conversations").json()
+    course_conv = client.get("/api/chat/conversations", params={"course_id": cid}).json()
+    assert len(general) == 1 and general[0]["course_id"] is None
+    assert len(course_conv) == 1 and course_conv[0]["course_id"] == cid
+
+
+def test_conversations_other_user_course_404(client):
+    course = client.post(
+        "/api/courses", json={"topic": "Python"}, headers={"X-User-Id": "USER-A"}
+    ).json()
+    cid = course["course_id"]
+    # USER-B 列 USER-A 的课程对话 → 404（ownership，信息隐藏）
+    r = client.get(
+        "/api/chat/conversations", params={"course_id": cid}, headers={"X-User-Id": "USER-B"}
+    )
+    assert r.status_code == 404, r.text

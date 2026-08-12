@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from edu_agent.application import course_service, study_plan_service
+from edu_agent.application import course_source_service
 from edu_agent.application.chat_service import ChatService
 from edu_agent.config.settings import get_settings
 
@@ -178,6 +179,61 @@ def generate_step_lesson(course_id: str, step_id: str,
 
 
 # ---------------------------------------------------------------------------
+# Course Sources（Web / GitHub / Internet Search）
+# ---------------------------------------------------------------------------
+
+
+class AddSourceRequest(BaseModel):
+    url: str = Field(min_length=1, max_length=4000, description="http/https 链接（Web 或 GitHub）")
+    title: str = Field(default="", max_length=300, description="可选显示名；留空自动从 URL 推导")
+
+
+@router.get("/courses/{course_id}/sources")
+def list_course_sources(course_id: str, user_id: str = Depends(_user_id)) -> List[dict]:
+    """列出当前用户当前课程的全部资料（含 status / chunk_count）。"""
+    try:
+        return course_source_service.list_sources(user_id, course_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/courses/{course_id}/sources")
+def add_course_source(course_id: str, req: AddSourceRequest,
+                     user_id: str = Depends(_user_id)) -> dict:
+    """新增（或重试 failed）一个课程资料：Web 抓取 / GitHub 导入。
+
+    事务外做外部导入；失败 status=failed + 简短可读错误，不泄露内部细节。
+    重复 URL 复用同一 source_id（replace 语义）。
+    """
+    try:
+        return course_source_service.add_source(user_id, course_id, req.url, title=req.title)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.delete("/courses/{course_id}/sources/{source_id}", status_code=204)
+def delete_course_source(course_id: str, source_id: str,
+                         user_id: str = Depends(_user_id)) -> None:
+    """删除资料：清 chunks + course_sources 行（ownership 优先）。"""
+    try:
+        course_source_service.delete_source(user_id, course_id, source_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/courses/{course_id}/sources/search")
+def search_course_sources(course_id: str, q: str = "", limit: int = 5,
+                          user_id: str = Depends(_user_id)) -> List[Dict[str, str]]:
+    """搜索互联网资料候选（不直接导入）。课程必须存在（X-User-Id + course scoped）。"""
+    try:
+        return course_source_service.search_sources(user_id, course_id, q, limit=limit)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
 # Chat
 # ---------------------------------------------------------------------------
 
@@ -218,6 +274,21 @@ def get_chat(course_id: Optional[str] = None, conversation_id: Optional[str] = N
              service: ChatService = Depends(_chat_service)) -> dict:
     try:
         return service.get_conversation(user_id, course_id=course_id, conversation_id=conversation_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/chat/conversations")
+def list_conversations(course_id: Optional[str] = None, limit: int = 6,
+                       user_id: str = Depends(_user_id),
+                       service: ChatService = Depends(_chat_service)) -> List[dict]:
+    """最近对话列表：course_id 为空 = General；否则该 Course 的对话。
+
+    title 已由后端做 COALESCE（旧 title=NULL fallback 首条 user 消息）；
+    空对话（无 user 消息）已排除。前端按 updated_at DESC 展示。
+    """
+    try:
+        return service.list_conversations(user_id, course_id, limit)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

@@ -1,6 +1,7 @@
-import { Menu } from "lucide-react";
+import { Menu, MoreHorizontal } from "lucide-react";
 import type { Course } from "../api/types";
 import { useLearningNav } from "../app/useLearningNav";
+import { openCourseSources } from "../features/course/courseSourcesEvents";
 
 interface CourseHeaderProps {
   course: Course | null;
@@ -38,6 +39,15 @@ export function CourseHeader({ course, activeView, onOpenMobileSidebar }: Course
             onClick={() => nav.openCoursePlan(course!.course_id)}
           >
             学习计划
+          </button>
+          <button
+            type="button"
+            className="header-more"
+            aria-label="更多操作"
+            title="课程资料"
+            onClick={() => openCourseSources(course!.course_id)}
+          >
+            <MoreHorizontal size={18} aria-hidden />
           </button>
         </nav>
       )}

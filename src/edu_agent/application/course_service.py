@@ -8,11 +8,14 @@ domain_courses/domain_kcs 已删除：个性化 Plan Nodes 只存在 plan_steps�
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any, Dict, List, Optional
 
 from edu_agent.adaptive.course_resolver import resolve_course_id, resolve_goal_id
 from edu_agent.learner_model.service import LearnerModelService
+
+logger = logging.getLogger(__name__)
 
 
 def _now_iso() -> str:
@@ -127,6 +130,14 @@ def delete_course(user_id: str, course_id: str,
         # 审计事件在删除之后写入；delete_user_course_data 不删 events，事件留存
         learner.record_event({"event_type": "COURSE_DELETED", "user_id": user_id,
                               "course_id": course_id, "payload": {}})
+
+    # 课程资料块（user+course 双隔离）也须清除，避免孤儿 chunks 残留
+    try:
+        from edu_agent.tools import kb_store
+
+        kb_store.delete_course_chunks(user_id, course_id)
+    except Exception:  # noqa: BLE001 - 资料清理失败不影响课程已删除
+        logger.warning("[course] delete course chunks failed: %s/%s", user_id, course_id, exc_info=True)
 
 
 def _compose_course(user_id: str, course_id: str, row: dict,

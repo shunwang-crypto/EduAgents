@@ -2,14 +2,17 @@
 最小本地课程知识库（Course Knowledge Base）。
 
 职责：
-- 把 Markdown 教材文本按标题层级切分成带定位的块（doc_title + heading_path）。
+- 把 Markdown 教材 / GitHub 文档文本按标题层级切分成带定位的块
+  （doc_title + heading_path），每个块完整携带 user_id / course_id /
+  source_id / source_type / source_url（user+course 双隔离，强制）。
 - 用纯 Python 关键词检索（无第三方依赖：英文 token + 中文 2-gram）返回命中的块。
-- 供普通 ChatService 可选课程 RAG 使用（按 course_id 隔离，不跨课程检索）；
-  后续可替换为向量检索实现，接口保持不变（search / chunks）。
+- 供普通 ChatService / Lesson / Plan 可选课程 RAG 使用（按 user+course 隔离，
+  不跨用户、不跨课程检索）；后续可替换为向量检索实现，接口保持不变（search / chunks）。
 
 设计约束：
 - 不引入 jieba / numpy / 向量库，保证原型在任何 Python 3.10+ 环境开箱即用。
 - 检索分数只用于排序与"是否命中"判断，不进入任何掌握度计算。
+- KbChunk 必须带真实 user_id（禁止 default=""），这是 Fresh Baseline 的强制安全不变量。
 """
 
 from __future__ import annotations
@@ -19,13 +22,15 @@ from typing import List
 
 from pydantic import BaseModel, Field
 
-from edu_agent.tools.github_importer import import_github_repo
-
 
 class KbChunk(BaseModel):
-    """知识库中的一个可引用块。"""
+    """知识库中的一个可引用块（user + course + source 三重归属）。"""
 
-    course_id: str = Field(default="", description="所属课程 id（RAG 按课程隔离）")
+    user_id: str = Field(description="所属用户 id（强制，禁止空串）")
+    course_id: str = Field(description="所属课程 id（强制，禁止空串）")
+    source_id: str = Field(description="来源资料 id（course_sources.source_id）")
+    source_type: str = Field(description="来源类型：web / github")
+    source_url: str = Field(description="来源 URL")
     doc_title: str = Field(description="来源文档标题")
     heading_path: str = Field(description="标题定位路径，例如『第3章 二叉树 > 3.2 遍历』")
     text: str = Field(description="块正文")
@@ -60,8 +65,16 @@ def _tokenize(text: str) -> List[str]:
     return [token for token in tokens if token not in _STOPWORDS]
 
 
-def _split_markdown_blocks(name: str, text: str, course_id: str = "") -> List[KbChunk]:
-    """按 Markdown 标题层级把文本切成带 heading_path 的块。"""
+def _split_markdown_blocks(
+    name: str,
+    text: str,
+    user_id: str,
+    course_id: str,
+    source_id: str,
+    source_type: str,
+    source_url: str,
+) -> List[KbChunk]:
+    """按 Markdown 标题层级把文本切成带 heading_path 的块（完整归属）。"""
     blocks: List[KbChunk] = []
     heading_stack: List[tuple[int, str]] = []
     current_lines: List[str] = []
@@ -71,7 +84,11 @@ def _split_markdown_blocks(name: str, text: str, course_id: str = "") -> List[Kb
         if body and heading_stack:
             blocks.append(
                 KbChunk(
+                    user_id=user_id,
                     course_id=course_id,
+                    source_id=source_id,
+                    source_type=source_type,
+                    source_url=source_url,
                     doc_title=name,
                     heading_path=" > ".join(title for _, title in heading_stack),
                     text=body,
@@ -98,43 +115,52 @@ def _split_markdown_blocks(name: str, text: str, course_id: str = "") -> List[Kb
 
     # 没有任何标题时，把全文作为单块，用文档名作为定位
     if not blocks and text.strip():
-        blocks.append(KbChunk(course_id=course_id, doc_title=name, heading_path=name, text=text.strip()))
+        blocks.append(
+            KbChunk(
+                user_id=user_id,
+                course_id=course_id,
+                source_id=source_id,
+                source_type=source_type,
+                source_url=source_url,
+                doc_title=name,
+                heading_path=name,
+                text=text.strip(),
+            )
+        )
     return blocks
 
 
 class CourseKnowledgeBase:
-    """内存中的最小课程知识库。"""
+    """内存中的最小课程知识库（user + course 双隔离）。"""
 
-    def __init__(self, course_id: str = "", sources: dict[str, str] | None = None) -> None:
+    def __init__(self, user_id: str = "", course_id: str = "") -> None:
+        self._user_id = user_id
         self._course_id = course_id
         self._chunks: List[KbChunk] = []
-        if sources:
-            for name, text in sources.items():
-                self.load_markdown(name, text)
 
-    def load_markdown(self, name: str, text: str) -> int:
-        """加载一份 Markdown 教材，返回新增块数（chunk 归属 self._course_id）。"""
-        blocks = _split_markdown_blocks(name, text, self._course_id)
+    def load_markdown(
+        self,
+        source_id: str,
+        source_type: str,
+        source_url: str,
+        name: str,
+        text: str,
+    ) -> int:
+        """加载一份 Markdown 文档，返回新增块数（chunk 完整归属当前 user/course/source）。"""
+        blocks = _split_markdown_blocks(
+            name, text, self._user_id, self._course_id, source_id, source_type, source_url
+        )
         self._chunks.extend(blocks)
         return len(blocks)
 
     @classmethod
-    def from_chunks(cls, chunks: List["KbChunk"], course_id: str = "") -> "CourseKnowledgeBase":
-        """用已存在的块列表重建一个知识库实例（course_id 供后续 load 归属）。"""
-        obj = cls(course_id=course_id)
+    def from_chunks(
+        cls, chunks: List["KbChunk"], user_id: str = "", course_id: str = ""
+    ) -> "CourseKnowledgeBase":
+        """用已存在的块列表重建一个知识库实例（search 用，不改变块的归属）。"""
+        obj = cls(user_id=user_id, course_id=course_id)
         obj._chunks = list(chunks)
         return obj
-
-    def load_github_repo(self, url: str, **kwargs) -> int:
-        """从 GitHub 仓库导入文档并建立索引，返回新增块数。
-
-        kwargs 透传给 github_importer.import_github_repo（max_files / max_bytes / timeout）。
-        """
-        docs = import_github_repo(url, **kwargs)
-        total_blocks = 0
-        for name, text in docs.items():
-            total_blocks += self.load_markdown(name, text)
-        return total_blocks
 
     @property
     def chunks(self) -> List[KbChunk]:

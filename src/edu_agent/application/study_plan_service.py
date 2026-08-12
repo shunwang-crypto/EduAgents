@@ -101,9 +101,28 @@ def generate_plan(
         daily_time=f"{resolved_minutes}分钟",
         goal=goal_text,
     )
+    # 课程资料（user+course 双隔离）作为计划生成的参考资料（knowledge_context）
+    try:
+        from edu_agent.tools import kb_store
+        from edu_agent.tools.course_kb import CourseKnowledgeBase
+
+        src_chunks = kb_store.load_chunks(user_id, course_id)
+        if src_chunks:
+            src_kb = CourseKnowledgeBase.from_chunks(
+                src_chunks, user_id=user_id, course_id=course_id
+            )
+            src_hits = src_kb.search(f"{semantic_topic} {goal_text}", top_k=6)
+            knowledge_context = _format_knowledge_context(src_hits)
+        else:
+            knowledge_context = "无"
+    except Exception:  # noqa: BLE001 - 资料检索失败不影响生成
+        logger.warning("[plan] build knowledge_context failed", exc_info=True)
+        knowledge_context = "无"
+
     result = run_study_plan_workflow(
         student_input,
         plan_context=plan_context,
+        knowledge_context=knowledge_context,
     )
     final_plan = result.get("final_plan", "")
     # 并发安全：LLM workflow 很慢，执行期间课程可能被删除（复活）或被改名（旧名覆盖新名）。
@@ -297,6 +316,26 @@ def update_step_status(
     return get_plan(user_id, course_id, learner)
 
 
+def _format_knowledge_context(hits: list, cap: int = 5000) -> str:
+    """把资料检索命中格式化为计划生成的参考资料文本（去重 + 总字符上限）。"""
+    if not hits:
+        return "无"
+    lines = ["课程已导入资料摘要："]
+    total = 0
+    seen: set = set()
+    for h in hits:
+        key = h.source_url or h.doc_title
+        if key in seen:
+            continue
+        seen.add(key)
+        block = f"- {h.doc_title}\n  {(h.text or '').strip()[:600]}"
+        if total + len(block) > cap:
+            break
+        lines.append(block)
+        total += len(block)
+    return "\n".join(lines)
+
+
 def _plan_summary(plan_context: Dict[str, object], nodes: List[dict]) -> str:
     note = plan_context.get("personalization_note")
     days = plan_context.get("duration_days")
@@ -406,16 +445,16 @@ def _build_lesson_context(
             from edu_agent.tools import kb_store
             from edu_agent.tools.course_kb import CourseKnowledgeBase
 
-            chunks = kb_store.load_chunks(course_id)
+            chunks = kb_store.load_chunks(user_id, course_id)
             if chunks:
-                kb = CourseKnowledgeBase.from_chunks(chunks, course_id=course_id)
+                kb = CourseKnowledgeBase.from_chunks(chunks, user_id=user_id, course_id=course_id)
                 hits = kb.search(
                     f"{step.get('title', '')} {step.get('learning_objective', '')}", top_k=3
                 )
                 if hits:
                     lines.append(
                         "相关资料：\n"
-                        + "\n".join(f"- {h.doc_title}: {h.text[:300]}" for h in hits)
+                        + "\n".join(f"- {h.doc_title} ({h.source_url}): {h.text[:300]}" for h in hits)
                     )
         except Exception:  # noqa: BLE001
             logger.warning("[lesson] rag failed: course=%s", course_id, exc_info=True)

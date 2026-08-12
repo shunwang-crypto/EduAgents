@@ -74,6 +74,36 @@ export interface Conversation {
   messages: ChatMessage[];
 }
 
+/** 最近对话摘要（GET /api/chat/conversations）。title 已由后端做 COALESCE fallback。 */
+export interface ConversationSummary {
+  conversation_id: string;
+  course_id: string | null;
+  title: string;
+  updated_at: string;
+}
+
+/** 课程资料（Web / GitHub）。status=importing 期间勿展示 chunk 内容。 */
+export interface CourseSource {
+  source_id: string;
+  user_id: string;
+  course_id: string;
+  source_type: "web" | "github";
+  source_url: string;
+  title: string;
+  status: "importing" | "ready" | "failed";
+  chunk_count: number;
+  error_message: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** 互联网搜索候选（不直接导入）。 */
+export interface SourceSearchResult {
+  title: string;
+  url: string;
+  snippet: string;
+}
+
 export interface ChatContext {
   type: "general" | "course" | "plan_step";
   course_id: string | null;

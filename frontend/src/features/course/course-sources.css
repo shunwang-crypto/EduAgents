@@ -1,0 +1,171 @@
+/* CourseSourcesDrawer：右侧临时抽屉 */
+.cs-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+  display: flex;
+  justify-content: flex-end;
+  z-index: 1000;
+  animation: cs-fade 0.15s ease-out;
+}
+
+@keyframes cs-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.cs-drawer {
+  width: min(440px, 92vw);
+  height: 100%;
+  background: var(--bg, #fff);
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.12);
+  display: flex;
+  flex-direction: column;
+  animation: cs-slide 0.18s ease-out;
+}
+
+@keyframes cs-slide {
+  from { transform: translateX(24px); opacity: 0.6; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+.cs-drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border, #e5e7eb);
+}
+
+.cs-drawer-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.cs-close {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: var(--text-muted, #6b7280);
+  padding: 4px;
+  border-radius: 6px;
+}
+.cs-close:hover { background: rgba(0, 0, 0, 0.06); }
+
+.cs-drawer-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.cs-block { display: flex; flex-direction: column; gap: 8px; }
+
+.cs-block-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted, #6b7280);
+}
+
+.cs-url-row { display: flex; gap: 8px; }
+
+.cs-input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 8px;
+  font-size: 14px;
+  background: var(--bg, #fff);
+  color: var(--text, #111827);
+}
+.cs-input:focus { outline: 2px solid var(--accent, #4f46e5); outline-offset: -1px; }
+
+.cs-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 12px;
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 8px;
+  background: var(--bg, #fff);
+  color: var(--text, #111827);
+  cursor: pointer;
+  font-size: 14px;
+  white-space: nowrap;
+}
+.cs-btn:hover:not(:disabled) { background: rgba(0, 0, 0, 0.04); }
+.cs-btn.primary { background: var(--accent, #4f46e5); color: #fff; border-color: transparent; }
+.cs-btn.primary:hover:not(:disabled) { filter: brightness(1.05); }
+.cs-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+
+.cs-error { color: #dc2626; font-size: 13px; }
+.cs-hint { color: var(--text-muted, #6b7280); font-size: 13px; padding: 4px 0; }
+
+.cs-results { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+
+.cs-result {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 8px;
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.cs-result-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.cs-result-title { font-size: 14px; font-weight: 600; }
+.cs-result-snippet {
+  font-size: 12px;
+  color: var(--text-muted, #6b7280);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.cs-result-url {
+  font-size: 11px;
+  color: var(--text-muted, #6b7280);
+  word-break: break-all;
+}
+
+.cs-source-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+
+.cs-source {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px;
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 8px;
+}
+.cs-source-icon { color: var(--text-muted, #6b7280); margin-top: 2px; }
+.cs-source-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.cs-source-title { font-size: 14px; font-weight: 600; word-break: break-word; }
+.cs-source-url { font-size: 11px; color: var(--text-muted, #6b7280); word-break: break-all; }
+.cs-source-err { font-size: 12px; color: #dc2626; }
+.cs-source-actions { display: flex; gap: 4px; }
+
+.cs-badge {
+  align-self: flex-start;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+.cs-badge-importing { background: #fef3c7; color: #92400e; }
+.cs-badge-ready { background: #dcfce7; color: #166534; }
+.cs-badge-failed { background: #fee2e2; color: #991b1b; }
+
+.cs-icon-btn {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: var(--text-muted, #6b7280);
+  padding: 4px;
+  border-radius: 6px;
+}
+.cs-icon-btn:hover { background: rgba(0, 0, 0, 0.06); }
+.cs-icon-btn.danger:hover { background: #fee2e2; color: #dc2626; }

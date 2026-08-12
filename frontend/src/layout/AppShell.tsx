@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Outlet } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
+import { CourseSourcesDrawer } from "../features/course/CourseSourcesDrawer";
 import { useApi } from "../api/ApiProvider";
 import { useLearningNav } from "../app/useLearningNav";
 import "./shell.css";
@@ -63,6 +64,8 @@ export function AppShell() {
       <main className="workspace">
         <Outlet context={{ openMobileSidebar: () => setMobileSidebarOpen(true) }} />
       </main>
+      {/* 课程资料抽屉：Sidebar 课程工作区「课程资料」与 CourseHeader「···」共用 */}
+      <CourseSourcesDrawer />
     </div>
   );
 }

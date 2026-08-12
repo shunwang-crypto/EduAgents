@@ -19,6 +19,9 @@ def learner(tmp_path):
     return LearnerModelService(db_path=str(tmp_path / "lm.db"))
 
 
+from edu_agent.tools.course_kb import CourseKnowledgeBase  # noqa: E402
+
+
 def _create(learner, user, topic, goal=""):
     from edu_agent.application.course_service import create_course
 
@@ -124,13 +127,20 @@ def test_rag_loads_persisted_chunks_and_course_isolation(learner, tmp_path, monk
 
     py = _create(learner, "A", "Python 数据分析")
     java = _create(learner, "A", "Java OOP")
-    kb_store.add_markdown(py["course_id"], "pandas 入门", "# DataFrame\n\nDataFrame 是 pandas 的核心数据结构，支持 loc/iloc 索引。")
-    kb_store.add_markdown(java["course_id"], "Java OOP", "# 多态\n\npolymorphism 是面向对象的核心特性。")
+    kb_py = CourseKnowledgeBase(user_id="A", course_id=py["course_id"])
+    kb_py.load_markdown("SRC-PY", "web", "https://pandas.pydata.org", "pandas 入门",
+                        "# DataFrame\n\nDataFrame 是 pandas 的核心数据结构，支持 loc/iloc 索引。")
+    kb_store.replace_source_chunks("A", py["course_id"], "SRC-PY", kb_py.chunks)
+
+    kb_java = CourseKnowledgeBase(user_id="A", course_id=java["course_id"])
+    kb_java.load_markdown("SRC-JAVA", "web", "https://docs.oracle.com", "Java OOP",
+                          "# 多态\n\npolymorphism 是面向对象的核心特性。")
+    kb_store.replace_source_chunks("A", java["course_id"], "SRC-JAVA", kb_java.chunks)
 
     svc = ChatService(learner=learner)
-    hits_py = svc._rag(py["course_id"], "DataFrame 怎么用", top_k=3)
+    hits_py = svc._rag("A", py["course_id"], "DataFrame 怎么用", top_k=3)
     assert any("DataFrame" in h["text"] or "pandas" in h["title"] for h in hits_py), hits_py
-    hits_java = svc._rag(java["course_id"], "DataFrame 怎么用", top_k=3)
+    hits_java = svc._rag("A", java["course_id"], "DataFrame 怎么用", top_k=3)
     assert hits_java == [], "Java 不能命中 Python chunk"
 
 
@@ -142,7 +152,7 @@ def test_rag_empty_store_returns_empty(learner, tmp_path, monkeypatch):
     monkeypatch.setattr(kb_store, "DATA_DIR", tmp_path)
     py = _create(learner, "A", "Python")
     svc = ChatService(learner=learner)
-    assert svc._rag(py["course_id"], "DataFrame", top_k=3) == []
+    assert svc._rag("A", py["course_id"], "DataFrame", top_k=3) == []
 
 
 # ---------------------------------------------------------------- Profile Facts → PlanContext

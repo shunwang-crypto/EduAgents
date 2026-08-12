@@ -1,19 +1,29 @@
 import { useEffect, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
 import {
-  AlertCircle,
+  ArrowLeft,
+  BookOpen,
   GraduationCap,
+  Library,
+  MessageSquare,
   MoreHorizontal,
   PanelLeftClose,
   Plus,
 } from "lucide-react";
-import type { Course } from "../api/types";
+import type { ConversationSummary, Course } from "../api/types";
+import { subscribeConversationUpdated } from "../api/conversationEvents";
+import { openCourseSources } from "../features/course/courseSourcesEvents";
 import { CreateCourseModal } from "../features/courses/CreateCourseModal";
 import { RenameCourseModal } from "../features/courses/RenameCourseModal";
 import { DeleteCourseDialog } from "../features/courses/DeleteCourseDialog";
 import { useApi } from "../api/ApiProvider";
 import { useLearningNav } from "../app/useLearningNav";
 import "./sidebar.css";
+
+type SidebarView =
+  | { kind: "root" }
+  | { kind: "courseList" }
+  | { kind: "workspace"; courseId: string };
 
 /** SidebarLogo：展开显示 Logo + EduAgents；折叠只显示 Logo（本身可点击展开）。 */
 export function SidebarLogo({ collapsed, onExpand }: { collapsed: boolean; onExpand?: () => void }) {
@@ -121,7 +131,7 @@ interface SidebarProps {
   navigateToCourse: (courseId: string) => void;
 }
 
-/** Sidebar：EduAgents + 新对话 + 我的课程（唯一新建入口）。
+/** Sidebar：三视图（Root / Course List / Course Workspace）+ GPT 式「最近对话」。
  * collapsed = 68px 真 icon rail（条件渲染，无竖排文字、无被挤压文字）。
  */
 export function Sidebar({
@@ -135,42 +145,109 @@ export function Sidebar({
   const { pathname } = useLocation();
   const api = useApi();
   const nav = useLearningNav();
+
+  // 课程列表
   const [courses, setCourses] = useState<Course[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [showCreate, setShowCreate] = useState(false);
+  // 最近对话（当前视图作用域：general 或某 course）
+  const [recent, setRecent] = useState<ConversationSummary[]>([]);
+  const [recentLoading, setRecentLoading] = useState(false);
+  const [recentError, setRecentError] = useState("");
+  const [expandedRecent, setExpandedRecent] = useState(false);
   // 课程菜单 / 重命名 / 删除 状态
   const [menuOpenFor, setMenuOpenFor] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<Course | null>(null);
   const [deleting, setDeleting] = useState<Course | null>(null);
+  const [showCreate, setShowCreate] = useState(false);
 
-  //  stale-async 保护：load 并发/快速重跑时旧响应不覆盖新列表
-  const loadSeq = useRef(0);
+  // 三视图：course 路由 → workspace；否则保留 courseList 手动态，否则 root
+  const [view, setView] = useState<SidebarView>({ kind: "root" });
 
-  const load = () => {
-    const seq = ++loadSeq.current;
+  // stale-async 保护
+  const courseSeq = useRef(0);
+  const recentSeq = useRef(0);
+  // 订阅闭包读取最新 view / expandedRecent（不重订阅）
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  const expandedRecentRef = useRef(expandedRecent);
+  expandedRecentRef.current = expandedRecent;
+
+  const loadCourses = () => {
+    const seq = ++courseSeq.current;
     setLoading(true);
     setError("");
     api
       .listCourses()
       .then((list) => {
-        if (seq !== loadSeq.current) return;
+        if (seq !== courseSeq.current) return;
         setCourses(list);
         setLoading(false);
       })
       .catch((e) => {
-        if (seq !== loadSeq.current) return;
+        if (seq !== courseSeq.current) return;
         setError(e instanceof Error ? e.message : "加载失败");
         setLoading(false);
       });
   };
 
-  // useLocation 驱动 active（navigate 后立即刷新，无需 popstate listener）
+  const loadRecent = (courseId: string | null, limit: number) => {
+    const seq = ++recentSeq.current;
+    setRecentLoading(true);
+    setRecentError("");
+    api
+      .listConversations(courseId, limit)
+      .then((list) => {
+        if (seq !== recentSeq.current) return;
+        setRecent(list);
+        setRecentLoading(false);
+      })
+      .catch((e) => {
+        if (seq !== recentSeq.current) return;
+        setRecentError(e instanceof Error ? e.message : "加载失败");
+        setRecentLoading(false);
+      });
+  };
+
+  // 视图随路由：进入课程路由 → workspace；离开课程 → 保留 courseList 手动态或回 root
   useEffect(() => {
-    load();
+    const m = pathname.match(/\/courses\/([^/]+)\//);
+    if (m) {
+      setView({ kind: "workspace", courseId: m[1] });
+    } else {
+      setView((v) => (v.kind === "courseList" ? v : { kind: "root" }));
+    }
+  }, [pathname]);
+
+  // 课程列表加载（api 稳定，仅首次 + 重命名/删除后）
+  useEffect(() => {
+    loadCourses();
   }, [api]);
 
-  // 菜单打开时，点击课程行外部关闭（避免全屏遮罩与菜单的层叠冲突）
+  // 最近对话：随视图 / 展开态变化重新加载（stale guard 在 loadRecent 内）
+  useEffect(() => {
+    if (view.kind === "courseList") {
+      setRecent([]);
+      setExpandedRecent(false);
+      return;
+    }
+    const courseId = view.kind === "workspace" ? view.courseId : null;
+    const limit = view.kind === "workspace" ? 6 : expandedRecent ? 20 : 6;
+    loadRecent(courseId, limit);
+  }, [view, expandedRecent, api]);
+
+  // 订阅对话更新事件：刷新当前作用域的最近对话（ChatPage 发消息后）
+  useEffect(() => {
+    return subscribeConversationUpdated(() => {
+      const v = viewRef.current;
+      if (v.kind === "courseList") return;
+      const courseId = v.kind === "workspace" ? v.courseId : null;
+      const limit = v.kind === "workspace" ? 6 : expandedRecentRef.current ? 20 : 6;
+      loadRecent(courseId, limit);
+    });
+  }, [api]);
+
+  // 菜单打开时，点击课程行外部关闭
   useEffect(() => {
     if (!menuOpenFor) return;
     const onDocMouseDown = (e: MouseEvent) => {
@@ -195,129 +272,340 @@ export function Sidebar({
 
   const isNewChatActive = !pathname.includes("/courses/");
   const courseActive = (courseId: string) => pathname.includes(`/courses/${courseId}/`);
+  const workspaceCourseId = view.kind === "workspace" ? view.courseId : null;
+  const workspaceCourse = courses.find((c) => c.course_id === workspaceCourseId) ?? null;
+
+  const newCourseChat = async (courseId: string) => {
+    try {
+      const conv = await api.createConversation(courseId);
+      nav.openCourseChat(courseId, { conversationId: conv.conversation_id });
+    } catch {
+      // 失败保持现状
+    }
+  };
+
+  // 折叠：仅 68px icon rail（新对话 + 课程头像）
+  if (collapsed) {
+    return (
+      <>
+        <aside className="sidebar collapsed open">
+          <div className="sidebar-header">
+            <SidebarLogo collapsed onExpand={onToggleCollapse} />
+          </div>
+          <button
+            type="button"
+            className="sidebar-new-chat collapsed"
+            onClick={() => {
+              onClose();
+              newChat();
+            }}
+            title="新对话"
+            aria-label="新对话"
+          >
+            <Plus size={18} aria-hidden />
+          </button>
+          <div className="course-scroll-area">
+            {!loading &&
+              !error &&
+              courses.map((course) => (
+                <button
+                  key={course.course_id}
+                  type="button"
+                  className={`course-avatar-collapsed ${courseActive(course.course_id) ? "active" : ""}`}
+                  onClick={() => {
+                    onClose();
+                    navigateToCourse(course.course_id);
+                  }}
+                  title={course.display_name}
+                  aria-label={course.display_name}
+                >
+                  {course.display_name?.trim().charAt(0) || "?"}
+                </button>
+              ))}
+            <button
+              type="button"
+              className="course-add-btn collapsed"
+              onClick={() => setShowCreate(true)}
+              title="新建课程"
+              aria-label="新建课程"
+            >
+              <Plus size={18} aria-hidden />
+            </button>
+          </div>
+        </aside>
+        {showCreate && (
+          <CreateCourseModal
+            onClose={() => setShowCreate(false)}
+            onCreated={(course) => {
+              setShowCreate(false);
+              loadCourses();
+              onClose();
+              navigateToCourse(course.course_id);
+            }}
+          />
+        )}
+      </>
+    );
+  }
 
   return (
     <>
-      <aside className={`sidebar ${collapsed ? "collapsed" : ""} ${open ? "open" : ""}`}>
+      <aside className={`sidebar ${open ? "open" : ""}`}>
         <div className="sidebar-header">
-          <SidebarLogo collapsed={collapsed} onExpand={onToggleCollapse} />
-          {!collapsed && (
-            <button
-              className="sidebar-toggle"
-              onClick={onToggleCollapse}
-              title="收起侧边栏"
-              aria-label="收起侧边栏"
-            >
-              <PanelLeftClose size={18} aria-hidden />
-            </button>
-          )}
+          <SidebarLogo collapsed={false} onExpand={onToggleCollapse} />
+          <button
+            className="sidebar-toggle"
+            onClick={onToggleCollapse}
+            title="收起侧边栏"
+            aria-label="收起侧边栏"
+          >
+            <PanelLeftClose size={18} aria-hidden />
+          </button>
         </div>
 
-        <button
-          type="button"
-          className={`sidebar-new-chat ${isNewChatActive ? "active" : ""} ${collapsed ? "collapsed" : ""}`}
-          onClick={() => {
-            onClose();
-            newChat();
-          }}
-          title={collapsed ? "新对话" : undefined}
-          aria-label={collapsed ? "新对话" : undefined}
-        >
-          <Plus size={18} aria-hidden />
-          {!collapsed && <span>新对话</span>}
-        </button>
-
-        {!collapsed && (
-          <div className="course-section-header">
-            <span className="course-section-title">我的课程</span>
-            <button className="course-add-btn" onClick={() => setShowCreate(true)} title="新建课程" aria-label="新建课程">
-              <Plus size={16} aria-hidden />
+        {/* Root：新对话 + 最近对话 + 我的课程 */}
+        {view.kind === "root" && (
+          <>
+            <button
+              type="button"
+              className={`sidebar-new-chat ${isNewChatActive ? "active" : ""}`}
+              onClick={() => {
+                onClose();
+                newChat();
+              }}
+            >
+              <Plus size={18} aria-hidden />
+              <span>新对话</span>
             </button>
-          </div>
-        )}
 
-        <div className="course-scroll-area">
-          {loading && (
-            <div className={`sidebar-skeleton ${collapsed ? "collapsed" : ""}`} aria-busy="true">
-              {collapsed ? (
-                <>
-                  <div className="skeleton-avatar" />
-                  <div className="skeleton-avatar" />
-                  <div className="skeleton-avatar" />
-                </>
-              ) : (
-                <>
-                  <div className="sidebar-skeleton-row" />
-                  <div className="sidebar-skeleton-row" />
-                  <div className="sidebar-skeleton-row" />
-                </>
+            <div className="sidebar-section recent-section">
+              <div className="sidebar-section-header">
+                <span className="sidebar-section-title">
+                  <MessageSquare size={14} aria-hidden /> 最近对话
+                </span>
+              </div>
+              {recentLoading && <div className="sidebar-hint">加载中…</div>}
+              {recentError && !recentLoading && <div className="sidebar-error-inline">{recentError}</div>}
+              {!recentLoading && !recentError && recent.length === 0 && (
+                <div className="sidebar-hint">暂无对话</div>
               )}
-            </div>
-          )}
-          {error && !loading && (
-            <div className={`sidebar-error ${collapsed ? "collapsed" : ""}`} role="alert">
-              {collapsed ? (
+              {recent.map((conv) => (
+                <button
+                  key={conv.conversation_id}
+                  type="button"
+                  className="recent-item"
+                  onClick={() => {
+                    onClose();
+                    nav.openGeneralChat(conv.conversation_id);
+                  }}
+                  title={conv.title}
+                >
+                  <MessageSquare size={14} aria-hidden />
+                  <span className="recent-title">{conv.title || "未命名对话"}</span>
+                </button>
+              ))}
+              {!recentLoading &&
+                !recentError &&
+                recent.length >= 6 &&
+                !expandedRecent && (
+                  <button
+                    type="button"
+                    className="sidebar-link-btn"
+                    onClick={() => setExpandedRecent(true)}
+                  >
+                    更多
+                  </button>
+                )}
+              {!recentLoading && !recentError && expandedRecent && (
                 <button
                   type="button"
-                  className="sidebar-error-icon-btn"
-                  onClick={load}
-                  title="课程加载失败，点击重试"
-                  aria-label="课程加载失败，点击重试"
+                  className="sidebar-link-btn"
+                  onClick={() => setExpandedRecent(false)}
                 >
-                  <AlertCircle size={18} aria-hidden />
+                  收起
                 </button>
-              ) : (
-                <>
-                  <div>课程加载失败</div>
-                  <button className="ea-button" onClick={load}>
-                    重试
-                  </button>
-                </>
               )}
             </div>
-          )}
-          {!loading && !error && courses.length === 0 && !collapsed && (
-            <div className="course-empty">还没有课程</div>
-          )}
-          {courses.map((course) => (
-            <CourseNavItem
-              key={course.course_id}
-              course={course}
-              active={courseActive(course.course_id)}
-              collapsed={collapsed}
-              onOpen={() => {
-                setMenuOpenFor(null);
-                onClose();
-                navigateToCourse(course.course_id);
-              }}
-              onToggleMenu={() =>
-                setMenuOpenFor((prev) => (prev === course.course_id ? null : course.course_id))
-              }
-              menuOpen={menuOpenFor === course.course_id}
-              onRename={() => {
-                setRenaming(course);
-                setMenuOpenFor(null);
-              }}
-              onDelete={() => {
-                setDeleting(course);
-                setMenuOpenFor(null);
-              }}
-            />
-          ))}
-          {collapsed && !loading && !error && (
-            <div className="course-add-collapsed">
+
+            <div className="course-section-header">
+              <span className="course-section-title">我的课程</span>
               <button
-                type="button"
                 className="course-add-btn"
                 onClick={() => setShowCreate(true)}
                 title="新建课程"
                 aria-label="新建课程"
               >
-                <Plus size={18} aria-hidden />
+                <Plus size={16} aria-hidden />
               </button>
             </div>
-          )}
-        </div>
+            <div className="course-scroll-area">
+              {loading && <div className="sidebar-hint">加载中…</div>}
+              {error && !loading && <div className="sidebar-error-inline">{error}</div>}
+              {!loading &&
+                !error &&
+                courses.length === 0 && <div className="course-empty">还没有课程</div>}
+              {courses.slice(0, 5).map((course) => (
+                <CourseNavItem
+                  key={course.course_id}
+                  course={course}
+                  active={courseActive(course.course_id)}
+                  collapsed={false}
+                  onOpen={() => {
+                    setMenuOpenFor(null);
+                    onClose();
+                    navigateToCourse(course.course_id);
+                  }}
+                  onToggleMenu={() =>
+                    setMenuOpenFor((prev) => (prev === course.course_id ? null : course.course_id))
+                  }
+                  menuOpen={menuOpenFor === course.course_id}
+                  onRename={() => {
+                    setRenaming(course);
+                    setMenuOpenFor(null);
+                  }}
+                  onDelete={() => {
+                    setDeleting(course);
+                    setMenuOpenFor(null);
+                  }}
+                />
+              ))}
+              {!loading && !error && courses.length > 5 && (
+                <button
+                  type="button"
+                  className="sidebar-link-btn"
+                  onClick={() => setView({ kind: "courseList" })}
+                >
+                  查看全部课程（{courses.length}）
+                </button>
+              )}
+            </div>
+          </>
+        )}
+
+        {/* Course List：全部课程 */}
+        {view.kind === "courseList" && (
+          <>
+            <button
+              type="button"
+              className="sidebar-back-btn"
+              onClick={() => setView({ kind: "root" })}
+            >
+              <ArrowLeft size={16} aria-hidden /> 返回
+            </button>
+            <div className="course-section-header">
+              <span className="course-section-title">我的课程（{courses.length}）</span>
+            </div>
+            <div className="course-scroll-area">
+              {loading && <div className="sidebar-hint">加载中…</div>}
+              {error && !loading && <div className="sidebar-error-inline">{error}</div>}
+              {!loading &&
+                !error &&
+                courses.length === 0 && <div className="course-empty">还没有课程</div>}
+              {courses.map((course) => (
+                <CourseNavItem
+                  key={course.course_id}
+                  course={course}
+                  active={courseActive(course.course_id)}
+                  collapsed={false}
+                  onOpen={() => {
+                    setMenuOpenFor(null);
+                    onClose();
+                    navigateToCourse(course.course_id);
+                  }}
+                  onToggleMenu={() =>
+                    setMenuOpenFor((prev) => (prev === course.course_id ? null : course.course_id))
+                  }
+                  menuOpen={menuOpenFor === course.course_id}
+                  onRename={() => {
+                    setRenaming(course);
+                    setMenuOpenFor(null);
+                  }}
+                  onDelete={() => {
+                    setDeleting(course);
+                    setMenuOpenFor(null);
+                  }}
+                />
+              ))}
+            </div>
+          </>
+        )}
+
+        {/* Course Workspace：某课程的操作 + 最近对话 */}
+        {view.kind === "workspace" && (
+          <>
+            <button
+              type="button"
+              className="sidebar-back-btn"
+              onClick={() => {
+                onClose();
+                nav.openGeneralChat();
+              }}
+            >
+              <ArrowLeft size={16} aria-hidden /> 返回
+            </button>
+            <div className="workspace-course-title">{workspaceCourse?.display_name ?? "课程"}</div>
+            <div className="workspace-actions">
+              <button
+                type="button"
+                className="workspace-action"
+                onClick={() => {
+                  onClose();
+                  newCourseChat(workspaceCourseId!);
+                }}
+              >
+                <Plus size={15} aria-hidden /> 新建课程对话
+              </button>
+              <button
+                type="button"
+                className="workspace-action"
+                onClick={() => {
+                  onClose();
+                  nav.openCoursePlan(workspaceCourseId!);
+                }}
+              >
+                <BookOpen size={15} aria-hidden /> 学习计划
+              </button>
+              <button
+                type="button"
+                className="workspace-action"
+                onClick={() => {
+                  onClose();
+                  openCourseSources(workspaceCourseId!);
+                }}
+              >
+                <Library size={15} aria-hidden /> 课程资料
+              </button>
+            </div>
+
+            <div className="sidebar-section recent-section">
+              <div className="sidebar-section-header">
+                <span className="sidebar-section-title">
+                  <MessageSquare size={14} aria-hidden /> 最近对话
+                </span>
+              </div>
+              {recentLoading && <div className="sidebar-hint">加载中…</div>}
+              {recentError && !recentLoading && <div className="sidebar-error-inline">{recentError}</div>}
+              {!recentLoading && !recentError && recent.length === 0 && (
+                <div className="sidebar-hint">该课程暂无对话</div>
+              )}
+              {recent.map((conv) => (
+                <button
+                  key={conv.conversation_id}
+                  type="button"
+                  className="recent-item"
+                  onClick={() => {
+                    onClose();
+                    nav.openCourseChat(workspaceCourseId!, { conversationId: conv.conversation_id });
+                  }}
+                  title={conv.title}
+                >
+                  <MessageSquare size={14} aria-hidden />
+                  <span className="recent-title">{conv.title || "未命名对话"}</span>
+                </button>
+              ))}
+            </div>
+          </>
+        )}
       </aside>
 
       {open && <div className="sidebar-backdrop" onClick={onClose} aria-label="关闭侧边栏" />}
@@ -327,7 +615,7 @@ export function Sidebar({
           onClose={() => setShowCreate(false)}
           onCreated={(course) => {
             setShowCreate(false);
-            load();
+            loadCourses();
             onClose();
             navigateToCourse(course.course_id);
           }}
@@ -339,7 +627,6 @@ export function Sidebar({
           course={renaming}
           onClose={() => setRenaming(null)}
           onRenamed={(id, name) => {
-            // 就地更新侧边栏状态，不重新拉取列表
             setCourses((prev) => prev.map((c) => (c.course_id === id ? { ...c, display_name: name } : c)));
             setRenaming(null);
           }}
@@ -353,7 +640,6 @@ export function Sidebar({
           onDeleted={(id) => {
             setCourses((prev) => prev.filter((c) => c.course_id !== id));
             setDeleting(null);
-            // 删除的若是当前课程 → 跳回普通对话（不硬编码 "/"）
             if (courseActive(id)) {
               nav.openGeneralChat();
             }

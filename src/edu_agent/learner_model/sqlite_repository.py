@@ -164,6 +164,10 @@ class SQLiteLearnerRepository(LearnerRepository):
             "DELETE FROM learner_profile_facts WHERE user_id=? AND fact_key=?",
             (user_id, f"background:{course_id}"),
         )
+        # 课程资料（user-scoped）：删除课程时一并清除元数据
+        self._conn().execute(
+            "DELETE FROM course_sources WHERE user_id=? AND course_id=?", (user_id, course_id)
+        )
         self._commit()
 
     # ---- profile facts ----------------------------------------------------
@@ -460,6 +464,69 @@ class SQLiteLearnerRepository(LearnerRepository):
             "WHERE ps.step_id=? AND p.user_id=? AND p.course_id=?",
             (step_id, user_id, course_id),
         )
+
+    # ---- conversations（recent list + 标题）------------------------------
+    def list_conversations(self, user_id: str, course_id: str, limit: int = 6) -> List[dict]:
+        """最近对话：按 updated_at DESC；排除无用户消息的空对话；严格 user+course 隔离。
+
+        course_id 为空串 = General Chat；非空 = 该 Course 的对话。
+        title 用 COALESCE：优先真实 title，缺失时 fallback 到首条 user 消息
+        （兼容旧开发数据 title=NULL 但 messages 非空的情况，无需 migration）。
+        最终 normalize/truncate 在 ChatService 做。
+        """
+        return self._fetchall(
+            "SELECT c.conversation_id, c.user_id, c.course_id, "
+            "COALESCE(NULLIF(c.title, ''), ("
+            "  SELECT m.content FROM chat_messages m "
+            "  WHERE m.conversation_id = c.conversation_id AND m.role='user' "
+            "  ORDER BY m.created_at ASC LIMIT 1"
+            ")) AS title, c.updated_at "
+            "FROM chat_conversations c "
+            "WHERE c.user_id=? AND c.course_id=? "
+            "AND EXISTS ("
+            "  SELECT 1 FROM chat_messages m "
+            "  WHERE m.conversation_id = c.conversation_id AND m.role='user'"
+            ") "
+            "ORDER BY c.updated_at DESC LIMIT ?",
+            (user_id, course_id, limit),
+        )
+
+    def set_conversation_title(self, conversation_id: str, title: str) -> None:
+        self._conn().execute(
+            "UPDATE chat_conversations SET title=?, updated_at=? WHERE conversation_id=?",
+            (title, _now_iso(), conversation_id),
+        )
+        self._commit()
+
+    # ---- course sources（user + course 双 scoped）------------------------
+    def upsert_course_source(self, source: Dict[str, Any]) -> None:
+        self._insert_or_update("course_sources", source, ["user_id", "course_id", "source_url"])
+
+    def get_course_source(self, user_id: str, course_id: str, source_id: str) -> Optional[dict]:
+        return self._fetchone(
+            "SELECT * FROM course_sources WHERE user_id=? AND course_id=? AND source_id=?",
+            (user_id, course_id, source_id),
+        )
+
+    def get_course_source_by_url(self, user_id: str, course_id: str, url: str) -> Optional[dict]:
+        return self._fetchone(
+            "SELECT * FROM course_sources WHERE user_id=? AND course_id=? AND source_url=?",
+            (user_id, course_id, url),
+        )
+
+    def list_course_sources(self, user_id: str, course_id: str) -> List[dict]:
+        return self._fetchall(
+            "SELECT * FROM course_sources WHERE user_id=? AND course_id=? "
+            "ORDER BY updated_at DESC",
+            (user_id, course_id),
+        )
+
+    def delete_course_source(self, user_id: str, course_id: str, source_id: str) -> None:
+        self._conn().execute(
+            "DELETE FROM course_sources WHERE user_id=? AND course_id=? AND source_id=?",
+            (user_id, course_id, source_id),
+        )
+        self._commit()
 
 
 def _now_iso() -> str:

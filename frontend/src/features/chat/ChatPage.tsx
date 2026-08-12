@@ -8,6 +8,7 @@ import { InlineError } from "../../components/ui/InlineError";
 import { LoadingDots } from "../../components/ui/Loading";
 import { CourseHeader } from "../../layout/CourseHeader";
 import { useLearningNav } from "../../app/useLearningNav";
+import { notifyConversationUpdated } from "../../api/conversationEvents";
 import { ChatComposer } from "./ChatComposer";
 import { ChatEmptyState } from "./ChatEmptyState";
 import "./chat.css";
@@ -169,6 +170,8 @@ export function ChatPage() {
           created_at: reply.created_at,
         };
         setMessages((prev) => [...prev, aiMsg]);
+        // 通知 Sidebar 刷新「最近对话」列表（标题生成 / 新对话）；不改变本页消息状态机
+        notifyConversationUpdated({ courseId: courseId ?? null, conversationId: reply.conversation_id });
       } catch (e) {
         // 串课保护：过期响应的错误也不许污染当前页面
         if (reqScope !== scopeSeq.current) return;

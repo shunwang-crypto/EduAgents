@@ -5,9 +5,13 @@
 
 设计要点：
 - 纯标准库（json / pathlib），零第三方依赖，保证原型开箱即用；
-- 存储的是 ``KbChunk`` 的序列化（course_id / doc_title / heading_path / text），
-  与 ``CourseKnowledgeBase`` 的检索接口解耦；按 course_id 隔离加载；
-- 读写都做容错：文件缺失或损坏时回退为空库，不抛异常。
+- 存储的是 ``KbChunk`` 的序列化（user_id / course_id / source_id / source_type /
+  source_url / doc_title / heading_path / text），按 user+course 双隔离加载；
+- 读写都做容错：文件缺失或损坏时回退为空库，不抛异常；
+- 每个 source 使用 replace 语义（replace_source_chunks），重新导入同一资料替换旧块，
+  绝不 append 重复；
+- 外部网络导入（GitHub clone / Tavily 抓取）由调用方在事务外完成后，把构造好的
+  KbChunk 列表交给 replace_source_chunks 落盘。
 """
 
 from __future__ import annotations
@@ -27,8 +31,8 @@ def _ensure_dir() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def load_chunks(course_id: str | None = None) -> List[KbChunk]:
-    """从磁盘加载知识库块；course_id 给定时只返回该课程块；文件损坏返回空列表。"""
+def _load_all() -> List[KbChunk]:
+    """从磁盘加载全部知识库块（不做 user/course 过滤）；文件损坏返回空列表。"""
     if not STORE_PATH.exists():
         return []
     try:
@@ -43,12 +47,11 @@ def load_chunks(course_id: str | None = None) -> List[KbChunk]:
             chunk = KbChunk(**item)
         except Exception:  # noqa: BLE001 - 跳过单条损坏记录
             continue
-        if course_id is None or chunk.course_id == course_id:
-            chunks.append(chunk)
+        chunks.append(chunk)
     return chunks
 
 
-def save_chunks(chunks: List[KbChunk]) -> None:
+def _save_all(chunks: List[KbChunk]) -> None:
     """把知识库块写回磁盘。"""
     _ensure_dir()
     data = [chunk.model_dump() for chunk in chunks]
@@ -58,23 +61,54 @@ def save_chunks(chunks: List[KbChunk]) -> None:
     )
 
 
+def load_chunks(user_id: str, course_id: str) -> List[KbChunk]:
+    """严格按 user_id + course_id 双隔离加载知识库块（不跨用户、不跨课程）。"""
+    return [
+        chunk
+        for chunk in _load_all()
+        if chunk.user_id == user_id and chunk.course_id == course_id
+    ]
+
+
+def replace_source_chunks(
+    user_id: str, course_id: str, source_id: str, chunks: List[KbChunk]
+) -> None:
+    """用新块替换某资料的全部块（删除旧 source 块再追加，杜绝重复 append）。
+
+    重新导入同一 source 时调用，保证幂等：旧 chunks 被整体替换，不会 A/A/A 叠加。
+    """
+    existing = [
+        chunk
+        for chunk in _load_all()
+        if not (chunk.user_id == user_id and chunk.course_id == course_id
+                and chunk.source_id == source_id)
+    ]
+    existing.extend(chunks)
+    _save_all(existing)
+
+
+def delete_source_chunks(user_id: str, course_id: str, source_id: str) -> None:
+    """删除某资料的全部块。"""
+    remaining = [
+        chunk
+        for chunk in _load_all()
+        if not (chunk.user_id == user_id and chunk.course_id == course_id
+                and chunk.source_id == source_id)
+    ]
+    _save_all(remaining)
+
+
+def delete_course_chunks(user_id: str, course_id: str) -> None:
+    """删除某用户某课程的全部块（删除课程时调用，避免孤儿资料块残留）。"""
+    remaining = [
+        chunk
+        for chunk in _load_all()
+        if not (chunk.user_id == user_id and chunk.course_id == course_id)
+    ]
+    _save_all(remaining)
+
+
 def clear() -> None:
     """清空持久化知识库（写入空列表）。"""
     _ensure_dir()
     STORE_PATH.write_text("[]", encoding="utf-8")
-
-
-def add_markdown(course_id: str, name: str, text: str) -> int:
-    """为指定课程追加一份 Markdown 教材并落盘，返回新增块数。"""
-    kb = CourseKnowledgeBase.from_chunks(load_chunks(), course_id=course_id)
-    added = kb.load_markdown(name, text)
-    save_chunks(kb.chunks)
-    return added
-
-
-def add_github_repo(course_id: str, url: str, **kwargs) -> int:
-    """为指定课程从 GitHub 仓库导入文档并落盘，返回新增块数。"""
-    kb = CourseKnowledgeBase.from_chunks(load_chunks(), course_id=course_id)
-    added = kb.load_github_repo(url, **kwargs)
-    save_chunks(kb.chunks)
-    return added

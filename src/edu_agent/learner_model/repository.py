@@ -176,3 +176,26 @@ class LearnerRepository(ABC):
 
     @abstractmethod
     def get_plan_step_by_id(self, user_id: str, course_id: str, step_id: str) -> Optional[dict]: ...
+
+    # ---- conversations（recent list + 标题）------------------------------
+    @abstractmethod
+    def list_conversations(self, user_id: str, course_id: str, limit: int = 6) -> List[dict]: ...
+
+    @abstractmethod
+    def set_conversation_title(self, conversation_id: str, title: str) -> None: ...
+
+    # ---- course sources（user + course 双 scoped）------------------------
+    @abstractmethod
+    def upsert_course_source(self, source: Dict[str, Any]) -> None: ...
+
+    @abstractmethod
+    def get_course_source(self, user_id: str, course_id: str, source_id: str) -> Optional[dict]: ...
+
+    @abstractmethod
+    def get_course_source_by_url(self, user_id: str, course_id: str, url: str) -> Optional[dict]: ...
+
+    @abstractmethod
+    def list_course_sources(self, user_id: str, course_id: str) -> List[dict]: ...
+
+    @abstractmethod
+    def delete_course_source(self, user_id: str, course_id: str, source_id: str) -> None: ...
