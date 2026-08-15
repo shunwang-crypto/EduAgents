@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 
 from edu_agent.domain.learning.course import Course
 from edu_agent.learner_model.fact_text import humanize_profile_fact
+from edu_agent.learner_model.preference_text import humanize_preference
 from edu_agent.learner_model.repository import LearnerRepository
 from edu_agent.learner_model.schemas import LearnerStateBundle
 
@@ -82,12 +83,18 @@ def build_plan_context(
             if not key:
                 continue
             # 课程级 background 只进对应课程；其他课程 background 不污染
-            if key.startswith("background:") and key != f"background:{course_id}":
+            if key.startswith("background:") and not (
+                course_id and (key == f"background:{course_id}" or key.startswith(f"background:{course_id}:"))
+            ):
                 continue
             background_facts.append(humanize_profile_fact(key, f.get("fact_value_json")))
     # 课程级 background fact 优先展示，global 无重复
     prefs = bundle.global_state.preferences
-    preferred_style = prefs.preferred_mode or ""
+    preferred_style = "；".join(
+        humanize_preference(key, value.score)
+        for key, value in prefs.mode_effectiveness.items()
+        if value.confidence >= 0.5 and (value.score >= 0.6 or value.score <= 0.4)
+    )
     memories = [m.content for m in bundle.global_state.semantic_memory[:3]]
 
     return {

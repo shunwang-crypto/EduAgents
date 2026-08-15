@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 from edu_agent.learner_model.fact_text import humanize_profile_fact
+from edu_agent.learner_model.preference_text import humanize_preference
 from edu_agent.learner_model.schemas import LearnerStateBundle
 from edu_agent.learner_model.repository import LearnerRepository
 
@@ -34,7 +35,15 @@ def build_chat_context(
     """
     profile = bundle.global_state.profile
     goal = bundle.active_goal
-    facts = [f for f in repo.list_profile_facts(bundle.user_id) if f.get("status") == "active"]
+    facts = []
+    for fact in repo.list_profile_facts(bundle.user_id):
+        if fact.get("status") != "active":
+            continue
+        key = fact.get("fact_key", "")
+        if key.startswith("background:"):
+            if not course_id or not (key == f"background:{course_id}" or key.startswith(f"background:{course_id}:")):
+                continue
+        facts.append(fact)
     prefs = bundle.global_state.preferences.mode_effectiveness
     memories = [m.content for m in bundle.global_state.semantic_memory[:3]]
 
@@ -53,7 +62,8 @@ def build_chat_context(
         "progress": bundle.course_state.progress if course_id else 0.0,
         "plan_step": plan_step or None,
         "facts": humanized_facts,
-        "preferences": [k for k, v in prefs.items() if v.confidence >= 0.5 and v.score >= 0.6],
+        "preferences": [humanize_preference(k, v.score) for k, v in prefs.items()
+                        if v.confidence >= 0.5 and (v.score >= 0.6 or v.score <= 0.4)],
         "memories": memories,
         "rag_hits": rag_hits or [],
     }
@@ -86,7 +96,7 @@ def chat_context_to_prompt(ctx: Dict[str, object]) -> str:
     if ctx.get("facts"):
         lines.append("学生背景：" + "；".join(ctx["facts"]))
     if ctx.get("preferences"):
-        lines.append("偏好：希望" + "、".join(ctx["preferences"]))
+        lines.append("学习偏好：" + "；".join(ctx["preferences"]))
     if ctx.get("memories"):
         lines.append("长期记忆：" + "；".join(ctx["memories"]))
     if ctx.get("rag_hits"):

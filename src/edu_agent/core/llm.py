@@ -58,13 +58,21 @@ class FallbackChatOpenAI(Runnable):
         self._extra_kwargs = dict(kwargs)
 
     def _client_for(self, model):
-        """每次现构造 ChatOpenAI（构造开销极小，避免缓存私有属性被 pydantic 序列化丢失）。"""
+        """每次现构造 ChatOpenAI（构造开销极小，避免缓存私有属性被 pydantic 序列化丢失）。
+
+        对 OpenCode Zen（opencode.ai）额外带 x-opencode-client: desktop 头，
+        否则会被 Cloudflare 拦截（error 1010）。
+        """
+        headers = dict(self._extra_kwargs.get("default_headers", {}) or {})
+        if "opencode.ai" in (self._base_url or ""):
+            headers.setdefault("x-opencode-client", "desktop")
         return _ChatOpenAI(
             api_key=self._api_key,
             base_url=self._base_url,
             model=model,
             temperature=self._temperature,
             timeout=self._timeout,
+            default_headers=headers,
             **self._extra_kwargs,
         )
 
