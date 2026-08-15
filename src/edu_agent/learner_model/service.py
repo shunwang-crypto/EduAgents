@@ -404,7 +404,8 @@ class LearnerModelService:
             preferences=self._build_preferences(user_id, course_id),
             semantic_memory=[
                 SemanticMemoryItem(content=m.get("content", ""), created_at=m.get("updated_at", ""))
-                for m in self._repo.list_effective_memories(user_id, course_id)
+                for m in (self._repo.list_effective_memories(user_id, course_id)
+                          if course_id else self._repo.list_global_memories(user_id))
                 if m.get("status") in ("active", "candidate")
             ],
         )
@@ -475,9 +476,20 @@ class LearnerModelService:
 
     def _build_preferences(self, user_id: str, course_id: str = "") -> Preferences:
         rows = self._repo.list_preferences(user_id, course_id)
+        # repository 在无课程时会列出全部 scope；bundle 的 general context 只能读取 global。
+        rows = [r for r in rows if (r.get("course_id") or "") in ({"", course_id} if course_id else {""})]
+        # 先放 global，再由当前课程覆盖同 key，保证 course-specific 优先。
+        effective: Dict[str, dict] = {}
+        for r in rows:
+            if not (r.get("course_id") or ""):
+                effective[r["preference_key"]] = r
+        if course_id:
+            for r in rows:
+                if (r.get("course_id") or "") == course_id:
+                    effective[r["preference_key"]] = r
         mode_effectiveness: Dict[str, ModeScore] = {}
         best_key, best_score = "", 0.0
-        for r in rows:
+        for r in effective.values():
             if r.get("status") == "inactive":
                 continue
             key = r["preference_key"]
@@ -485,7 +497,7 @@ class LearnerModelService:
             confidence = float(r.get("confidence", 0.0))
             mode_effectiveness[key] = ModeScore(score=score, confidence=confidence,
                                                 sample_size=int(r.get("evidence_count", 0)))
-            if confidence >= 0.5 and score * confidence > best_score:
+            if confidence >= 0.5 and score >= 0.6 and score * confidence > best_score:
                 best_score = score * confidence
                 best_key = key
         return Preferences(preferred_mode=best_key, mode_effectiveness=mode_effectiveness)
