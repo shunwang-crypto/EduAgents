@@ -15,6 +15,7 @@ from edu_agent.application import course_service, study_plan_service
 from edu_agent.application import course_category_service, course_source_service
 from edu_agent.application.chat_service import ChatService
 from edu_agent.config.settings import get_settings
+from edu_agent.core.exceptions import LLMConfigurationError
 
 router = APIRouter(prefix="/api")
 
@@ -238,6 +239,11 @@ def generate_step_lesson(course_id: str, step_id: str,
         return study_plan_service.get_or_generate_step_lesson(user_id, course_id, step_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except LLMConfigurationError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="未配置 AI 模型，请先配置 API Key 后再生成讲解",
+        ) from exc
     except (RuntimeError, ValueError) as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 

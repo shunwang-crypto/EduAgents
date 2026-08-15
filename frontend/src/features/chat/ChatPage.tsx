@@ -9,6 +9,7 @@ import { LoadingDots } from "../../components/ui/Loading";
 import { CourseHeader } from "../../layout/CourseHeader";
 import { useLearningNav } from "../../app/useLearningNav";
 import { notifyConversationUpdated } from "../../api/conversationEvents";
+import { subscribeCourseUpdated } from "../../api/courseEvents";
 import { ChatComposer } from "./ChatComposer";
 import { ChatEmptyState } from "./ChatEmptyState";
 import "./chat.css";
@@ -54,6 +55,17 @@ export function ChatPage() {
   useEffect(() => {
     scopeSeq.current++;
   }, [courseId, api]);
+
+  useEffect(
+    () =>
+      subscribeCourseUpdated((event) => {
+        if (event.courseId !== courseId) return;
+        setCourse((current) =>
+          current ? { ...current, display_name: event.displayName } : current
+        );
+      }),
+    [courseId]
+  );
   // 本组件写回 URL 的 conversation_id：写回后消息已在本地 state，跳过重新加载，
   // 避免 setMessages([]) 清空当前对话（retry/首条消息成功后 user bubble 消失、骨架闪烁）。
   // 初始为 undefined（哨兵）：mount 时 conversationParam 为 null，若用 null 会误判为"自己写回"而跳过首次加载

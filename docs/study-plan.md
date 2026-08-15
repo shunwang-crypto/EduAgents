@@ -40,6 +40,7 @@
 - `study_plans`：goal / duration_days / daily_minutes / progress / plan_markdown / personalization_note
 - `plan_steps`：step_id（`PLANSTEP-{uuid}`）/ seq / **stage_id / stage_title / stage_order** / **kc_id**（= KnowledgeNode.id）/ 标题 / 说明 / **learning_objective / prerequisites / difficulty** / 预计时间 / 状态
 - **一级结构固定 3 个阶段**：基础准备（order=1）/ 核心学习（order=2）/ 综合应用（order=3），标题可按主题自定义（如 Transformer：数学与注意力基础 / 核心机制 / 应用与整合）；每个阶段至少 1 个步骤，不允许空阶段。
+- **时间预算是硬约束**：UI 步骤的预计分钟总和不得超过 `学习周期 × 每日时长`。当 LLM 拆出的知识点过多时，确定性裁剪步骤并按原难度权重缩放分钟数；三个阶段仍各保留至少 1 步。
 - `get_plan` DTO 返回 `stages: [{stage_id, stage_title, order, steps[]}]`，前端按阶段渲染，不从字符串猜阶段。
 
 ## 就此提问（Plan Step Context）

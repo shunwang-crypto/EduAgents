@@ -380,7 +380,11 @@ def _plan_summary(plan_context: Dict[str, object], nodes: List[dict]) -> str:
     note = plan_context.get("personalization_note")
     days = plan_context.get("duration_days")
     minutes = plan_context.get("daily_minutes")
-    base = f"{days} 天 · 每天 {minutes} 分钟 · {len(nodes)} 个学习步骤"
+    planned_minutes = sum(int(node.get("estimated_minutes", 0) or 0) for node in nodes)
+    base = (
+        f"{days} 天 · 每天 {minutes} 分钟 · {len(nodes)} 个学习步骤"
+        f" · 计划约 {planned_minutes} 分钟"
+    )
     return f"{base}；{note}" if note else base
 
 

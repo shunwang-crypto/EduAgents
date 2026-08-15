@@ -13,6 +13,7 @@ interface Props {
 export function DeleteCourseDialog({ course, onClose, onDeleted }: Props) {
   const api = useApi();
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
   const loadingRef = useRef(false);
   const cancelRef = useRef<HTMLButtonElement>(null);
 
@@ -27,12 +28,14 @@ export function DeleteCourseDialog({ course, onClose, onDeleted }: Props) {
 
   const confirm = async () => {
     setLoading(true);
+    setError("");
     loadingRef.current = true;
     try {
       await api.deleteCourse(course.course_id);
       onDeleted(course.course_id);
-    } catch {
+    } catch (e) {
       // 失败保持对话框，便于重试
+      setError(e instanceof Error ? e.message : "删除失败，请稍后重试");
       setLoading(false);
       loadingRef.current = false;
     }
@@ -53,6 +56,7 @@ export function DeleteCourseDialog({ course, onClose, onDeleted }: Props) {
         <p className="modal-text">
           确定要删除「{course.display_name}」吗？该课程的计划与学习记录将被移除，且无法恢复。
         </p>
+        {error && <p className="form-error" role="alert">{error}</p>}
         <div className="modal-actions">
           <button ref={cancelRef} type="button" className="ea-button" onClick={onClose} disabled={loading}>
             取消

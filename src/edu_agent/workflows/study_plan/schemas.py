@@ -82,7 +82,9 @@ class KnowledgeNode(BaseModel):
     summary: str = Field(description="知识点摘要")
     prerequisites: List[str] = Field(default_factory=list, description="前置知识点名称")
     difficulty: str = Field(description="难度等级")
-    estimated_minutes: int = Field(ge=10, le=600, description="建议学习时间，单位：分钟")
+    # API 允许最短 1 天 × 5 分钟，同时产品要求固定三个阶段；极小预算下单步可能
+    # 少于 10 分钟，因此下限必须允许确定性预算分配，而不是悄悄超出用户时间。
+    estimated_minutes: int = Field(ge=1, le=600, description="建议学习时间，单位：分钟")
     stage_id: str = Field(description="所属阶段标识（stage-1/2/3）")
     stage_title: str = Field(description="所属阶段标题")
     stage_order: int = Field(ge=1, le=3, description="所属阶段顺序")

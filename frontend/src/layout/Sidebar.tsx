@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import type { ConversationSummary, Course, CourseCategory } from "../api/types";
 import { subscribeConversationUpdated } from "../api/conversationEvents";
+import { notifyCourseUpdated } from "../api/courseEvents";
 import { openCourseSources } from "../features/course/courseSourcesEvents";
 import { CreateCourseModal } from "../features/courses/CreateCourseModal";
 import { RenameCourseModal } from "../features/courses/RenameCourseModal";
@@ -1089,6 +1090,7 @@ export function Sidebar({
           onClose={() => setRenaming(null)}
           onRenamed={(id, name) => {
             setCourses((prev) => prev.map((c) => (c.course_id === id ? { ...c, display_name: name } : c)));
+            notifyCourseUpdated({ courseId: id, displayName: name });
             setRenaming(null);
           }}
         />

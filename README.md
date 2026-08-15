@@ -63,7 +63,7 @@ npm run dev                             # http://localhost:5173，Vite 代理 /a
 说明：
 
 - **src-layout**：代码在 `src/edu_agent/`（无 pyproject/setup.py），启动必须带 `PYTHONPATH=src`，否则 `ModuleNotFoundError: edu_agent`。
-- **LLM 可选**：无 key 走确定性回退，可直接体验；有 key 填 `.env` 的 `OPENAI_API_KEY` / `OPENAI_BASE_URL`（默认 DeepSeek）。
+- **LLM 配置**：聊天和计划生成在无 Key 时可走确定性回退；步骤 AI 讲解必须配置模型，否则界面会明确提示。可在 `.env` 填写 `OPENAI_API_KEY` / `OPENAI_BASE_URL`（默认 DeepSeek）。
 - **用户标识**：`LEARNER_MODEL_USER_ID` 留空时，请求必须带 `X-User-Id` 头（宿主嵌入场景）；本地开发可设为 `STU-001` 省去每次传头。
 - 数据库自动创建于 `data/learner_model.db`（WAL）；改了 schema 约束后需删除旧库再启动。
 

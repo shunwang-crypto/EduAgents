@@ -1,4 +1,5 @@
 import re
+from math import floor
 from typing import Iterable, List
 
 from edu_agent.workflows.study_plan.schemas import (
@@ -62,6 +63,80 @@ def _normalize_stages(stages: list[LearningStageSuggestion]) -> list[LearningSta
     return result
 
 
+def _daily_minutes(value: str) -> int:
+    """把 StudentInput.daily_time 解析成分钟；正式服务传入形如 ``20分钟``。"""
+    text = (value or "").strip().lower()
+    hour = re.search(r"(\d+(?:\.\d+)?)\s*(?:小时|hours?|h)", text)
+    if hour:
+        return max(1, round(float(hour.group(1)) * 60))
+    minute = re.search(r"(\d+)\s*(?:分钟|minute|minutes|min)", text)
+    if minute:
+        return max(1, int(minute.group(1)))
+    return 60
+
+
+def _fit_nodes_to_budget(
+    stage_nodes: list[list[KnowledgeNode]], student_input: StudentInput
+) -> list[KnowledgeNode]:
+    """保持三个阶段都有内容，同时让 UI 步骤总分钟数不超过用户预算。
+
+    LLM 可能把主题拆成几十个概念。UI 如果不做最后一道确定性约束，就会出现
+    “3 天 × 20 分钟，却生成 22 个、每个至少 30 分钟”的不可执行计划。
+    这里把学习周期视为硬预算：优先每阶段保留一个节点，再按核心→基础→应用
+    轮询补充；仅在原始建议总时长超预算时按权重缩放分钟数。
+    """
+    total_budget = max(
+        STAGE_COUNT,
+        int(student_input.days or 1) * _daily_minutes(student_input.daily_time),
+    )
+    total_nodes = sum(len(group) for group in stage_nodes)
+    # 目标粒度约 20 分钟；最多 24 步，避免超长列表。三个阶段始终至少各一项。
+    step_limit = min(total_nodes, max(STAGE_COUNT, min(24, total_budget // 20)))
+
+    selected_by_stage: list[list[KnowledgeNode]] = [
+        [group[0]] for group in stage_nodes
+    ]
+    cursors = [1, 1, 1]
+    fill_order = [1, 0, 2]  # 核心知识优先，其次基础与综合应用
+    selected_count = STAGE_COUNT
+    while selected_count < step_limit:
+        added = False
+        for stage_index in fill_order:
+            group = stage_nodes[stage_index]
+            cursor = cursors[stage_index]
+            if cursor < len(group):
+                selected_by_stage[stage_index].append(group[cursor])
+                cursors[stage_index] += 1
+                selected_count += 1
+                added = True
+                if selected_count >= step_limit:
+                    break
+        if not added:
+            break
+
+    # 选点时可跨阶段轮询，但最终必须恢复阶段连续顺序，否则全局 seq 会出现
+    # stage-1=1,4 / stage-2=2,5 这类跳号，破坏计划的一级结构。
+    selected = [node for group in selected_by_stage for node in group]
+    preferred = [node.estimated_minutes for node in selected]
+    if sum(preferred) <= total_budget:
+        allocated = preferred
+    else:
+        # 按原 30/45/60 权重缩放，使用最大余数法保证总和恰好等于预算。
+        weight_sum = sum(preferred)
+        raw = [total_budget * value / weight_sum for value in preferred]
+        allocated = [max(1, floor(value)) for value in raw]
+        remaining = total_budget - sum(allocated)
+        order = sorted(range(len(raw)), key=lambda i: raw[i] - floor(raw[i]), reverse=True)
+        for offset in range(remaining):
+            allocated[order[offset % len(order)]] += 1
+
+    # 截断后重新编号，保持 kc_id/recommended_path 连续稳定。
+    return [
+        node.model_copy(update={"id": f"knowledge-{index}", "estimated_minutes": minutes})
+        for index, (node, minutes) in enumerate(zip(selected, allocated), start=1)
+    ]
+
+
 def build_knowledge_map(
     student_input: StudentInput,
     decomposition: DecompositionResult,
@@ -73,6 +148,7 @@ def build_knowledge_map(
       node.id（=kc_id）严格按 1..N 连续编号，与 stage 顺序一致；
       每个阶段即使输入为空也有兜底节点（Stage2 缺 core 同样补）。
     - 阶段映射：prerequisite→Stage1 / core→Stage2 / application→Stage3。
+    - 步骤数量与预计分钟数受 ``days × daily_time`` 硬预算约束。
     - 不允许出现练习/题目语义；活动类型限定为学习活动（阅读/案例/项目等）。
     """
 
@@ -165,7 +241,10 @@ def build_knowledge_map(
             objective=f"独立完成「{topic}」的综合案例或小项目并输出复盘总结。"
         ))
 
-    nodes = stage1_nodes + stage2_nodes + stage3_nodes
+    nodes = _fit_nodes_to_budget(
+        [stage1_nodes, stage2_nodes, stage3_nodes],
+        student_input,
+    )
     return KnowledgeMap(
         topic=topic,
         nodes=nodes,

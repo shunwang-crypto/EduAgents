@@ -11,6 +11,7 @@ import {
   MessageCircleQuestion,
 } from "lucide-react";
 import { useApi, ApiError } from "../../api/ApiProvider";
+import { subscribeCourseUpdated } from "../../api/courseEvents";
 import type { Course, PlanStep, StudyPlan } from "../../api/types";
 import RichMarkdown from "../../components/content/RichMarkdown";
 import { CourseHeader } from "../../layout/CourseHeader";
@@ -80,6 +81,32 @@ function PlanSettingsFields({ durationDays, dailyMinutes, background, onChange }
   );
 }
 
+function formatElapsed(seconds: number): string {
+  if (seconds < 60) return `${seconds} 秒`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return rest ? `${minutes} 分 ${rest} 秒` : `${minutes} 分钟`;
+}
+
+function PlanGeneratingStatus({ elapsedSeconds }: { elapsedSeconds: number }) {
+  return (
+    <div
+      className="plan-generating-status"
+      role="status"
+      aria-label="正在生成学习计划，请保持页面打开"
+    >
+      <div className="plan-generating-main">
+        <LoaderCircle size={15} className="spin" aria-hidden />
+        <span>正在分析目标、检索资料并整理学习路径</span>
+        <span className="plan-generating-time" aria-hidden>
+          已等待 {formatElapsed(elapsedSeconds)}
+        </span>
+      </div>
+      <div className="plan-generating-hint">模型生成通常需要几分钟，请保持当前页面打开。</div>
+    </div>
+  );
+}
+
 /** StudyPlanPage：ChatGPT 文档式三阶段计划（无 Dashboard）。 */
 export function StudyPlanPage() {
   const api = useApi();
@@ -93,6 +120,7 @@ export function StudyPlanPage() {
   // 明确分离，避免 500 时「error」与「还没有学习计划」同时显示。
   const [planStatus, setPlanStatus] = useState<"loading" | "empty" | "ready" | "error">("loading");
   const [generating, setGenerating] = useState(false);
+  const [generationElapsed, setGenerationElapsed] = useState(0);
   const [error, setError] = useState("");
   const [showMarkdown, setShowMarkdown] = useState(false);
   const [confirmRegenerate, setConfirmRegenerate] = useState(false);
@@ -118,7 +146,7 @@ export function StudyPlanPage() {
   const [lessonByStep, setLessonByStep] = useState<Record<string, LessonCache>>({});
   const [lessonLoadingStep, setLessonLoadingStep] = useState<string | null>(null);
   const [lessonErrorStep, setLessonErrorStep] = useState<string | null>(null);
-  const [lessonErrorKind, setLessonErrorKind] = useState<"stale" | "error" | null>(null);
+  const [lessonErrorKind, setLessonErrorKind] = useState<"stale" | "config" | "error" | null>(null);
 
   //  stale-async 保护：courseId 快速切换时，旧请求的响应不许覆盖新页面
   const loadSeq = useRef(0);
@@ -136,6 +164,8 @@ export function StudyPlanPage() {
     setError("");
     setPlanStatus("loading");
     setPlan(null);
+    setGenerating(false);
+    setConfirmRegenerate(false);
     // 切换课程时清空旧 course：getCourse(B) 与 getPlan(B) 并行，B 加载完成前若仍保留 A 的
     // course（含 A 的 30/90 设置），一次抢先的「生成」会用 A 的设置去生成 B 的计划。
     setCourse(null);
@@ -178,6 +208,20 @@ export function StudyPlanPage() {
       });
   }, [courseId, api]);
 
+  useEffect(() => {
+    if (!generating) {
+      setGenerationElapsed(0);
+      return;
+    }
+    const startedAt = Date.now();
+    const updateElapsed = () => {
+      setGenerationElapsed(Math.floor((Date.now() - startedAt) / 1000));
+    };
+    updateElapsed();
+    const timer = window.setInterval(updateElapsed, 1000);
+    return () => window.clearInterval(timer);
+  }, [generating]);
+
   //  课程加载完成后同步计划设置默认值（来自课程已保存的周期/每日时长）
   useEffect(() => {
     if (course) {
@@ -192,6 +236,17 @@ export function StudyPlanPage() {
       setGoalError("");
     }
   }, [course]);
+
+  useEffect(
+    () =>
+      subscribeCourseUpdated((event) => {
+        if (event.courseId !== courseId) return;
+        setCourse((current) =>
+          current ? { ...current, display_name: event.displayName } : current
+        );
+      }),
+    [courseId]
+  );
 
   /** 保存课程目标：PATCH { goal } → 后端复用现有 Goal updater 更新 Active Goal（唯一 Source of Truth）。 */
   const saveGoal = useCallback(async () => {
@@ -219,6 +274,7 @@ export function StudyPlanPage() {
       if (!course) return;
       const reqScope = scopeSeq.current;
       setGenerating(true);
+      setConfirmRegenerate(false);
       setError("");
       try {
         const body = {
@@ -306,7 +362,7 @@ export function StudyPlanPage() {
         if (reqSeq !== lessonRequestSeq.current) return;
         if (reqScope !== scopeSeq.current) return;
         const status = e instanceof ApiError ? e.status : 0;
-        setLessonErrorKind(status === 404 ? "stale" : "error");
+        setLessonErrorKind(status === 404 ? "stale" : status === 503 ? "config" : "error");
         setLessonErrorStep(stepId);
       } finally {
         if (reqSeq === lessonRequestSeq.current && reqScope === scopeSeq.current)
@@ -517,7 +573,12 @@ export function StudyPlanPage() {
               {!hasGoal && (
                 <div className="plan-goal-required-hint">请先设置课程目标。</div>
               )}
-              {generating && <div className="plan-generating-note">正在分析学习目标并拆解内容</div>}
+              {generating && <PlanGeneratingStatus elapsedSeconds={generationElapsed} />}
+              {!generating && error && (
+                <div className="inline-error plan-generate-error" role="alert">
+                  {error}
+                </div>
+              )}
             </div>
           )}
 
@@ -599,7 +660,9 @@ export function StudyPlanPage() {
                                 <div className="inline-error" role="alert">
                                   {lessonErrorKind === "stale"
                                     ? "该学习步骤已失效，请刷新计划"
-                                    : "讲解生成失败"}
+                                    : lessonErrorKind === "config"
+                                      ? "未配置 AI 模型，请先配置 API Key"
+                                      : "讲解生成失败"}
                                   <button
                                     type="button"
                                     className="lesson-retry"
@@ -722,6 +785,7 @@ export function StudyPlanPage() {
                       type="button"
                       className="ea-button"
                       onClick={() => setConfirmRegenerate(false)}
+                      disabled={generating}
                     >
                       取消
                     </button>
@@ -733,10 +797,13 @@ export function StudyPlanPage() {
                     onClick={() => setConfirmRegenerate(true)}
                     disabled={course === null || generating}
                   >
-                    <LoaderCircle size={14} className={generating ? "spin" : ""} aria-hidden /> 重新生成计划
+                    <LoaderCircle size={14} className={generating ? "spin" : ""} aria-hidden />
+                    {generating ? "正在重新生成…" : "重新生成计划"}
                   </button>
                 )}
               </div>
+
+              {generating && <PlanGeneratingStatus elapsedSeconds={generationElapsed} />}
 
               {showMarkdown && plan.plan_markdown && (
                 <div className="plan-markdown-full">
