@@ -26,18 +26,19 @@ ChatService.chat(user_id, message, course_id=None, conversation_id=None)
 
 ## 无课程时
 
-普通对话正常工作，不强行映射 KC、不创建 Knowledge State、不调用任何策略。
+普通对话正常工作，不强行映射 KC、不创建 Knowledge State、不调用课程策略；但仍会加载用户的**全局**画像、偏好和长期语义记忆，因此新建普通对话也能延续学习方式。
 
 ## 用户明确画像修改（记忆意图）
 
-轻量 `extract_memory_intents`（规则 + 明确语义，非每条消息都触发）：
+`extract_memory_intents` 负责明确删除等确定性操作；正常消息会同时交给 LLM 做受约束的结构化语义抽取。抽取只允许背景事实、稳定偏好和长期经历/目标，输出会经过字段白名单、长度和敏感信息校验，不允许模型删除画像或改写整份画像。
 
 | 用户说 | 动作 |
 |---|---|
-| "我会 Python" / "我做过 FastAPI" | `USER_EXPLICIT_PROFILE_FACT` 创建/更新 |
+| "我会 Python" / "我做过 FastAPI" | Profile Fact / Semantic Memory 创建或更新 |
 | "其实我只是基础水平" | 同 key Fact UPDATE（confidence 重设） |
-| "以后回答简洁一点" | `USER_EXPLICIT_PREFERENCE`（带"以后/以后都"等长期词才改长期偏好） |
-| "这次详细解释" | 仅本次请求，**不改**长期偏好 |
+| "我更喜欢看代码示例，不太喜欢纯理论" | 语义提取为正/负向学习偏好 |
+| "以后回答简洁一点" | `USER_EXPLICIT_PREFERENCE` |
+| "这次只回答一句" | 仅本次请求，**不改**长期偏好 |
 | "忘记我做过 FastAPI" | `PROFILE_FACT_DELETED` / `MEMORY_DELETED` 真正删除 |
 
 规则：**LLM 永远不重写整份画像**；消息 → 意图 → 结构化 Mutation → Learner Model（统一事务）。

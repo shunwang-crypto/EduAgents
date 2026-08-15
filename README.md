@@ -42,7 +42,7 @@ SQLite（data/learner_model.db）
 - **UNKNOWN ≠ 0**：无证据的 mastery 是 NULL，绝不当作 0；弱证据绝不自动抬高 mastery。
 - **统一事务**：一切画像变更经 `LearnerModelService`（BEGIN → mutation → change log → event → COMMIT，异常 ROLLBACK；INSERT OR IGNORE 保证事件幂等）。
 - **多课程隔离**：任意主题建立独立 course_id（`CUSTOM-{slug}-{hash8}`），Java 状态不污染 Python。
-- **用户显式声明 > 推断**：聊天中"我会 Python"→ Profile Fact；"以后简洁一点"→ 偏好；"忘记我做过 FastAPI"→ 真正删除。
+- **用户显式声明 > 推断**：聊天中的稳定背景、经历和学习偏好由 LLM 结构化抽取后写入 Profile Fact / Preference / Semantic Memory；明确“忘记/删除”仍由确定性规则执行，模型不能删除画像。
 
 ## 快速开始（WSL · conda 环境 `EduAgent`）
 
