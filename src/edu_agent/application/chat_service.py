@@ -12,6 +12,7 @@ import json
 import logging
 import re
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 
 from edu_agent.adaptive.chat_context import build_chat_context, chat_context_to_prompt
@@ -48,6 +49,13 @@ def _conversation_title(message: str) -> str:
 # ---------------------------------------------------------------------------
 
 _PATTERNS: List[Dict[str, Any]] = [
+    # 教育背景 / 经历：模型不可用时的保守 fallback；主路径仍由语义抽取判断是否长期稳定。
+    {"type": "education", "regex": r"(?:我是|我读的是|我就读于)\s*(.{1,30}?(?:专业|系|学生))(?:[。，,.!?！？]|$)",
+     "value": lambda m: m.group(1).strip()},
+    {"type": "education", "regex": r"我的专业是\s*(.{1,30}?)(?:[。，,.!?！？]|$)",
+     "value": lambda m: m.group(1).strip()},
+    {"type": "experience", "regex": r"(?:之前|曾经|最近).{0,8}(?:做过|开发过|参与过|完成过)\s*(.+?)(?:[。，,.!?！？]|$)",
+     "value": lambda m: m.group(1).strip()},
     # 我会 X / 我熟悉 X / 我用过 X / 我做过 X → profile fact（positive）
     # 支持多技能："我会 Python 和 Java" → skill:python + skill:java
     {"type": "fact_pos", "regex": r"(?:我会|我熟悉|我了解|我用过|我学过|我掌握|我做过)\s*(.+?)(?:[。，,.!?！？]|$)",
@@ -60,6 +68,11 @@ _PATTERNS: List[Dict[str, Any]] = [
      "pref_key": "concise_first", "direction": "pos"},
     {"type": "pref", "regex": r"(?:以后|之后|今后).{0,6}(?:多举例|举例子|给例子|详细一点|讲详细)",
      "pref_key": "worked_example", "direction": "pos"},
+    # 没有“以后”也可以表达稳定偏好；这是无模型时的保守 fallback，主路径由 LLM 做语义判断。
+    {"type": "pref", "regex": r"(?:更喜欢|喜欢|偏好|倾向于).{0,12}(?:代码示例|代码例子|编程示例)",
+     "pref_key": "code_example", "direction": "pos"},
+    {"type": "pref", "regex": r"(?:不喜欢|不太喜欢|讨厌|避免).{0,12}(?:纯理论|理论讲解|只讲理论)",
+     "pref_key": "theory_first", "direction": "neg"},
     # 忘记我做过 X → delete fact/memory（按 normalized 匹配已存在键）
     {"type": "forget", "regex": r"(?:忘记|忘掉|删掉|不再提)\s*(?:我(?:做过|会|学过|用过)?)?\s*(.+?)(?:项目|东西|事)?(?:[。，,.!?！？]|$)",
      "forget_raw": lambda m: m.group(1)},
@@ -90,11 +103,32 @@ def _split_skills(raw: str) -> List[str]:
 def extract_memory_intents(message: str) -> List[Dict[str, Any]]:
     """识别用户明确画像修改意图（结构化 mutation；多技能拆分）。"""
     intents: List[Dict[str, Any]] = []
+    # 删除优先，避免“忘记我做过 X”同时命中正向的“我做过 X”。
     for pat in _PATTERNS:
+        if pat["type"] != "forget":
+            continue
+        match = re.search(pat["regex"], message)
+        if match:
+            return [{"action": "delete_fact", "forget_raw": pat["forget_raw"](match)}]
+    for pat in _PATTERNS:
+        if pat["type"] == "forget":
+            continue
         m = re.search(pat["regex"], message)
         if not m:
             continue
-        if pat["type"] == "fact_pos":
+        if pat["type"] == "education":
+            value = pat["value"](m).strip()
+            if value:
+                intents.append({"action": "set_fact", "fact_key": "education_field",
+                                "fact_value": value, "category": "background"})
+        elif pat["type"] == "experience":
+            value = pat["value"](m).strip()
+            if value:
+                intents.append({"action": "set_fact", "fact_key": f"experience:{_slug(value)}",
+                                "fact_value": value, "category": "experience"})
+                intents.append({"action": "add_memory", "content": f"用户曾做过：{value}",
+                                "category": "experience", "course_id": ""})
+        elif pat["type"] == "fact_pos":
             for skill in _split_skills(pat["value"](m)):
                 intents.append({"action": "set_fact", "fact_key": f"skill:{_skill_key(skill)}",
                                 "fact_value": skill, "category": "background"})
@@ -105,9 +139,158 @@ def extract_memory_intents(message: str) -> List[Dict[str, Any]]:
         elif pat["type"] == "pref":
             intents.append({"action": "set_preference", "preference_key": pat["pref_key"],
                             "direction": pat["direction"]})
-        elif pat["type"] == "forget":
-            intents.append({"action": "delete_fact", "forget_raw": pat["forget_raw"](m)})
     return intents
+
+
+_ALLOWED_PREFERENCES = {
+    "concise_first", "detailed_explanation", "worked_example", "code_example",
+    "visual_explanation", "theory_first", "hands_on", "step_by_step", "analogy",
+}
+_ALLOWED_MEMORY_CATEGORIES = {"experience", "learning_context", "goal"}
+_SENSITIVE_TERMS = re.compile(
+    r"(密码|口令|token|api[_ -]?key|身份证|手机号|电话|邮箱|住址|精确位置|银行卡|账户|收入|工资|病史|诊断|政治|宗教|"
+    r"\b(?:password|secret|credential|email|phone|address|location|financial|health|political|religious?)\b)",
+    re.IGNORECASE,
+)
+_SENSITIVE_VALUE = re.compile(
+    r"(?:[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|(?<!\d)1[3-9]\d{9}(?!\d)|\bsk-[A-Za-z0-9_-]{12,}\b)",
+    re.IGNORECASE,
+)
+
+
+def _response_text(response: Any) -> str:
+    content = getattr(response, "content", response)
+    if isinstance(content, list):
+        return "".join(str(item.get("text", "")) if isinstance(item, dict) else str(item) for item in content)
+    return str(content or "")
+
+
+def _parse_json_payload(text: str) -> Any:
+    """接受裸 JSON 或 fenced JSON，拒绝模型附带的任意自然语言。"""
+    raw = (text or "").strip()
+    raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.IGNORECASE | re.DOTALL).strip()
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        # 允许模型在 JSON 前后加一句话，但只取第一个完整数组/对象。
+        for opener, closer in (("[", "]"), ("{", "}")):
+            start, end = raw.find(opener), raw.rfind(closer)
+            if start >= 0 and end > start:
+                try:
+                    return json.loads(raw[start:end + 1])
+                except (TypeError, ValueError):
+                    continue
+    return []
+
+
+def _normalize_ai_intents(payload: Any, course_id: str = "") -> List[Dict[str, Any]]:
+    """校验 LLM 输出，确保它只能写入有限的画像字段。"""
+    items = payload if isinstance(payload, list) else [payload] if isinstance(payload, dict) else []
+    result: List[Dict[str, Any]] = []
+    for item in items[:12]:
+        if not isinstance(item, dict):
+            continue
+        action = item.get("action")
+        if action not in {"set_fact", "set_preference", "add_memory"}:
+            # LLM 永远没有删除权限；forget 只由 deterministic extractor 产生。
+            continue
+        scope = item.get("scope", "global")
+        scope = "course" if scope == "course" and course_id else "global"
+        scoped_course = course_id if scope == "course" else ""
+        if action == "set_preference":
+            key = str(item.get("preference_key", "")).strip()
+            direction = item.get("direction", "pos")
+            if key not in _ALLOWED_PREFERENCES or direction not in {"pos", "neg"}:
+                continue
+            result.append({"action": action, "preference_key": key, "direction": direction,
+                           "course_id": scoped_course})
+        elif action == "set_fact":
+            key = str(item.get("fact_key", "")).strip().lower()
+            value = item.get("fact_value", "")
+            if not key or not re.fullmatch(r"[a-z][a-z0-9_:-]{1,63}", key):
+                continue
+            value_text = (json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list))
+                          else str(value)).strip()
+            if (not value_text or len(value_text) > 160
+                    or _SENSITIVE_TERMS.search(key + " " + value_text)
+                    or _SENSITIVE_VALUE.search(value_text)):
+                continue
+            if scope == "course":
+                key = f"background:{course_id}:{key}"
+            result.append({"action": action, "fact_key": key, "fact_value": value,
+                           "category": str(item.get("category") or "background")[:40]})
+        else:
+            content = re.sub(r"\s+", " ", str(item.get("content", "")).strip())
+            category = str(item.get("category", "experience"))
+            if category not in _ALLOWED_MEMORY_CATEGORIES or not content or len(content) > 240:
+                continue
+            if _SENSITIVE_TERMS.search(content) or _SENSITIVE_VALUE.search(content):
+                continue
+            result.append({"action": action, "content": content, "category": category,
+                           "course_id": scoped_course})
+    return result
+
+
+def _extract_ai_memory_intents(message: str, history: List[Dict[str, str]], course_id: str = "") -> List[Dict[str, Any]]:
+    """用 LLM 从用户自述中提取可长期保存的信息；失败时返回空，由规则 fallback 接管。"""
+    try:
+        from edu_agent.core.llm import get_kb_llm
+
+        recent = "\n".join(f"{h.get('role', 'user')}: {h.get('content', '')[:500]}" for h in history[-6:]) or "（无历史）"
+        prompt = f"""你是一位细致的学习助手记忆系统，类似于主流 AI 产品（如 ChatGPT）的"记忆"功能：通过自然对话记住用户值得长期保存的信息，让以后的对话更贴心、更个性化。
+
+【判断标准：哪些信息值得记住】
+- 记住：教育背景、专业、技能、项目经历、长期目标、稳定的学习偏好/风格、反复提到的关注点。
+- 不记：临时指令（如"这次只回答一句"、"换个说法"、"再讲一遍"）、一次性请求、当下的情绪、已经过时的信息。
+- 克制：只抽取"未来对话仍有价值"的稳定信息；宁可少记，不要过度抽取。
+
+【优先级与去重】
+- 历史只用于消解代词（他/她/我指代谁），绝不重复抽取历史已含的信息。
+- 用户本轮修正或补充的信息要记录，作为对旧记忆的更新。
+
+【敏感信息红线】
+- 绝对禁止抽取：联系方式（手机号/邮箱/地址）、银行卡/账户、密码/密钥/token、精确位置、健康状况、政治/宗教立场。命中任一条就直接丢弃该项。
+
+【输出格式】
+当前课程 ID：{course_id or '无（普通对话）'}。默认 scope 为 global；只有用户明确说"这门课/本课程"才用 course。
+偏好 key 只允许：{', '.join(sorted(_ALLOWED_PREFERENCES))}。
+只返回 JSON 数组，不要 Markdown，不要额外说明。每项格式（按需组合）：
+{{"action":"set_fact","fact_key":"education_field","fact_value":"计算机专业","category":"background","scope":"global"}}
+{{"action":"set_fact","fact_key":"experience_fastapi","fact_value":"用 FastAPI 写过 Web 后端","category":"experience","scope":"global"}}
+{{"action":"set_preference","preference_key":"code_example","direction":"pos|neg","scope":"global"}}
+{{"action":"add_memory","content":"用一句话自然概括这段有价值的信息","category":"experience|learning_context|goal","scope":"global"}}
+若当前消息没有值得长期保存的信息，严格返回 []。
+
+最近对话：
+{recent}
+当前用户消息：{message[:1200]}"""
+        response = get_kb_llm(temperature=0, timeout=90).invoke(prompt)
+        return _normalize_ai_intents(_parse_json_payload(_response_text(response)), course_id)
+    except Exception:  # noqa: BLE001 - 画像抽取失败不能阻塞回复
+        logger.info("[chat] semantic memory extraction unavailable", exc_info=True)
+        return []
+
+
+def _merge_memory_intents(*groups: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    merged: List[Dict[str, Any]] = []
+    seen = set()
+    for group in groups:
+        for intent in group:
+            action = intent.get("action", "")
+            if action == "set_preference":
+                fingerprint = (action, intent.get("preference_key"), intent.get("direction", "pos"),
+                               intent.get("course_id", ""))
+            elif action == "set_fact":
+                fingerprint = (action, intent.get("fact_key"), str(intent.get("fact_value", "")))
+            elif action == "add_memory":
+                fingerprint = (action, re.sub(r"\s+", "", str(intent.get("content", "")).lower()),
+                               intent.get("course_id", ""))
+            else:
+                fingerprint = json.dumps(intent, ensure_ascii=False, sort_keys=True)
+            if fingerprint not in seen:
+                seen.add(fingerprint)
+                merged.append(intent)
+    return merged
 
 
 def _find_forgettable_keys(user_id: str, course_id: str, raw: str,
@@ -150,8 +333,13 @@ def apply_memory_intents(user_id: str, course_id: str, intents: List[Dict[str, A
             elif action == "set_preference":
                 learner.set_preference(user_id, intent["preference_key"],
                                        direction=intent.get("direction", "pos"),
-                                       course_id=course_id)
+                                       course_id=intent.get("course_id", ""))
                 applied.append(f"pref:{intent['preference_key']}")
+            elif action == "add_memory":
+                result = learner.add_memory(user_id, intent["content"],
+                                            course_id=intent.get("course_id", ""),
+                                            category=intent.get("category", "experience"))
+                applied.append(result.get("entity", "memory:updated"))
             elif action == "delete_fact":
                 raw = intent.get("forget_raw", "")
                 keys = _find_forgettable_keys(user_id, course_id, raw, learner)
@@ -254,12 +442,12 @@ class ChatService:
         # 2) 会话（ownership 校验：user + course 都必须匹配；校验通过后才创建）
         conv = self._resolve_conversation(user_id, course_id, conversation_id)
 
-        # 3) 画像修改意图（明确语义才写；course 级偏好落当前课程）
-        intents = extract_memory_intents(message)
-        applied = apply_memory_intents(user_id, course_id or "", intents, learner)
+        # 3) 确定性规则先处理（尤其是明确删除）；LLM 语义抽取稍后与回复并行。
+        rule_intents = extract_memory_intents(message)
+        applied = apply_memory_intents(user_id, course_id or "", rule_intents, learner)
 
         # 4) 先加载 PRIOR history（不含当前消息）→ Prompt 中当前消息只出现一次
-        history = self._recent_history(conv["conversation_id"], limit=8)
+        history = self._recent_history(conv["conversation_id"], limit=12)
 
         # 5) 用户消息落库（metadata 保留 step 上下文）
         metadata: Dict[str, Any] = {"course_id": course_id}
@@ -290,9 +478,21 @@ class ChatService:
                                           "plan_step_id": (step or {}).get("step_id", ""),
                                           "step_title": (step or {}).get("title", "")}})
 
-        # 6) 上下文（RAG query = step.title + message；真加载持久化 chunks）
+        # 6) 上下文（RAG query = step.title + message；真加载持久化 chunks）。
+        # 回复和语义画像抽取互不依赖，并行执行；新画像从下一轮开始影响回答。
         context_text = self._build_context(user_id, course_id, message, step)
-        reply = self._llm_reply(message, context_text, history)
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="chat-llm") as pool:
+            reply_future = pool.submit(self._llm_reply, message, context_text, history)
+            has_delete = any(intent.get("action") == "delete_fact" for intent in rule_intents)
+            memory_future = None if has_delete else pool.submit(
+                _extract_ai_memory_intents, message, history, course_id or ""
+            )
+            reply = reply_future.result()
+            ai_intents = memory_future.result() if memory_future else []
+
+        merged_intents = _merge_memory_intents(rule_intents, ai_intents)
+        ai_only = merged_intents[len(_merge_memory_intents(rule_intents)):]
+        applied.extend(apply_memory_intents(user_id, course_id or "", ai_only, learner))
 
         # 7) AI 回复落库
         ai_msg_id = f"MSG-{uuid.uuid4().hex[:12]}"
@@ -384,7 +584,13 @@ class ChatService:
     def _build_context(self, user_id: str, course_id: Optional[str],
                        message: str, plan_step: Optional[dict] = None) -> str:
         if not course_id:
-            return ""  # 普通聊天不加载课程画像
+            try:
+                bundle = self._learner.build_bundle(user_id, "")
+                ctx = build_chat_context(bundle, self._learner.repo)
+                return chat_context_to_prompt(ctx)
+            except Exception:  # noqa: BLE001 - 画像失败不影响普通对话
+                logger.warning("[chat] build global context degraded: user=%s", user_id, exc_info=True)
+                return ""
         # 最低保障：课程显示名 + 目标 + 计划摘要（个性化失败也保留，绝不变普通聊天）
         repo = self._learner.repo
         course_row = repo.get_user_course(user_id, course_id)
@@ -465,7 +671,9 @@ class ChatService:
                 "{context_block}"
                 "历史对话：\n{history}\n\n用户：{message}\n\n助手："
             )
-            history_text = "\n".join(f"{h['role']}: {h['content']}" for h in history[-6:]) or "（无）"
+            history_text = "\n".join(
+                f"{h['role']}: {h['content'][:2500]}" for h in history[-12:]
+            ) or "（无）"
             response = (prompt | get_kb_llm(temperature=0.4)).invoke(
                 {"system": _SYSTEM_ROLE, "context_block": context_block,
                  "history": history_text, "message": message}
