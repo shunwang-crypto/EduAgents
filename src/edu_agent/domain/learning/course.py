@@ -17,6 +17,7 @@ class Course:
     title: str
     components: List[KnowledgeComponent] = field(default_factory=list)
     relations: List[KCRelation] = field(default_factory=list)
+    goal: str = ""
 
     def kc_by_id(self, kc_id: str) -> Optional[KnowledgeComponent]:
         for kc in self.components:
@@ -65,3 +66,37 @@ class Course:
             result.append(current)
             stack.extend(self.prerequisites(current))
         return result
+
+    @classmethod
+    def from_dag(
+        cls,
+        course_id: str,
+        display_name: str,
+        goal: str,
+        nodes: List[tuple],
+        edges: List[tuple],
+    ) -> "Course":
+        """从精简的 DAG 描述构造 Course。
+
+        :param nodes: [(kc_id, title, category), ...]
+        :param edges: [(from_kc, to_kc, relation), ...]
+        """
+        components = [
+            KnowledgeComponent(
+                kc_id=n[0],
+                title=n[1],
+                category=n[2] if len(n) > 2 else "core",
+            )
+            for n in nodes
+        ]
+        relations = [
+            KCRelation(from_kc=e[0], to_kc=e[1], relation=e[2] if len(e) > 2 else "prerequisite")
+            for e in edges
+        ]
+        return cls(
+            course_id=course_id,
+            title=display_name,
+            components=components,
+            relations=relations,
+            goal=goal,
+        )

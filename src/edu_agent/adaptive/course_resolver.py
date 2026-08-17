@@ -20,6 +20,17 @@ _BUILTIN_COURSES: Dict[str, str] = {
     "transformer": "TRANSFORMER",
     "注意力": "TRANSFORMER",
     "attention": "TRANSFORMER",
+    "llm": "LLM-RAG",
+    "llm-rag": "LLM-RAG",
+    "大语言模型": "LLM-RAG",
+    "大模型": "LLM-RAG",
+    "prompt": "LLM-RAG",
+    "embedding": "LLM-RAG",
+    "向量数据库": "LLM-RAG",
+    "vector database": "LLM-RAG",
+    "rag": "LLM-RAG",
+    "agent": "LLM-RAG",
+    "智能体": "LLM-RAG",
 }
 
 # ASCII 关键词按 token/word boundary 匹配，避免 "javascript" 误命中 "java"；

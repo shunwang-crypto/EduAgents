@@ -3,7 +3,11 @@
 - Conversation ownership：conversation_id 必须属于当前 user 且 course 匹配，否则拒绝（404）。
 - RAG：真正加载持久化 chunks（load_chunks(course_id)），按课程隔离，不跨课程检索。
 - plan_step_id：校验 step 属于 user+course 的 current plan；事件 kc_id=step.kc_id。
-- 画像意图：explicit intent → targeted mutation（多技能按 和/、/逗号 拆分，互不覆盖）。
+- 画像意图：LLM 语义抽取是主路径（抽取时提供已有画像做去重），确定性正则只在
+  LLM 不可用/失败时 fallback；「忘记/删除」永远走确定性规则且先于一切抽取；
+  多技能按 和/、/逗号 拆分，互不覆盖。
+- 回复与画像抽取并行，但回复最多等待抽取 _MEMORY_WAIT_SECONDS 秒；超时后抽取
+  在后台线程自行落库（下一轮生效），绝不阻塞回复返回。
 """
 
 from __future__ import annotations
@@ -13,6 +17,7 @@ import logging
 import re
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from typing import Any, Dict, List, Optional
 
 from edu_agent.adaptive.chat_context import build_chat_context, chat_context_to_prompt
@@ -101,7 +106,11 @@ def _split_skills(raw: str) -> List[str]:
 
 
 def extract_memory_intents(message: str) -> List[Dict[str, Any]]:
-    """识别用户明确画像修改意图（结构化 mutation；多技能拆分）。"""
+    """确定性画像意图（删除永远走这里；新增/偏好仅在 LLM 不可用时作为 fallback）。
+
+    结构化 mutation；多技能拆分。删除模式优先短路，避免"忘记我做过 X"
+    同时命中正向的"我做过 X"。
+    """
     intents: List[Dict[str, Any]] = []
     # 删除优先，避免“忘记我做过 X”同时命中正向的“我做过 X”。
     for pat in _PATTERNS:
@@ -156,6 +165,23 @@ _SENSITIVE_VALUE = re.compile(
     r"(?:[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|(?<!\d)1[3-9]\d{9}(?!\d)|\bsk-[A-Za-z0-9_-]{12,}\b)",
     re.IGNORECASE,
 )
+
+
+# 回复等待画像抽取结果的上限；超时后抽取转后台完成，响应里只缺 profile_updates 增量。
+_MEMORY_WAIT_SECONDS = 15
+
+# 成本闸门：无任何自述信号的消息（纯提问 / 指令）不调抽取 LLM。
+# 宁可漏过闸门多调一次，也不要收紧到误伤真实自述（英文口语如 I've / my）。
+_SELF_REFERENCE_RE = re.compile(
+    r"我|本人|自己|以前|之前|曾经|最近|以后|今后|之后|忘记|删掉|不再提"
+    r"|\bI\b|\bI'm\b|\bI've\b|\bmy\b|\bMy\b"
+)
+
+
+def _worth_extracting(message: str) -> bool:
+    """消息里是否有自述信号，值得调一次抽取 LLM。"""
+    text = (message or "").strip()
+    return len(text) >= 4 and bool(_SELF_REFERENCE_RE.search(text))
 
 
 def _response_text(response: Any) -> str:
@@ -231,18 +257,75 @@ def _normalize_ai_intents(payload: Any, course_id: str = "") -> List[Dict[str, A
     return result
 
 
-def _extract_ai_memory_intents(message: str, history: List[Dict[str, str]], course_id: str = "") -> List[Dict[str, Any]]:
-    """用 LLM 从用户自述中提取可长期保存的信息；失败时返回空，由规则 fallback 接管。"""
+def _existing_profile_text(user_id: str, course_id: str, learner: LearnerModelService) -> str:
+    """已有画像摘要（进抽取 prompt，供 LLM 去重）：active facts + 有效 memories。
+
+    与 ChatContext 相同的课程过滤：其他课程的 background:{course} fact 不出现。
+    读取失败返回空串（抽取降级为无画像上下文，不中断）。
+    """
+    try:
+        from edu_agent.learner_model.fact_text import humanize_profile_fact
+
+        lines: List[str] = []
+        facts: List[str] = []
+        for f in learner.repo.list_profile_facts(user_id):
+            if f.get("status") != "active":
+                continue
+            key = f.get("fact_key", "")
+            if key.startswith("background:") and not (
+                course_id and (key == f"background:{course_id}"
+                               or key.startswith(f"background:{course_id}:"))
+            ):
+                continue
+            text = humanize_profile_fact(key, f.get("fact_value_json"))
+            if text:
+                facts.append(text)
+        if facts:
+            lines.append("facts：")
+            lines.extend(f"- {t}" for t in facts[:12])
+        memories = [
+            str(m.get("content") or "").strip()
+            for m in learner.repo.list_effective_memories(user_id, course_id)
+        ]
+        memories = [m for m in memories if m][:8]
+        if memories:
+            lines.append("memories：")
+            lines.extend(f"- {m}" for m in memories)
+        return "\n".join(lines)
+    except Exception:  # noqa: BLE001 - 画像读取失败只影响去重质量
+        logger.warning("[chat] load existing profile for extraction failed", exc_info=True)
+        return ""
+
+
+def _extract_ai_memory_intents(
+    user_id: str, message: str, history: List[Dict[str, str]],
+    course_id: str = "", learner: Optional[LearnerModelService] = None,
+) -> Optional[List[Dict[str, Any]]]:
+    """用 LLM 从用户自述中提取可长期保存的信息（带已有画像去重）。
+
+    返回 None 表示 LLM 不可用/调用失败（调用方退回确定性规则）；
+    返回 [] 表示模型成功判定"本轮无值得保存的信息"（不再走正则，避免误报入库）。
+    """
     try:
         from edu_agent.core.llm import get_kb_llm
 
         recent = "\n".join(f"{h.get('role', 'user')}: {h.get('content', '')[:500]}" for h in history[-6:]) or "（无历史）"
+        existing = (
+            _existing_profile_text(user_id, course_id, learner)
+            if learner is not None else ""
+        ) or "（暂无）"
         prompt = f"""你是一位细致的学习助手记忆系统，类似于主流 AI 产品（如 ChatGPT）的"记忆"功能：通过自然对话记住用户值得长期保存的信息，让以后的对话更贴心、更个性化。
 
 【判断标准：哪些信息值得记住】
 - 记住：教育背景、专业、技能、项目经历、长期目标、稳定的学习偏好/风格、反复提到的关注点。
 - 不记：临时指令（如"这次只回答一句"、"换个说法"、"再讲一遍"）、一次性请求、当下的情绪、已经过时的信息。
 - 克制：只抽取"未来对话仍有价值"的稳定信息；宁可少记，不要过度抽取。
+
+【已有画像（当前已记住的内容）】
+{existing}
+- 上述已存在的信息，除非用户本轮明确修正或补充，否则不要再次输出。
+- 新增 memory 前先对照已有 memories：语义相同（只是措辞不同）的不要新增，宁可不输出。
+- 用户明确要求"忘记/删除/不再提"的信息，绝对不要抽取。
 
 【优先级与去重】
 - 历史只用于消解代词（他/她/我指代谁），绝不重复抽取历史已含的信息。
@@ -264,11 +347,32 @@ def _extract_ai_memory_intents(message: str, history: List[Dict[str, str]], cour
 最近对话：
 {recent}
 当前用户消息：{message[:1200]}"""
-        response = get_kb_llm(temperature=0, timeout=90).invoke(prompt)
+        response = get_kb_llm(temperature=0, timeout=20).invoke(prompt)
         return _normalize_ai_intents(_parse_json_payload(_response_text(response)), course_id)
-    except Exception:  # noqa: BLE001 - 画像抽取失败不能阻塞回复
+    except Exception:  # noqa: BLE001 - 画像抽取失败不能阻塞回复；None = 走规则 fallback
         logger.info("[chat] semantic memory extraction unavailable", exc_info=True)
-        return []
+        return None
+
+
+def _extract_and_apply_profile_intents(
+    user_id: str, course_id: str, message: str,
+    history: List[Dict[str, str]], learner: LearnerModelService,
+) -> List[str]:
+    """worker 线程：抽取 → 落库（与回复并行；超时场景下自行在后台完成）。
+
+    删除意图不在此处：由 chat() 在提交本任务前同步确定性处理。
+    LLM 成功返回 []（无值得保存）时绝不退回正则——正则的误报（如"我会尽快学完"
+    → skill:尽快）只在 LLM 不可用时才被接受。
+    """
+    intents: Optional[List[Dict[str, Any]]]
+    if _worth_extracting(message):
+        intents = _extract_ai_memory_intents(user_id, message, history, course_id, learner)
+    else:
+        intents = []
+    if intents is None:
+        intents = [i for i in extract_memory_intents(message)
+                   if i.get("action") != "delete_fact"]
+    return apply_memory_intents(user_id, course_id, _merge_memory_intents(intents), learner)
 
 
 def _merge_memory_intents(*groups: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -411,9 +515,9 @@ class ChatService:
         """发一条消息并返回 AI 回复。
 
         顺序（保证当前消息在 LLM Prompt 中只出现一次）：
-        resolve conversation → 画像意图 → plan_step 校验 → 加载 PRIOR history
+        resolve conversation → 删除意图（确定性） → plan_step 校验 → 加载 PRIOR history
         → 落库当前用户消息 → 事件 → 构建上下文 → LLM(prior history, message)
-        → 落库 AI 回复 → 事件。
+        ∥ 画像语义抽取（超时转后台） → 落库 AI 回复 → 事件。
 
         conversation_id：必须属于当前 user 且 course 匹配，否则拒绝（KeyError → 404）。
         plan_step_id：显式传入但不存在/不属于当前 user+course → KeyError → 404（不静默降级）。
@@ -442,9 +546,11 @@ class ChatService:
         # 2) 会话（ownership 校验：user + course 都必须匹配；校验通过后才创建）
         conv = self._resolve_conversation(user_id, course_id, conversation_id)
 
-        # 3) 确定性规则先处理（尤其是明确删除）；LLM 语义抽取稍后与回复并行。
-        rule_intents = extract_memory_intents(message)
-        applied = apply_memory_intents(user_id, course_id or "", rule_intents, learner)
+        # 3) 「忘记/删除」确定性优先：永远不依赖 LLM，且先于一切抽取落库，
+        #    保证 worker 里读到的已有画像已不含被删项。
+        delete_intents = [i for i in extract_memory_intents(message)
+                          if i.get("action") == "delete_fact"]
+        applied = apply_memory_intents(user_id, course_id or "", delete_intents, learner)
 
         # 4) 先加载 PRIOR history（不含当前消息）→ Prompt 中当前消息只出现一次
         history = self._recent_history(conv["conversation_id"], limit=12)
@@ -479,20 +585,24 @@ class ChatService:
                                           "step_title": (step or {}).get("title", "")}})
 
         # 6) 上下文（RAG query = step.title + message；真加载持久化 chunks）。
-        # 回复和语义画像抽取互不依赖，并行执行；新画像从下一轮开始影响回答。
+        # 回复和画像抽取并行；回复最多等抽取 _MEMORY_WAIT_SECONDS 秒，
+        # 超时后抽取在后台线程自行落库（下一轮生效），绝不阻塞回复返回。
         context_text = self._build_context(user_id, course_id, message, step)
-        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="chat-llm") as pool:
-            reply_future = pool.submit(self._llm_reply, message, context_text, history)
-            has_delete = any(intent.get("action") == "delete_fact" for intent in rule_intents)
-            memory_future = None if has_delete else pool.submit(
-                _extract_ai_memory_intents, message, history, course_id or ""
+        executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="chat-llm")
+        try:
+            reply_future = executor.submit(self._llm_reply, message, context_text, history)
+            memory_future = executor.submit(
+                _extract_and_apply_profile_intents,
+                user_id, course_id or "", message, history, learner,
             )
             reply = reply_future.result()
-            ai_intents = memory_future.result() if memory_future else []
-
-        merged_intents = _merge_memory_intents(rule_intents, ai_intents)
-        ai_only = merged_intents[len(_merge_memory_intents(rule_intents)):]
-        applied.extend(apply_memory_intents(user_id, course_id or "", ai_only, learner))
+            try:
+                applied.extend(memory_future.result(timeout=_MEMORY_WAIT_SECONDS))
+            except (FuturesTimeoutError, TimeoutError):
+                logger.info("[chat] profile extraction exceeded %ss; applying in background",
+                            _MEMORY_WAIT_SECONDS)
+        finally:
+            executor.shutdown(wait=False)
 
         # 7) AI 回复落库
         ai_msg_id = f"MSG-{uuid.uuid4().hex[:12]}"

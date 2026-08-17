@@ -109,6 +109,7 @@ describe("StudyPlanPage uses fresh api after userId swap", () => {
 
   it("generate with A uses client A; after swap to B uses client B only (no stale closure)", async () => {
     const { rerender } = renderWith("USER-A");
+    fireEvent.click(screen.getByText("计划列表"));
     await waitFor(() => expect(screen.getByText("阶段 1")).toBeTruthy());
     // ready 态的入口是「重新生成计划」→ 确认弹层「确认重新生成」（empty 态才是「生成学习计划」）
     fireEvent.click(screen.getByText("重新生成计划"));

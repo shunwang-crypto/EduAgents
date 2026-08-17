@@ -30,7 +30,13 @@ ChatService.chat(user_id, message, course_id=None, conversation_id=None)
 
 ## 用户明确画像修改（记忆意图）
 
-`extract_memory_intents` 负责明确删除等确定性操作；正常消息会同时交给 LLM 做受约束的结构化语义抽取。抽取只允许背景事实、稳定偏好和长期经历/目标，输出会经过字段白名单、长度和敏感信息校验，不允许模型删除画像或改写整份画像。
+双路径，职责严格分离：
+
+- **删除（「忘记/删掉/不再提」）**：永远走确定性规则（`extract_memory_intents`），先于一切抽取同步执行；LLM 没有删除权限。
+- **新增/更新**：主路径是 LLM 受约束的结构化语义抽取；抽取 prompt 携带**已有画像**（active facts + 有效 memories，跨课程背景隔离），供模型去重——语义相同（只是措辞不同）的信息不重复入库。LLM 判定「本轮无值得保存」时**不会**退回正则，避免正则误报（如"我会尽快学完"→ `skill:尽快`）污染画像；只有 LLM 不可用/调用失败时才用确定性正则 fallback。
+- **成本闸门**：无自述信号的消息（纯提问/指令）不调抽取 LLM。
+
+抽取只允许背景事实、稳定偏好和长期经历/目标，输出经过字段白名单、长度和敏感信息校验（单轮最多 12 条），不允许模型删除画像或改写整份画像。
 
 | 用户说 | 动作 |
 |---|---|
@@ -40,8 +46,14 @@ ChatService.chat(user_id, message, course_id=None, conversation_id=None)
 | "以后回答简洁一点" | `USER_EXPLICIT_PREFERENCE` |
 | "这次只回答一句" | 仅本次请求，**不改**长期偏好 |
 | "忘记我做过 FastAPI" | `PROFILE_FACT_DELETED` / `MEMORY_DELETED` 真正删除 |
+| "忘记我学过 Rust，对了我是数学专业的" | 删除 Rust fact **且** 抽取教育背景（互不阻断） |
+| "忘记我做过 XX"（无匹配记忆） | 响应 `profile_updates` 含 `delete:no-match:`，前端提示未命中 |
 
 规则：**LLM 永远不重写整份画像**；消息 → 意图 → 结构化 Mutation → Learner Model（统一事务）。
+
+### 延迟与降级
+
+回复与画像抽取并行执行，但回复最多等待抽取 **15 秒**（`_MEMORY_WAIT_SECONDS`）；超时后抽取在后台线程自行落库（下一轮对话生效），HTTP 响应正常返回（只是 `profile_updates` 缺少该增量）。抽取 LLM 自身 timeout 20 秒。画像读取/抽取任何失败都不影响对话主流程。
 
 ## 对话历史
 

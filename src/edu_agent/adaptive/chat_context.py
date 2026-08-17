@@ -47,6 +47,10 @@ def build_chat_context(
     prefs = bundle.global_state.preferences.mode_effectiveness
     memories = [m.content for m in bundle.global_state.semantic_memory[:3]]
 
+    # 课程背景 fact 与当前对话最相关，排在全局 fact 之前；
+    # stable sort 保持组内 updated_at DESC（最近更新的优先）。
+    facts.sort(key=lambda f: 0 if (f.get("fact_key") or "").startswith("background:") else 1)
+
     # facts → 人类可读短语（不把 fact_key / raw fact_value_json 塞给 LLM）
     humanized_facts = [
         humanize_profile_fact(f["fact_key"], f.get("fact_value_json"))

@@ -108,13 +108,20 @@ const { mockPlan, mockApi } = vi.hoisted(() => {
 vi.mock("../../api/ApiProvider", () => ({ useApi: () => mockApi }));
 
 function renderPage(initialPath = "/courses/PY/plan") {
-  return render(
+  const utils = render(
     <MemoryRouter initialEntries={[initialPath]}>
       <Routes>
         <Route path="/courses/:courseId/plan" element={<StudyPlanPage />} />
       </Routes>
     </MemoryRouter>
   );
+  // 计划列表类断言默认属于「计划列表」标签；切换到该标签以保证既有测试可用。
+  try {
+    fireEvent.click(utils.getByText("计划列表"));
+  } catch {
+    /* tab 未渲染时忽略 */
+  }
+  return utils;
 }
 
 // 可导航 router（用于跨课程切换的 stale-async 回归测试）
@@ -124,6 +131,11 @@ function renderNavigablePlan(initialPath: string) {
     { initialEntries: [initialPath] }
   );
   render(<RouterProvider router={router} />);
+  try {
+    fireEvent.click(screen.getByText("计划列表"));
+  } catch {
+    /* tab 未渲染时忽略 */
+  }
   return router;
 }
 

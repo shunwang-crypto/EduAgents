@@ -134,11 +134,15 @@ describe("host-relative navigation (CourseHeader tabs + Plan Step)", () => {
         name: "学习计划",
       })
     );
+    await waitFor(() => expect(screen.getByText("计划列表")).toBeTruthy());
+    fireEvent.click(screen.getByText("计划列表"));
     await waitFor(() => expect(screen.getByText("阶段 1")).toBeTruthy());
   });
 
   it("Plan Step 就此提问 → /host/learning/courses/PY/chat?step=S1 (host-relative)", async () => {
     renderHost("/host/learning/courses/PY/plan");
+    await waitFor(() => expect(screen.getByText("计划列表")).toBeTruthy());
+    fireEvent.click(screen.getByText("计划列表"));
     await waitFor(() => expect(screen.getAllByText("就此提问").length).toBe(3));
     fireEvent.click(screen.getAllByText("就此提问")[0]);
     await waitFor(() => expect(screen.getByText(/学习计划 · NumPy 数组基础/)).toBeTruthy());

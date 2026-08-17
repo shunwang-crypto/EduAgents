@@ -166,7 +166,52 @@ def generate_plan(
     # step_id 与 kc_id 分离：step_id=PLANSTEP-{uuid}，kc_id=KnowledgeNode.id）
     plan_id = f"PLAN-{uuid.uuid4().hex[:10]}"
     km = result.get("knowledge_map")
-    nodes = [n.model_dump() for n in (km.nodes if km and hasattr(km, "nodes") else [])]
+
+    # ---- KnowledgeMap 草稿 → canonical KCGraph（统一 KC ID 来源）------------
+    # 关键点：StudyPlan / LearningMap / Tutor / LearnerModel 必须引用同一批
+    # canonical KC ID。KnowledgeMap 草稿里可能含临时/位置 ID（knowledge-N 等），
+    # 这里统一规范化为 stable canonical ID，并持久化 active graph。
+    from edu_agent.application.course_graph_service import CourseGraphService
+    from edu_agent.workflows.study_plan.canonicalizer import (
+        KnowledgeMapCanonicalizer,
+        _node_as_dict,
+    )
+
+    graph_service = CourseGraphService(learner.repo)
+    reuse_active = graph_service.load_active_graph(user_id, course_id)
+    reuse_graph = reuse_active.course if reuse_active else None
+    if reuse_active is not None:
+        graph_version = (reuse_active.graph_version or 0) + 1
+    else:
+        graph_version = 1
+
+    nodes: List[dict] = []
+    dyn_course = None
+    graph_fallback = False
+    if km is not None and getattr(km, "nodes", None):
+        canonicalizer = KnowledgeMapCanonicalizer(course_id, fresh_name, goal_text)
+        can_res = canonicalizer.canonicalize(km, reuse_graph=reuse_graph)
+        if can_res.course is None:
+            # 校验失败（环/悬空/重复）→ 安全 DAG 回退，不崩溃。
+            dyn_course = canonicalizer.safe_fallback(km)
+            graph_fallback = True
+            logger.warning(
+                "dynamic graph validation failed; using safe fallback",
+                extra={"user_id": user_id, "course_id": course_id,
+                       "validation_errors": [e.kind for e in can_res.validation_errors]},
+            )
+        else:
+            dyn_course = can_res.course
+            graph_fallback = can_res.fallback_used
+
+        # 将 draft 节点的 kc_id 重映射为 canonical id（保留展示字段）。
+        raw_nodes = [_node_as_dict(n) for n in km.nodes]
+        id_map = can_res.node_id_map or {rn.get("id"): rn.get("id") for rn in raw_nodes}
+        for n in km.nodes:
+            rn = _node_as_dict(n)
+            remapped = dict(rn)
+            remapped["id"] = id_map.get(rn.get("id"), rn.get("id"))
+            nodes.append(remapped)
     summary = _plan_summary(plan_context, nodes)
 
     # Finalize 单事务（用户要求：LLM workflow 在事务外，返回后写入必须一个事务）：
@@ -220,6 +265,14 @@ def generate_plan(
             ):
                 raise ValueError("课程目标已变更，请重新生成学习计划")
         learner.update_course_progress(user_id, course_id, 0.0)
+        # 持久化动态 canonical KCGraph（与 plan 同事务，保证 Plan / Graph 版本一致）。
+        # 重新生成时不会删除 learner_kc_states（learner history 按 canonical kc_id 保留）。
+        if dyn_course is not None:
+            graph_service.save_dynamic_graph(
+                user_id, course_id, dyn_course,
+                graph_version=graph_version,
+                generated_at=_now_iso(), updated_at=_now_iso(),
+            )
         learner.record_event({"event_type": "PLAN_CREATED", "user_id": user_id,
                               "course_id": course_id, "payload": {"plan_id": plan_id, "goal_id": goal_id}})
 

@@ -342,6 +342,78 @@
   100% { background-position: -200% 0; }
 }
 
+/* ---------- Adaptive Learning Map Tabs ---------- */
+.plan-tabs {
+  display: flex;
+  gap: 8px;
+  margin: 8px 0 18px;
+}
+
+.plan-tab {
+  padding: 8px 18px;
+  border: 1px solid #e2e8f0;
+  background: #fff;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #64748b;
+  cursor: pointer;
+}
+
+.plan-tab.active {
+  background: #6366f1;
+  border-color: #6366f1;
+  color: #fff;
+}
+
+.learning-map-layout {
+  display: grid;
+  grid-template-columns: 1fr 300px;
+  grid-template-rows: minmax(360px, 1fr) auto;
+  grid-template-areas:
+    "canvas side"
+    "tutor  tutor";
+  gap: 14px;
+  height: calc(100vh - 220px);
+  min-height: 480px;
+}
+
+.learning-map-canvas {
+  grid-area: canvas;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #f8fafc;
+}
+
+.learning-map-side {
+  grid-area: side;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #fff;
+  overflow-y: auto;
+}
+
+.learning-map-tutor {
+  grid-area: tutor;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #fff;
+  padding: 12px;
+  min-height: 200px;
+}
+
+@media (max-width: 900px) {
+  .learning-map-layout {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "canvas"
+      "side"
+      "tutor";
+    height: auto;
+  }
+}
+
 /* 展开态高亮 */
 .plan-step.expanded {
   background: var(--ea-bg-hover);

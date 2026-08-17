@@ -7,9 +7,12 @@ import type {
   Course,
   CourseCategory,
   CourseSource,
+  LearningMapResponse,
   PlanStep,
   SourceSearchResult,
   StudyPlan,
+  TutorResponse,
+  TutorTurnRequest,
 } from "./types";
 
 /** API 错误：优先解析后端 JSON detail/message，不把 {"detail":...} 原文直接给用户。 */
@@ -81,6 +84,10 @@ export interface ApiClient {
   ) => Promise<CourseSource>;
   deleteCourseSource: (courseId: string, sourceId: string) => Promise<void>;
   searchCourseSources: (courseId: string, q: string, limit?: number) => Promise<SourceSearchResult[]>;
+
+  // Adaptive Learning Map + Tutor
+  getLearningMap: (courseId: string) => Promise<LearningMapResponse>;
+  tutorTurn: (courseId: string, req: TutorTurnRequest) => Promise<TutorResponse>;
 }
 
 /** 按 userId 创建 ApiClient（X-User-Id 头随请求发送）。
@@ -204,5 +211,14 @@ export function createApiClient(userId: string): ApiClient {
       params.set("limit", String(limit));
       return request<SourceSearchResult[]>(`/api/courses/${courseId}/sources/search?${params.toString()}`);
     },
+
+    // Adaptive Learning Map + Tutor
+    getLearningMap: (courseId) =>
+      request<LearningMapResponse>(`/api/courses/${courseId}/learning-map`),
+    tutorTurn: (courseId, req) =>
+      request<TutorResponse>(`/api/courses/${courseId}/tutor/turn`, {
+        method: "POST",
+        body: JSON.stringify(req),
+      }),
   };
 }

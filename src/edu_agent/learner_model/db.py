@@ -287,6 +287,28 @@ CREATE TABLE IF NOT EXISTS course_sources (
 );
 CREATE INDEX IF NOT EXISTS idx_course_sources_user_course
     ON course_sources(user_id, course_id, updated_at);
+
+-- 动态 KCGraph 快照（Dynamic Knowledge Graph 的 canonical 来源）。
+-- 每个 (user_id, course_id) 保存一份用户动态生成的知识结构：
+-- 当用户的学习目标触发 Study Plan 生成时，KnowledgeMap 草稿经过 canonicalizer
+-- 规范化后得到 canonical KC IDs，并持久化为本表。Learning Map / Tutor / Adaptive
+-- Planner / Learner Model 都引用同一批 canonical IDs。
+-- nodes/edges 以 JSON 存储（紧凑、可重建成 domain KCGraph）。
+-- graph_source: generated / builtin / legacy
+-- 这是 additive schema（SCHEMA_VERSION 不变），旧库首次启动自动建表，不破坏已有数据。
+CREATE TABLE IF NOT EXISTS course_kc_graph (
+    user_id TEXT NOT NULL,
+    course_id TEXT NOT NULL,
+    graph_source TEXT NOT NULL DEFAULT 'generated',
+    graph_version INTEGER NOT NULL DEFAULT 1,
+    generated_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    nodes_json TEXT NOT NULL DEFAULT '[]',
+    edges_json TEXT NOT NULL DEFAULT '[]',
+    PRIMARY KEY (user_id, course_id)
+);
+CREATE INDEX IF NOT EXISTS idx_course_kc_graph_user
+    ON course_kc_graph(user_id, updated_at);
 """
 
 

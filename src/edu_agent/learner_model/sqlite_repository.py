@@ -558,6 +558,23 @@ class SQLiteLearnerRepository(LearnerRepository):
             (step_id, user_id, course_id),
         )
 
+    # ---- 动态 KCGraph 快照（canonical Knowledge Graph）-------------------
+    def upsert_course_kc_graph(self, row: Dict[str, Any]) -> None:
+        """持久化某 (user_id, course_id) 的动态 canonical KCGraph 快照。
+
+        row 字段：user_id, course_id, graph_source, graph_version,
+        generated_at, updated_at, nodes_json, edges_json。
+        与 study_plan 在同一事务内写入，保证二者版本一致（原子性）。
+        """
+        self._insert_or_update("course_kc_graph", row, ["user_id", "course_id"])
+
+    def get_course_kc_graph(self, user_id: str, course_id: str) -> Optional[dict]:
+        """读取动态 KCGraph 快照；不存在返回 None（调用方应回退到 built-in）。"""
+        return self._fetchone(
+            "SELECT * FROM course_kc_graph WHERE user_id=? AND course_id=?",
+            (user_id, course_id),
+        )
+
     # ---- conversations（recent list + 标题）------------------------------
     def list_conversations(self, user_id: str, course_id: str, limit: int = 6) -> List[dict]:
         """最近对话：按 updated_at DESC；排除无用户消息的空对话；严格 user+course 隔离。

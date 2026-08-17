@@ -12,10 +12,19 @@ import {
 } from "lucide-react";
 import { useApi, ApiError } from "../../api/ApiProvider";
 import { subscribeCourseUpdated } from "../../api/courseEvents";
-import type { Course, PlanStep, StudyPlan } from "../../api/types";
+import type {
+  Course,
+  LearningMapNode,
+  LearningMapResponse,
+  PlanStep,
+  StudyPlan,
+} from "../../api/types";
 import RichMarkdown from "../../components/content/RichMarkdown";
 import { CourseHeader } from "../../layout/CourseHeader";
 import { useLearningNav } from "../../app/useLearningNav";
+import LearningMapView from "./LearningMap/LearningMapView";
+import KnowledgeDetailPanel from "./LearningMap/KnowledgeDetailPanel";
+import TutorPanel from "./Tutor/TutorPanel";
 import "./study-plan.css";
 
 interface OutletCtx {
@@ -155,6 +164,48 @@ export function StudyPlanPage() {
   //  scope 代际：courseId / api(user) 改变时自增；generate/toggleStep/openLesson
   //  在 await 前后比对 scope，过期响应直接丢弃，避免串课污染
   const scopeSeq = useRef(0);
+
+  // Adaptive Learning Map 标签页
+  const [tab, setTab] = useState<"map" | "plan">("map");
+  const [learningMap, setLearningMap] = useState<LearningMapResponse | null>(null);
+  const [mapLoading, setMapLoading] = useState(false);
+  const [mapError, setMapError] = useState<string | null>(null);
+  const [selectedKc, setSelectedKc] = useState<LearningMapNode | null>(null);
+
+  const loadLearningMap = useCallback(
+    async (reqScope: number) => {
+      if (!courseId) return;
+      setMapLoading(true);
+      setMapError(null);
+      try {
+        const data = await api.getLearningMap(courseId);
+        if (reqScope !== scopeSeq.current) return;
+        setLearningMap(data);
+        // 默认选中当前推荐 KC
+        const recId = data.current_recommended_kc;
+        const rec = data.nodes.find((n) => n.id === recId) ?? null;
+        setSelectedKc((prev) => {
+          if (prev && data.nodes.some((n) => n.id === prev.id)) return prev;
+          return rec;
+        });
+      } catch (e) {
+        if (reqScope !== scopeSeq.current) return;
+        setMapError(e instanceof Error ? e.message : "学习地图加载失败");
+      } finally {
+        if (reqScope === scopeSeq.current) setMapLoading(false);
+      }
+    },
+    [courseId, api]
+  );
+
+  // 课程加载完成后拉取 Learning Map
+  useEffect(() => {
+    if (!courseId) return;
+    const seq = ++loadSeq.current;
+    scopeSeq.current++;
+    void loadLearningMap(seq);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [courseId, api]);
 
   useEffect(() => {
     if (!courseId) return;
@@ -527,7 +578,31 @@ export function StudyPlanPage() {
             </section>
           )}
 
-          {!courseError && planStatus === "loading" && (
+          {/* Adaptive Learning Map / 计划列表 双标签 */}
+          <div className="plan-tabs" role="tablist" aria-label="学习计划视图">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === "map"}
+              className={`plan-tab ${tab === "map" ? "active" : ""}`}
+              onClick={() => setTab("map")}
+            >
+              学习地图
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === "plan"}
+              className={`plan-tab ${tab === "plan" ? "active" : ""}`}
+              onClick={() => setTab("plan")}
+            >
+              计划列表
+            </button>
+          </div>
+
+          {tab === "plan" && (
+            <>
+              {!courseError && planStatus === "loading" && (
             <div className="plan-skeleton" aria-busy="true">
               <div className="plan-skeleton-block" style={{ height: 28, width: "55%" }} />
               <div className="plan-skeleton-block" style={{ height: 14, width: "35%" }} />
@@ -816,6 +891,38 @@ export function StudyPlanPage() {
           {!courseError && planStatus === "ready" && error && (
             <div className="inline-error" role="alert">
               {error}
+            </div>
+          )}
+            </>
+          )}
+
+          {tab === "map" && (
+            <div className="learning-map-layout">
+              <div className="learning-map-canvas">
+                {mapLoading && <div style={{ padding: 16, color: "#64748b" }}>加载学习地图…</div>}
+                {mapError && (
+                  <div className="inline-error" role="alert">
+                    {mapError}
+                  </div>
+                )}
+                {!mapLoading && !mapError && (
+                  <LearningMapView
+                    data={learningMap}
+                    selectedKcId={selectedKc?.id ?? null}
+                    onSelect={(kc) => setSelectedKc(kc)}
+                  />
+                )}
+              </div>
+              <aside className="learning-map-side">
+                <KnowledgeDetailPanel node={selectedKc} allNodes={learningMap?.nodes ?? []} />
+              </aside>
+              <div className="learning-map-tutor">
+                <TutorPanel
+                  courseId={activeCourseId}
+                  currentKc={selectedKc}
+                  onMapChanged={() => void loadLearningMap(scopeSeq.current)}
+                />
+              </div>
             </div>
           )}
         </div>

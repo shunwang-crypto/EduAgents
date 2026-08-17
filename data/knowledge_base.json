@@ -718,5 +718,60 @@
     "heading_path": "GPT-2 与 Transformer 深度解析 > 第 6 章 常见问题解答（FAQ）",
     "text": "**问：多头注意力和单头注意力的区别？**\n单头注意力只能捕捉一种依赖模式；多头把注意力拆到多个子空间并行计算，每个头可学习不同的依赖关系，最后拼接融合，表达能力更强。\n**问：为什么 GPT-2 没有编码器？**\nGPT-2 是生成模型，只需从左到右生成，Decoder 的因果掩码正好满足单向依赖；不需要像 BERT 那样双向理解上下文，所以省略了编码器。\n**问：什么是因果掩码（Causal Mask）？**\n一个下三角矩阵，保证注意力只能关注当前位置及之前的位置，防止生成时\"偷看\"未来 token。\n**问：上下文窗口是什么？**\nGPT-2 能处理的最大 token 数（如 1024）。因为位置编码是有限的，超过窗口的文本无法处理，这也是大模型的关键限制之一。\n**问：注意力分数为什么要除以 sqrt(d_k)？**\nd_k 较大时点积数值会偏大，Softmax 会进入饱和区导致梯度极小；除以 sqrt(d_k) 让分数尺度稳定，训练更顺利。\n**问：多头注意力的参数量如何计算？**\n每个头有独立的 W_Q、W_K、W_V（每个形状 d_model × head_dim），所有头共享 W_O（d_model × d_model）。多头相比单头的总参数量基本不变，只是权重被拆分使用。",
     "score": 0.0
+  },
+  {
+    "user_id": "E2E-FULLFLOW",
+    "course_id": "CUSTOM-fastapi-556675fb",
+    "source_id": "SRC-3883e128233b",
+    "source_type": "web",
+    "source_url": "https://fastapi.tiangolo.com/tutorial/",
+    "doc_title": "fastapi.tiangolo.com",
+    "heading_path": "Tutorial - User Guide[¶](#tutorial-user-guide \"Permanent link\")",
+    "text": "This tutorial shows you how to use **FastAPI** with most of its features, step by step.\nEach section gradually builds on the previous ones, but it's structured to separate topics, so that you can go directly to any specific one to solve your specific API needs.\nIt is also built to work as a future reference so you can come back and see exactly what you need.",
+    "score": 0.0
+  },
+  {
+    "user_id": "E2E-FULLFLOW",
+    "course_id": "CUSTOM-fastapi-556675fb",
+    "source_id": "SRC-3883e128233b",
+    "source_type": "web",
+    "source_url": "https://fastapi.tiangolo.com/tutorial/",
+    "doc_title": "fastapi.tiangolo.com",
+    "heading_path": "Tutorial - User Guide[¶](#tutorial-user-guide \"Permanent link\") > Run the code[¶](#run-the-code \"Permanent link\")",
+    "text": "All the code blocks can be copied and used directly (they are actually tested Python files).\nTo run any of the examples, copy the code to a file `main.py`, and start `fastapi dev` with `uv run`:\n```\n $  $ color = \"#4E9A06\"       FastAPI  Starting development server 🚀   FastAPI  Starting development server 🚀  FastAPI   Searching for package file structure from directories  Searching for package file structure from directories with __init__.py files  with __init__.py files Importing from /home/user/code/awesomeapp  Importing from /home/user/code/awesomeapp    module  🐍 main.py   module  🐍 main.py  module    code  Importing the FastAPI app object from the module with   code  Importing the FastAPI app object from the module with  code  the following code:  the following code:   from main import app  from main import app    app  Using import string: main:app   app  Using import string: main:app  app    server  Server started at http://127.0.0.1:8000   server  Server started at http://127.0.0.1:8000  server   server  Documentation at http://127.0.0.1:8000/docs   server  Documentation at http://127.0.0.1:8000/docs  server    tip  Running in development mode, for production use:   tip  Running in development mode, for production use:  tip  fastapi run  fastapi run   Logs:  Logs:    INFO  Will watch for changes in these directories:   INFO  Will watch for changes in these directories:  INFO  ['/home/user/code/awesomeapp']  ['/home/user/code/awesomeapp']  INFO  Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C   INFO  Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C  INFO  to quit)  to quit)  INFO  Started reloader process [383138] using WatchFiles   INFO  Started reloader process [383138] using WatchFiles  INFO   INFO  Started server process [383153]   INFO  Started server process [383153]  INFO   INFO  Waiting for application startup.   INFO  Waiting for application startup.  INFO   INFO  Application startup complete.   INFO  Application startup complete.  INFO\n```\nIt is **HIGHLY encouraged** that you write or copy the code, edit it and run it locally.\nUsing it in your editor is what really shows you the benefits of FastAPI, seeing how little code you have to write, all the type checks, autocompletion, etc.\n---",
+    "score": 0.0
+  },
+  {
+    "user_id": "E2E-FULLFLOW",
+    "course_id": "CUSTOM-fastapi-556675fb",
+    "source_id": "SRC-3883e128233b",
+    "source_type": "web",
+    "source_url": "https://fastapi.tiangolo.com/tutorial/",
+    "doc_title": "fastapi.tiangolo.com",
+    "heading_path": "Tutorial - User Guide[¶](#tutorial-user-guide \"Permanent link\") > Install FastAPI[¶](#install-fastapi \"Permanent link\")",
+    "text": "The first step is to set up your project and add FastAPI.\nInstall [`uv`](https://docs.astral.sh/uv/getting-started/installation/), then create a project and add FastAPI:\n```\n$ uv init awesome-project --bare $    $ cd awesome-project $ cd  $ uv add \"fastapi[standard]\" $   \"fastapi[standard]\"  ---> 100% ---> 100%\n```\n`uv add` creates the project's virtual environment in `.venv`, adds FastAPI to `pyproject.toml`, and creates `uv.lock` so the same package versions can be installed later.\n What these commands do\n* `uv init`: create a new Python project.\n* `awesome-project`: create the project in a new directory with this name.\n* `--bare`: create only the minimal `pyproject.toml` file, without generating a sample `main.py`, `README.md`, or other files. You will create the application files yourself in the next steps of this tutorial.\nThen `cd awesome-project` enters the new project directory before adding FastAPI.\n`uv` will use a compatible Python version already installed on your system, or download one if needed.\nWhen you run `uv add`, it selects compatible versions of FastAPI and all the packages FastAPI depends on. It records the exact versions in `uv.lock`, making it possible to install the same package versions later on another computer or when deploying the application.\nCreating or updating this file is called [**locking** the project dependencies](https://docs.astral.sh/uv/concepts/projects/sync/). `uv` does this automatically when you add a package.\n  FastAPI installation options\nWhen you install with `uv add \"fastapi[standard]\"` it comes with some default optional standard dependencies, including `fastapi-cloud-cli`, which allows you to deploy to [FastAPI Cloud](https://fastapicloud.com).\nIf you don't want to have those optional dependencies, you can instead install `uv add fastapi`.\nIf you want to install the standard dependencies but without the `fastapi-cloud-cli`, you can install with `uv add \"fastapi[standard-no-fastapi-cloud-cli]\"`.\n  Using `pip` instead\nIf you prefer to manage a virtual environment and packages manually, create and activate a virtual environment and then install FastAPI with `pip install \"fastapi[standard]\"`.\nRead the [Virtual Environments guide](https://tiangolo.com/guides/virtual-environments/) for the detailed steps.",
+    "score": 0.0
+  },
+  {
+    "user_id": "E2E-FULLFLOW",
+    "course_id": "CUSTOM-fastapi-556675fb",
+    "source_id": "SRC-3883e128233b",
+    "source_type": "web",
+    "source_url": "https://fastapi.tiangolo.com/tutorial/",
+    "doc_title": "fastapi.tiangolo.com",
+    "heading_path": "Tutorial - User Guide[¶](#tutorial-user-guide \"Permanent link\") > AI Agent Skills[¶](#ai-agent-skills \"Permanent link\")",
+    "text": "FastAPI includes an official skill for AI coding agents. It is bundled with the package, so its guidance stays aligned with the version of FastAPI installed in your project and updates when you update FastAPI.\nAfter installing FastAPI in your project, you can install the skill with [Library Skills](https://library-skills.io):\n```\nuvx library-skills\n```\nNote\n`uvx` is an alias for `uv tool run`. It runs Library Skills in a temporary, isolated environment while Library Skills scans the packages installed in your project.\nThe skill is compatible with Codex, Claude Code, Cursor, GitHub Copilot, Gemini CLI, Pi, OpenCode, and most other coding agents. For Claude Code, select `.claude/skills` when asked where to install the skill.",
+    "score": 0.0
+  },
+  {
+    "user_id": "E2E-FULLFLOW",
+    "course_id": "CUSTOM-fastapi-556675fb",
+    "source_id": "SRC-3883e128233b",
+    "source_type": "web",
+    "source_url": "https://fastapi.tiangolo.com/tutorial/",
+    "doc_title": "fastapi.tiangolo.com",
+    "heading_path": "Tutorial - User Guide[¶](#tutorial-user-guide \"Permanent link\") > Advanced User Guide[¶](#advanced-user-guide \"Permanent link\")",
+    "text": "There is also an **Advanced User Guide** that you can read later after this **Tutorial - User Guide**.\nThe **Advanced User Guide** builds on this one, uses the same concepts, and teaches you some extra features.\nBut you should first read the **Tutorial - User Guide** (what you are reading right now).\nIt's designed so that you can build a complete application with just the **Tutorial - User Guide**, and then extend it in different ways, depending on your needs, using some of the additional ideas from the **Advanced User Guide**.",
+    "score": 0.0
   }
 ]

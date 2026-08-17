@@ -75,9 +75,13 @@ class DecompositionResult(BaseModel):
 
 
 class KnowledgeNode(BaseModel):
-    id: str = Field(description="知识节点稳定标识（即 kc_id）")
+    id: str = Field(description="知识节点稳定标识（canonical KC ID，如 embedding / numpy_array）")
     title: str = Field(description="知识点名称")
     category: str = Field(description="知识点分类")
+    canonical_key: Optional[str] = Field(
+        default=None,
+        description="LLM 草稿阶段提供的可选规范化键；若合法则作为 canonical ID 候选，否则按标题派生",
+    )
     parent_id: Optional[str] = Field(default=None, description="父节点标识")
     summary: str = Field(description="知识点摘要")
     prerequisites: List[str] = Field(default_factory=list, description="前置知识点名称")

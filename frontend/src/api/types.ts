@@ -131,3 +131,88 @@ export interface ChatResponse {
   profile_updates: string[];
   context?: ChatContext;
 }
+
+// ---------------------------------------------------------------------------
+// Adaptive Learning Map + Tutor
+// ---------------------------------------------------------------------------
+
+export type KCStatus = "unknown" | "weak" | "learning" | "mastered";
+
+export interface LearningMapEvidence {
+  kc_id: string;
+  type: string;
+  correctness: string | null;
+  difficulty: number | null;
+  hint_level: number | null;
+  confidence: number | null;
+  misconceptions: string[];
+  timestamp: string | null;
+}
+
+export interface LearningMapNode {
+  id: string;
+  name: string;
+  description: string;
+  difficulty: string;
+  mastery: number | null; // null = 未评估 (UNKNOWN)，绝不为 0
+  confidence: number | null;
+  status: KCStatus;
+  recommended: boolean;
+  locked: boolean;
+  prerequisites: string[];
+  misconceptions: string[];
+  recent_evidence: LearningMapEvidence[];
+  reason_codes: string[];
+}
+
+export interface LearningMapEdge {
+  source: string;
+  target: string;
+  relation: string;
+  weight: number;
+}
+
+export interface LearningMapResponse {
+  course_id: string;
+  goal: string;
+  nodes: LearningMapNode[];
+  edges: LearningMapEdge[];
+  recommended_path: string[];
+  current_recommended_kc: string | null;
+  /** 图来源：generated（动态生成）/ builtin（内置）/ legacy；调试用。 */
+  graph_source?: string | null;
+  graph_version?: number | null;
+}
+
+export type TeachingAction =
+  | "ASSESS"
+  | "PROBE"
+  | "HINT"
+  | "EXPLAIN"
+  | "EXAMPLE"
+  | "COMPARE"
+  | "PRACTICE"
+  | "FEEDBACK"
+  | "REFLECT"
+  | "CHALLENGE"
+  | "APPLICATION";
+
+export interface TutorTurnRequest {
+  kc_id: string;
+  message?: string | null;
+  learning_goal?: string | null;
+  difficulty?: number;
+}
+
+export interface TutorResponse {
+  kc_id: string;
+  teaching_action: TeachingAction;
+  message: string;
+  learner_state_changed: boolean;
+  learning_map_changed: boolean;
+  mastery: number | null;
+  confidence: number | null;
+  reason_codes: string[];
+  next_recommended_kc: string | null;
+  explanation: string;
+}

@@ -2,6 +2,7 @@ import re
 from math import floor
 from typing import Iterable, List
 
+from edu_agent.workflows.study_plan.canonicalizer import canonicalize_kc_id
 from edu_agent.workflows.study_plan.schemas import (
     DecompositionResult,
     KnowledgeMap,
@@ -13,6 +14,7 @@ from edu_agent.workflows.study_plan.schemas import (
 
 
 def _clean_title(value: str) -> str:
+    max_length = 32
     value = re.sub(r"^[\d一二三四五六七八九十]+[.、：:]\s*", "", value.strip())
     value = re.sub(r"^(先|再|随后|最后)", "", value).strip()
     value = re.sub(r"^(系统)?(学习|理解|掌握|了解|熟悉)\s*", "", value).strip()
@@ -22,12 +24,27 @@ def _clean_title(value: str) -> str:
             if 2 <= len(prefix) <= 24:
                 value = prefix
                 break
-    if len(value) > 24:
-        value = re.split(r"[，；。]|并(?:完成|实现|使用|验证|说明)|以及|从而|以便", value, maxsplit=1)[0].strip()
-    if len(value) > 24 and "、" in value:
+    if len(value) > max_length:
+        # 标题只保留主体，括号里的举例继续放在 summary；避免先按括号内逗号切开，
+        # 产生「Python 类型注解语法（如 Optional」这类残缺标题。
+        without_examples = re.sub(r"\s*[（(][^）)]*[）)]", "", value).strip()
+        if len(without_examples) >= 2:
+            value = without_examples
+    if len(value) > max_length:
+        value = re.split(
+            r"[，；。]|并(?:完成|实现|使用|验证|说明)|以及|从而|以便|与(?=[A-Za-z\u4e00-\u9fff])",
+            value,
+            maxsplit=1,
+        )[0].strip()
+    if len(value) > max_length and "、" in value:
         value = value.split("、", 1)[0].strip()
-    if len(value) > 24:
-        value = f"{value[:21].rstrip()}..."
+    if len(value) > max_length:
+        shortened = value[:max_length - 1].rstrip()
+        # 最终硬截断也不能留下未闭合括号或书名号。
+        for opener, closer in (("（", "）"), ("(", ")"), ("《", "》"), ("「", "」")):
+            if shortened.count(opener) > shortened.count(closer):
+                shortened = shortened[:shortened.rfind(opener)].rstrip()
+        value = f"{shortened}…"
     return value or "未命名知识点"
 
 
@@ -81,7 +98,7 @@ def _fit_nodes_to_budget(
     """保持三个阶段都有内容，同时让 UI 步骤总分钟数不超过用户预算。
 
     LLM 可能把主题拆成几十个概念。UI 如果不做最后一道确定性约束，就会出现
-    “3 天 × 20 分钟，却生成 22 个、每个至少 30 分钟”的不可执行计划。
+    "3 天 × 20 分钟，却生成 22 个、每个至少 30 分钟"的不可执行计划。
     这里把学习周期视为硬预算：优先每阶段保留一个节点，再按核心→基础→应用
     轮询补充；仅在原始建议总时长超预算时按权重缩放分钟数。
     """
@@ -130,10 +147,10 @@ def _fit_nodes_to_budget(
         for offset in range(remaining):
             allocated[order[offset % len(order)]] += 1
 
-    # 截断后重新编号，保持 kc_id/recommended_path 连续稳定。
+    # 截断后保留 canonical id（不再重排为 knowledge-N），仅更新预估分钟数。
     return [
-        node.model_copy(update={"id": f"knowledge-{index}", "estimated_minutes": minutes})
-        for index, (node, minutes) in enumerate(zip(selected, allocated), start=1)
+        node.model_copy(update={"estimated_minutes": minutes})
+        for node, minutes in zip(selected, allocated)
     ]
 
 
@@ -173,7 +190,7 @@ def build_knowledge_map(
     ) -> KnowledgeNode:
         nonlocal node_index
         node = KnowledgeNode(
-            id=f"knowledge-{node_index}",
+            id=canonicalize_kc_id(title),
             title=title,
             category=category,
             summary=summary,

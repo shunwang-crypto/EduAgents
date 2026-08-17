@@ -319,10 +319,15 @@ def test_stage_node_ordering():
     km = build_knowledge_map(si, dec)
     orders = [n.stage_order for n in km.nodes]
     assert orders == sorted(orders)  # 1,1,2,3,3 顺序稳定
-    # seq 编号连续且顺序与 stage 一致
-    ids = [int(n.id.split("-")[1]) for n in km.nodes]
-    assert ids == list(range(1, len(km.nodes) + 1))
-    assert km.recommended_path == [n.id for n in km.nodes]
+    # 新版：节点 id 为 canonical KC ID（不再是 knowledge-N 位置编号）
+    import re as _re
+
+    ids = [n.id for n in km.nodes]
+    assert all(not _re.match(r"^knowledge-\d+$", i) for i in ids), ids
+    # recommended_path 顺序与节点顺序一致，且全部为 canonical id
+    assert km.recommended_path == ids
+    # canonical id 唯一
+    assert len(ids) == len(set(ids))
 
 
 # ---------------------------------------------------------------- 18. plan finalize rollback

@@ -369,3 +369,83 @@ def list_conversations(course_id: Optional[str] = None, limit: int = Query(6, ge
 @router.get("/health")
 def health() -> dict:
     return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# Learning Map + Tutor（Multi-Agent Adaptive Intelligent Tutoring）
+# ---------------------------------------------------------------------------
+
+
+def _learner_model() -> "LearnerModelService":
+    from edu_agent.learner_model.service import LearnerModelService
+
+    return LearnerModelService()
+
+
+def _learning_map_service() -> "LearningMapService":
+    from edu_agent.application.learning_map_service import LearningMapService
+
+    return LearningMapService(_learner_model())
+
+
+def _tutoring_workflow(course_id: str, user_id: str) -> "TutoringWorkflow":
+    from edu_agent.workflows.tutoring.workflow import TutoringWorkflow
+
+    return TutoringWorkflow(course_id, _learner_model(), user_id=user_id)
+
+
+class TutorTurnRequest(BaseModel):
+    """POST /api/courses/{course_id}/tutor/turn 请求体。
+
+    message=None 表示开始 / 下一轮教学（ASSESS / 新 KC）。
+    """
+    kc_id: str = Field(description="当前学习的知识组件 ID（稳定 KC id）")
+    message: Optional[str] = Field(default=None, description="学习者回复；None=开始")
+    learning_goal: Optional[str] = Field(default=None)
+    difficulty: int = Field(default=1, ge=1, le=3)
+
+
+@router.get("/courses/{course_id}/learning-map")
+def get_learning_map(course_id: str, user_id: str = Depends(_user_id)) -> dict:
+    """返回该用户的 Learning Map（KC DAG + learner state 叠加）。
+
+    未评估 KC 的 mastery 必须为 null（UNKNOWN），绝不为 0。
+    """
+    try:
+        svc = _learning_map_service()
+        resp = svc.build(user_id, course_id)
+        return resp.model_dump(mode="json")
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/courses/{course_id}/tutor/turn")
+def tutor_turn(course_id: str, req: TutorTurnRequest,
+               user_id: str = Depends(_user_id)) -> dict:
+    """一轮教学交互闭环：Planner → Tutor / (Diagnoser → Evidence → LearnerModel → Re-plan)。"""
+    try:
+        wf = _tutoring_workflow(course_id, user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    from edu_agent.workflows.tutoring.schemas import TutorRequest
+
+    t_req = TutorRequest(
+        kc_id=req.kc_id,
+        message=req.message,
+        learning_goal=req.learning_goal,
+        difficulty=req.difficulty,
+    )
+    try:
+        if req.message is None:
+            resp = wf.start_turn(user_id, t_req)
+        else:
+            resp = wf.answer_turn(user_id, t_req)
+        return resp.model_dump(mode="json")
+    except LLMConfigurationError:
+        raise HTTPException(
+            status_code=503,
+            detail="未配置 AI 模型，请先配置 API Key 后再使用 Tutor",
+        ) from None
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc

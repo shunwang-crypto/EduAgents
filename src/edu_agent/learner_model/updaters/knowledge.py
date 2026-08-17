@@ -55,3 +55,73 @@ def apply_knowledge_evidence(
             "before": {"last_evidence_at": existing.get("last_evidence_at")},
             "after": {"last_evidence_at": now}, "reason": f"{evidence.event_type} exposure",
             "scope": "course"}
+
+
+def apply_tutoring_evidence(
+    repo: LearnerRepository, evidence: Dict[str, Any]
+) -> Dict[str, Any]:
+    """处理一条 tutor 教学证据（确定性 mastery 更新）。
+
+    evidence 必须包含：
+      user_id / course_id / kc_id / correctness / difficulty / hint_level /
+      confidence（诊断置信度） / misconceptions / evidence_type / teaching_action
+
+    mastery 由 mastery.py 的 compute_mastery_delta + apply_delta 计算，绝不接受
+    LLM 直接给的 mastery 值。
+    """
+    from edu_agent.adaptive.thresholds import classify_status
+    from edu_agent.workflows.tutoring.mastery import apply_delta, compute_mastery_delta
+
+    user_id = evidence.get("user_id", "")
+    course_id = evidence.get("course_id", "")
+    kc_id = evidence.get("kc_id", "")
+    if not kc_id or not user_id:
+        return {"operation": "NONE", "reason": "missing kc/user", "scope": "course"}
+
+    correctness = evidence.get("correctness", "incorrect")
+    difficulty = int(evidence.get("difficulty", 1))
+    hint_level = int(evidence.get("hint_level", 0))
+    misconceptions = evidence.get("misconceptions") or []
+
+    mastery_delta, conf_delta = compute_mastery_delta(
+        correctness, difficulty, hint_level, misconceptions
+    )
+
+    now = _now_iso()
+    existing = repo.get_kc(user_id, course_id, kc_id)
+    prev_mastery = existing.get("mastery") if existing else None
+    prev_conf = existing.get("confidence") if existing else None
+
+    new_mastery, new_conf = apply_delta(
+        prev_mastery, prev_conf, mastery_delta, conf_delta
+    )
+    new_status = classify_status(new_mastery)
+
+    if existing is None:
+        repo.upsert_kc(
+            {"user_id": user_id, "course_id": course_id, "kc_id": kc_id,
+             "kc_name": evidence.get("kc_name") or kc_id,
+             "mastery": new_mastery, "confidence": new_conf, "status": new_status,
+             "trend": None, "evidence_count": 1, "first_evidence_at": now,
+             "last_evidence_at": now, "is_estimated": 0,
+             "created_at": now, "updated_at": now}
+        )
+        return {"operation": "CREATE", "entity": f"kc:{kc_id}", "before": None,
+                "after": {"mastery": new_mastery, "confidence": new_conf, "status": new_status},
+                "reason": "first tutoring evidence", "scope": "course"}
+
+    repo.upsert_kc(
+        {"user_id": user_id, "course_id": course_id, "kc_id": kc_id,
+         "kc_name": existing.get("kc_name") or kc_id,
+         "mastery": new_mastery, "confidence": new_conf, "status": new_status,
+         "trend": existing.get("trend"),
+         "evidence_count": int(existing.get("evidence_count", 0)) + 1,
+         "first_evidence_at": existing.get("first_evidence_at") or now,
+         "last_evidence_at": now, "is_estimated": existing.get("is_estimated", 0),
+         "created_at": existing.get("created_at") or now, "updated_at": now}
+    )
+    return {"operation": "UPDATE", "entity": f"kc:{kc_id}",
+            "before": {"mastery": prev_mastery, "confidence": prev_conf,
+                       "status": existing.get("status")},
+            "after": {"mastery": new_mastery, "confidence": new_conf, "status": new_status},
+            "reason": f"tutoring {correctness}", "scope": "course"}

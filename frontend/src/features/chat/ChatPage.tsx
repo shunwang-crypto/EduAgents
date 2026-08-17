@@ -39,6 +39,8 @@ export function ChatPage() {
   // historyError 保存具体错误（ApiError 含 status / dev detail），不再吞掉 404/401/500/网络错误
   const [historyError, setHistoryError] = useState<ApiError | Error | null>(null);
   const [sendError, setSendError] = useState("");
+  // 「忘记 X」未命中任何记忆时的提示（否则用户以为已删除，实际没有）
+  const [memoryNotice, setMemoryNotice] = useState("");
   const [retryText, setRetryText] = useState("");
   const [retryMsgId, setRetryMsgId] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -156,6 +158,7 @@ export function ChatPage() {
       const reqChatSeq = chatSeq.current;
       setLoading(true);
       setSendError("");
+      setMemoryNotice("");
       setRetryText("");
       setRetryMsgId(null);
       stickToBottom.current = true;
@@ -183,6 +186,13 @@ export function ChatPage() {
           created_at: reply.created_at,
         };
         setMessages((prev) => [...prev, aiMsg]);
+        // 「忘记 X」没命中任何已有记忆 → 提示（响应里 delete:no-match 前缀标记）
+        const missedDelete = (reply.profile_updates ?? []).some((u) =>
+          u.startsWith("delete:no-match:")
+        );
+        if (missedDelete) {
+          setMemoryNotice("没有找到与这条描述匹配的记忆；可换更具体的关键词再试（如「忘记我学过 Python」）");
+        }
         // 通知 Sidebar 刷新「最近对话」列表（标题生成 / 新对话）；不改变本页消息状态机
         notifyConversationUpdated({ courseId: courseId ?? null, conversationId: reply.conversation_id });
       } catch (e) {
@@ -313,6 +323,7 @@ export function ChatPage() {
             </div>
           )}
           {sendError && <InlineError message={sendError} onRetry={retrySend} />}
+          {memoryNotice && <div className="step-chip">{memoryNotice}</div>}
         </div>
       </div>
 

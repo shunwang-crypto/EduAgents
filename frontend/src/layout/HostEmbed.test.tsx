@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, beforeAll } from "vitest";
-import { render, waitFor, screen } from "@testing-library/react";
+import { render, waitFor, screen, fireEvent } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { LearningApp } from "../app/router";
 // 与 LearningApp 内组件同一份 ApiError 类（同模块 → instanceof 成立）
@@ -79,6 +79,9 @@ describe("LearningApp host embedding", () => {
     // StudyPlanPage 以 `e instanceof ApiError && e.status === 404` 判定空计划，需用真正的 ApiError
     (mockApi.getPlan as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new ApiError(404, "no plan"));
     renderHost("/host/learning/courses/PY/plan");
+    // 计划内容位于「计划列表」标签页
+    await waitFor(() => expect(screen.getByText("计划列表")).toBeTruthy());
+    fireEvent.click(screen.getByText("计划列表"));
     await waitFor(() => expect(screen.getByText("还没有学习计划")).toBeTruthy());
   });
 });

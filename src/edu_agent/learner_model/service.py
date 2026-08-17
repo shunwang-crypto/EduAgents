@@ -241,6 +241,22 @@ class LearnerModelService:
             return {"operation": "CREATE", "entity": f"course:{course_id}",
                     "before": None, "after": {"course_id": course_id},
                     "reason": "course created", "scope": "course"}
+        if etype == "TUTOR_EVIDENCE" and kc_id:
+            # 教学证据：确定性 mastery 更新（由 updater 计算 delta，不接受 LLM 直接 mastery）
+            evidence = {
+                "user_id": user_id,
+                "course_id": course_id,
+                "kc_id": kc_id,
+                "kc_name": payload.get("kc_name", ""),
+                "correctness": payload.get("correctness", "incorrect"),
+                "difficulty": payload.get("difficulty", 1),
+                "hint_level": payload.get("hint_level", 0),
+                "confidence": payload.get("confidence"),
+                "misconceptions": payload.get("misconceptions", []),
+                "evidence_type": payload.get("evidence_type", "tutor_turn"),
+                "teaching_action": payload.get("teaching_action", ""),
+            }
+            return knowledge_updater.apply_tutoring_evidence(self._repo, evidence)
         return {"operation": "NONE", "scope": "course", "reason": f"unhandled {etype}"}
 
     def _log_change(self, event: Dict[str, Any], change: Dict[str, Any]) -> None:
