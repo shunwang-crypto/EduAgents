@@ -87,6 +87,12 @@ def apply_tutoring_evidence(
         correctness, difficulty, hint_level, misconceptions
     )
 
+    # P1-6：弱证据（无法合理判断 / 规则不确定）不允许快速提高 mastery。
+    # 即使判为 correct，weak evidence 也只给 0 增益（或负增益），绝不上涨。
+    evidence_strength = (evidence.get("evidence_strength") or "medium").lower()
+    if evidence_strength == "weak":
+        mastery_delta = min(mastery_delta, 0.0)
+
     now = _now_iso()
     existing = repo.get_kc(user_id, course_id, kc_id)
     prev_mastery = existing.get("mastery") if existing else None

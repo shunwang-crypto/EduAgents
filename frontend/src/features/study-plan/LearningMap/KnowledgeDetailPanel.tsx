@@ -1,5 +1,6 @@
 import type { LearningMapNode } from "../../../api/types";
 import { masteryText, STATUS_STYLES } from "./statusStyles";
+import { reasonCodeToHuman } from "./reasonText";
 
 interface Props {
   node: LearningMapNode | null;
@@ -16,17 +17,35 @@ export default function KnowledgeDetailPanel({ node, allNodes }: Props) {
   }
   const st = STATUS_STYLES[node.status];
   const nameOf = (id: string) => allNodes.find((n) => n.id === id)?.name ?? id;
+  const prereqName = (id: string) => {
+    const pn = allNodes.find((n) => n.id === id);
+    return pn ? `${nameOf(id)}（${STATUS_STYLES[pn.status].label}）` : nameOf(id);
+  };
 
   return (
     <div style={{ padding: 16, fontSize: 13, color: "#1e293b" }}>
-      <h3 style={{ margin: "0 0 8px" }}>{node.name}</h3>
-      <p style={{ color: "#64748b", marginTop: 0 }}>{node.description}</p>
+      <h3 style={{ margin: "0 0 4px" }}>{node.name}</h3>
+      <div style={{ color: "#64748b", fontSize: 12, marginBottom: 8 }}>{node.description}</div>
 
-      <Row label="掌握度" value={masteryText(node.mastery)} />
-      <Row label="置信度" value={node.confidence === null ? "?" : `${Math.round(node.confidence * 100)}%`} />
-      <Row label="状态" value={<span style={{ color: st.color, fontWeight: 600 }}>{st.label}</span>} />
+      {/* 主信息：掌握度（大）；Confidence 次级（评估可信度） */}
+      <Row
+        label="掌握度"
+        value={
+          <span style={{ fontSize: 16, fontWeight: 700 }}>
+            {masteryText(node.mastery)}
+          </span>
+        }
+      />
+      <Row
+        label="评估可信度"
+        value={node.confidence === null ? "?" : `${Math.round(node.confidence * 100)}%`}
+      />
+      <Row
+        label="学习状态"
+        value={<span style={{ color: st.color, fontWeight: 600 }}>{st.label}</span>}
+      />
 
-      <Section title="前置依赖">
+      <Section title="前置知识">
         {node.prerequisites.length === 0 ? (
           <span style={{ color: "#94a3b8" }}>无</span>
         ) : (
@@ -34,11 +53,8 @@ export default function KnowledgeDetailPanel({ node, allNodes }: Props) {
             const pn = allNodes.find((n) => n.id === p);
             const ok = pn?.status === "mastered";
             return (
-              <div key={p}>
-                {ok ? "✓" : "○"} {nameOf(p)}
-                <span style={{ color: ok ? "#15803d" : "#b45309" }}>
-                  {" "}({pn ? STATUS_STYLES[pn.status].label : "?"})
-                </span>
+              <div key={p} style={{ color: ok ? "#15803d" : "#b45309" }}>
+                {ok ? "✓" : "○"} {prereqName(p)}
               </div>
             );
           })
@@ -53,12 +69,13 @@ export default function KnowledgeDetailPanel({ node, allNodes }: Props) {
             <div key={i}>
               {ev.correctness === "correct" ? "✓" : ev.correctness === "incorrect" ? "×" : "○"}{" "}
               {ev.type}
+              {ev.timestamp ? <span style={{ color: "#94a3b8" }}> · {ev.timestamp}</span> : null}
             </div>
           ))
         )}
       </Section>
 
-      <Section title="误区">
+      <Section title="发现误区">
         {node.misconceptions.length === 0 ? (
           <span style={{ color: "#94a3b8" }}>无</span>
         ) : (
@@ -68,34 +85,32 @@ export default function KnowledgeDetailPanel({ node, allNodes }: Props) {
         )}
       </Section>
 
-      <Section title="推荐动作">
-        {node.recommended ? (
+      <Section title="系统推荐动作">
+        {node.locked ? (
+          <div style={{ color: "#9ca3af" }}>
+            需先掌握以下前置知识：
+            <ul style={{ margin: "4px 0 0 18px", padding: 0 }}>
+              {node.prerequisites
+                .filter((p) => allNodes.find((n) => n.id === p)?.status !== "mastered")
+                .map((p) => (
+                  <li key={p}>{prereqName(p)}</li>
+                ))}
+            </ul>
+          </div>
+        ) : node.recommended ? (
           <span style={{ color: "#6366f1", fontWeight: 600 }}>建议优先学习</span>
-        ) : node.locked ? (
-          <span style={{ color: "#9ca3af" }}>等待前置解锁</span>
         ) : (
           <span style={{ color: "#15803d" }}>已掌握，可复习</span>
         )}
       </Section>
 
       {node.reason_codes.length > 0 && (
-        <Section title="推荐原因">
-          <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+        <Section title="为什么推荐这个知识点？">
+          <ul style={{ margin: 0, paddingLeft: 18, color: "#475569" }}>
             {node.reason_codes.map((rc) => (
-              <span
-                key={rc}
-                style={{
-                  fontSize: 10,
-                  background: "#eef2ff",
-                  color: "#4338ca",
-                  borderRadius: 6,
-                  padding: "1px 6px",
-                }}
-              >
-                {rc}
-              </span>
+              <li key={rc}>{reasonCodeToHuman(rc)}</li>
             ))}
-          </div>
+          </ul>
         </Section>
       )}
     </div>
@@ -104,7 +119,14 @@ export default function KnowledgeDetailPanel({ node, allNodes }: Props) {
 
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
   return (
-    <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", borderBottom: "1px solid #f1f5f9" }}>
+    <div
+      style={{
+        display: "flex",
+        justifyContent: "space-between",
+        padding: "3px 0",
+        borderBottom: "1px solid #f1f5f9",
+      }}
+    >
       <span style={{ color: "#64748b" }}>{label}</span>
       <b>{value}</b>
     </div>

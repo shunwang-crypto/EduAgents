@@ -202,6 +202,8 @@ export interface TutorTurnRequest {
   message?: string | null;
   learning_goal?: string | null;
   difficulty?: number;
+  /** P1-5：本轮教学上下文 id（start 返回后 answer 回传；新前端必须传）。 */
+  turn_id?: string | null;
 }
 
 export interface TutorResponse {
@@ -215,4 +217,6 @@ export interface TutorResponse {
   reason_codes: string[];
   next_recommended_kc: string | null;
   explanation: string;
+  /** P1-5：本轮教学上下文 id（start 返回；answer 回传）。 */
+  turn_id?: string | null;
 }

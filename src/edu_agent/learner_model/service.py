@@ -252,6 +252,9 @@ class LearnerModelService:
                 "difficulty": payload.get("difficulty", 1),
                 "hint_level": payload.get("hint_level", 0),
                 "confidence": payload.get("confidence"),
+                # P1-6：弱证据不允许快速提高 mastery（updater 据此封顶 delta）。
+                "evidence_strength": payload.get("evidence_strength")
+                    or event.get("evidence_strength") or "medium",
                 "misconceptions": payload.get("misconceptions", []),
                 "evidence_type": payload.get("evidence_type", "tutor_turn"),
                 "teaching_action": payload.get("teaching_action", ""),

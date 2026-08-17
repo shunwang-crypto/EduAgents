@@ -191,8 +191,14 @@ class KnowledgeMapCanonicalizer:
             cid = id_map[node.get("id")]
             title_to_cid[normalize_title(node.get("title", ""))] = cid
 
+        # P1-2：同一 canonical KC 必须真正去重为一个 component。
+        # （duplicate canonical key 合并后，多个原始节点可能映射到同一 cid。）
+        seen_components: set = set()
         for node in nodes:
             cid = id_map[node.get("id")]
+            if cid in seen_components:
+                continue
+            seen_components.add(cid)
             components.append(
                 KnowledgeComponent(
                     kc_id=cid,
@@ -271,14 +277,64 @@ class KnowledgeMapCanonicalizer:
         return result
 
     def safe_fallback(self, km: KnowledgeMap) -> Course:
-        """LLM 修复仍失败时，根据 difficulty + 原始顺序构造安全 DAG。"""
-        nodes = [_node_as_dict(n) for n in (km.nodes or [])]
-        nodes = sorted(nodes, key=lambda n: _stable_sort_key(n))
-        components: List[KnowledgeComponent] = []
-        relations: List[KCRelation] = []
-        prev: Optional[str] = None
+        """LLM 修复仍失败时，根据 difficulty + 原始顺序构造安全 DAG。
+
+        保留历史行为：只返回 Course。完整结果（含 temp→canonical id 映射）见
+        ``safe_fallback_result``，供调用方同步 remap StudyPlan。
+        """
+        return self.safe_fallback_result(km).course
+
+    def safe_fallback_result(self, km: KnowledgeMap) -> CanonicalizationResult:
+        """LLM 修复仍失败时构造安全 DAG，并返回 temp id → canonical id 映射。
+
+        P0-3 invariant：fallback 的 canonical 图与其 temp id 映射必须同时产出，
+        否则 StudyPlan 会保留草稿的 ``knowledge-N`` 等临时 id，而 Graph 已是
+        canonical id，导致 Plan/Graph/Tutor/LearnerModel 的 KC id 不一致。
+
+        同时处理 P1-2：同一 canonical KC（同标题 / 同 canonical_key）必须真正
+        合并为一个 component，并完成 prerequisite 重映射（含去重、去自环）。
+        """
+        raw_nodes = [_node_as_dict(n) for n in (km.nodes or [])]
+        # 稳定排序：难度低优先、标题字典序（保证 DAG 确定性）。
+        nodes = sorted(raw_nodes, key=lambda n: _stable_sort_key(n))
+        result_collisions: List[str] = []
+
+        # 1) 为每个草稿节点分配 canonical id，并检测重复 canonical KC（真正去重）。
+        id_map: Dict[str, str] = {}          # 原始 node.id → canonical id
+        canonical_ids: Dict[str, str] = {}   # canonical id → 原始 node.id
+        title_to_cid: Dict[str, str] = {}    # 规范化标题 → canonical id
         for node in nodes:
+            source_id = node.get("id")
             cid = canonicalize_kc_id(node.get("title", ""), node.get("canonical_key"))
+            other_title = canonical_ids.get(cid)
+            if other_title is not None and other_title != source_id:
+                # 不同原始节点映射到同一 canonical id：
+                # 若规范化标题相同 → 视为同一知识点，合并（复用已有 component）。
+                other = next((nd for nd in nodes if nd.get("id") == other_title), None)
+                if (other or {}).get("title", "") and \
+                        normalize_title(node.get("title", "")) == normalize_title((other or {}).get("title", "")):
+                    id_map[source_id] = cid
+                    result_collisions.append(cid)
+                    continue
+                # 不同知识点但 canonical_key 冲突 → 派生稳定 fallback id。
+                digest = hashlib.sha1(f"{cid}:{source_id}".encode("utf-8")).hexdigest()[:10]
+                cid = f"kc_{digest}"
+            # 仍冲突则再加熵。
+            while cid in canonical_ids and canonical_ids[cid] != source_id:
+                digest = hashlib.sha1(f"{cid}:{source_id}:x".encode("utf-8")).hexdigest()[:10]
+                cid = f"kc_{digest}"
+            id_map[source_id] = cid
+            canonical_ids[cid] = source_id
+            title_to_cid[normalize_title(node.get("title", ""))] = cid
+
+        # 2) 构造 components（去重：只对每个 canonical id 保留首个原始节点）。
+        components: List[KnowledgeComponent] = []
+        seen_components: set = set()
+        for node in nodes:
+            cid = id_map[node.get("id")]
+            if cid in seen_components:
+                continue
+            seen_components.add(cid)
             components.append(
                 KnowledgeComponent(
                     kc_id=cid,
@@ -289,11 +345,42 @@ class KnowledgeMapCanonicalizer:
                     tags=[],
                 )
             )
-            if prev is not None:
-                relations.append(
-                    KCRelation(from_kc=prev, to_kc=cid, relation="prerequisite")
+
+        # 3) 安全链式关系：把原始 prerequisites 映射为 canonical id。
+        #    关键：保证 DAG——只允许“排序在前的知识点”作为“排序在后的知识点”的前置。
+        #    若原始草稿带环，环上后出现的边会被丢弃，剩余边 + 顺序链仍构成无环图。
+        order = [c.kc_id for c in components]
+        pos = {cid: i for i, cid in enumerate(order)}
+        relations: List[KCRelation] = []
+        seen_edges: set = set()
+        for node in nodes:
+            cid = id_map[node.get("id")]
+            for prereq in node.get("prerequisites") or []:
+                prereq_norm = normalize_title(prereq)
+                pre_cid = (
+                    id_map.get(prereq)
+                    or title_to_cid.get(prereq_norm)
+                    or (prereq if prereq in canonical_ids else None)
                 )
-            prev = cid
+                if pre_cid is None or pre_cid == cid or pre_cid not in seen_components:
+                    continue
+                # DAG 保证：跳过回边（pre 在 cid 之后 → 会成环）。
+                if pos.get(pre_cid, -1) >= pos.get(cid, len(order)):
+                    continue
+                edge = (pre_cid, cid)
+                if edge in seen_edges:
+                    continue
+                seen_edges.add(edge)
+                relations.append(KCRelation(from_kc=pre_cid, to_kc=cid, relation="prerequisite"))
+
+        # 4) 顺序链兜底：把 components 按稳定顺序串成一条链，保证 DAG、连通与可达。
+        #    已存在的 prerequisite 边不去重链（链只在缺少前驱时补充）。
+        for i in range(len(order) - 1):
+            pre, cur = order[i], order[i + 1]
+            if (pre, cur) not in seen_edges:
+                seen_edges.add((pre, cur))
+                relations.append(KCRelation(from_kc=pre, to_kc=cur, relation="prerequisite"))
+
         logger.warning("using safe fallback DAG for course %s", self.course_id)
         course = Course.from_dag(
             course_id=self.course_id,
@@ -304,7 +391,13 @@ class KnowledgeMapCanonicalizer:
         )
         course._components = components
         course._relations = relations
-        return course
+        return CanonicalizationResult(
+            course=course,
+            fallback_used=True,
+            node_id_map=id_map,
+            graph_source="generated",
+            collisions=result_collisions,
+        )
 
 
 def _node_as_dict(node) -> dict:

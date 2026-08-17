@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Dict, List, Optional
 
 from edu_agent.adaptive.policies.heuristic import HeuristicAdaptivePolicy
@@ -26,6 +27,17 @@ from edu_agent.workflows.tutoring.schemas import (
 from edu_agent.workflows.tutoring.strategy import decide_action, tune_difficulty
 
 logger = logging.getLogger("edu_agent.tutoring.agents")
+
+
+def _looks_like_answer(msg: str) -> bool:
+    """粗略判断回答是否有实质内容（避免空话/重复问题被当作有效证据）。"""
+    if not msg:
+        return False
+    # 极短 / 只剩标点 / 单纯重复问题词汇 → 不视为有效作答
+    stripped = re.sub(r"[，。！？、；：,.!?;: ]", "", msg)
+    if len(stripped) < 2:
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -137,28 +149,36 @@ class Diagnoser:
         kc_id: str,
         learner_message: str,
         expected_answer_hint: Optional[str] = None,
+        teaching_action: Optional[str] = None,
     ) -> Diagnosis:
         kc = self.course.kc_by_id(kc_id)
         kc_title = kc.title if kc else kc_id
 
-        # 确定性回退：基于规则的关键词判断，保证离线可用
-        fallback = self._rule_based_diagnosis(kc_id, learner_message)
+        # 确定性回退：基于规则的关键词判断，保证离线可用。
+        # P1-6：规则必须参考原问题/评估提示，且不能靠“向量/相似”这类万能关键词判正确。
+        fallback = self._rule_based_diagnosis(
+            kc_id, kc_title, learner_message,
+            expected_answer_hint=expected_answer_hint,
+            teaching_action=teaching_action,
+        )
 
         try:
             llm = get_llm(temperature=0.0)
             from edu_agent.core.agent_runner import invoke_structured_output
 
             prompt = (
-                "你是一个严谨的诊断器。给定一个知识组件、学习目标相关提示，以及学习者的回答，"
-                "判断其是否正确、是否存在误区、证据强度如何。\n"
+                "你是一个严谨的诊断器。给定一个知识组件、学习目标相关提示、本轮教学动作、"
+                "本轮教学问题（评估提示），以及学习者的回答，判断其是否正确、是否存在误区、"
+                "证据强度如何。\n"
                 "不要输出思维链，只输出结构化判断。\n"
                 "correctness 取值：correct / partial / incorrect。\n"
-                "evidence_strength 取值：weak / medium / strong。\n"
+                "evidence_strength 取值：weak / medium / strong。无法合理判断时用 weak。\n"
                 "misconceptions 是简短的误区标识列表（英文 snake_case），没有则为空列表。"
             )
             values = {
                 "kc_id": kc_id,
                 "kc_title": kc_title,
+                "teaching_action": teaching_action or "",
                 "expected_hint": expected_answer_hint or "（未提供标准答案提示）",
                 "learner_message": learner_message or "（空回答）",
             }
@@ -171,23 +191,52 @@ class Diagnoser:
             logger.warning("Diagnoser LLM 不可用，使用规则回退：%s", exc)
             return fallback
 
-    def _rule_based_diagnosis(self, kc_id: str, message: str) -> Diagnosis:
+    def _rule_based_diagnosis(
+        self,
+        kc_id: str,
+        kc_title: str,
+        message: str,
+        expected_answer_hint: Optional[str] = None,
+        teaching_action: Optional[str] = None,
+    ) -> Diagnosis:
+        """确定性回退诊断。
+
+        P1-6：禁止“只要提到向量/相似就判正确”的万能规则。回退只在本轮问题确实是
+        关于某个 KC 的语义/相似度判断时才启用对应关键词；否则无法合理判断 →
+        返回 ``evidence_strength=weak``（updater 不会据此快速提高 mastery）。
+        """
         msg = (message or "").strip().lower()
+        hint = (expected_answer_hint or "").lower()
         misconceptions: List[str] = []
-        # 针对 embedding 的常见误区：语义相似 = 字面相似
-        if kc_id == "embedding":
+        correctness = "incorrect"
+        strength = "weak"
+        confidence = 0.4
+
+        # 仅当本轮确实在考查 embedding 的“语义相似/距离”概念时，才启用对应关键词规则。
+        # 对 embedding KC（或其问题提到 embedding）启用；对任意其他 KC 绝不套用
+        # “提到向量/相似就判正确”的万能规则（P1-6）。
+        is_semantic_question = (kc_id == "embedding") or ("embedding" in hint)
+
+        if is_semantic_question and msg:
+            # 误区：把语义相似误当字面相似
             if "字面" in msg or "lexical" in msg or "字符" in msg or "词序" in msg:
                 misconceptions.append("embedding_similarity_equals_lexical_similarity")
-        correctness = "incorrect"
-        if any(w in msg for w in ["接近", "相似", "语义", "semantic", "similar", "near"]):
+            if any(w in msg for w in ["语义", "semantic", "语义相似"]):
+                correctness = "partial"
+                strength = "medium"
+            if any(w in msg for w in ["向量", "vector", "距离", "distance", "余弦", "cosine"]):
+                correctness = "correct"
+                strength = "medium"
+            confidence = 0.6
+        elif msg and not _looks_like_answer(msg):
+            # 有回答但无法套用任何 KC 规则 → 弱证据，不做强判断。
             correctness = "partial"
-        if any(w in msg for w in ["向量", "vector", "距离", "distance", "余弦", "cosine"]):
-            correctness = "correct"
-        strength = "medium" if msg else "weak"
+            strength = "weak"
+
         return Diagnosis(
             kc_id=kc_id,
             correctness=correctness,
-            confidence=0.7,
+            confidence=confidence,
             evidence_strength=strength,
             misconceptions=misconceptions,
             hint_level=0,

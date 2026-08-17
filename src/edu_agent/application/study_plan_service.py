@@ -193,7 +193,11 @@ def generate_plan(
         can_res = canonicalizer.canonicalize(km, reuse_graph=reuse_graph)
         if can_res.course is None:
             # 校验失败（环/悬空/重复）→ 安全 DAG 回退，不崩溃。
-            dyn_course = canonicalizer.safe_fallback(km)
+            # P0-3 invariant：fallback 必须同时返回 temp id → canonical id 映射，
+            # 供下方 plan steps 重映射使用，保证 Plan.KC == Graph.KC。
+            fallback_res = canonicalizer.safe_fallback_result(km)
+            dyn_course = fallback_res.course
+            can_res = fallback_res  # node_id_map / course 都取自 fallback 结果
             graph_fallback = True
             logger.warning(
                 "dynamic graph validation failed; using safe fallback",

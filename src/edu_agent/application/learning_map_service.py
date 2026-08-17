@@ -90,6 +90,16 @@ class LearningMapService:
         knowledge = bundle.course_state.knowledge
         km = {item.kc_id: item for item in knowledge}
 
+        # P2-3：动态 graph 快照可能不含 goal（旧库）。可靠地从当前 active goal
+        # 派生，避免 LearningMap.goal == ""（不重复存储，从唯一 Source of Truth 读取）。
+        goal = course.goal
+        if not goal or not goal.strip():
+            active_goal = bundle.active_goal
+            if active_goal is not None:
+                goal = (active_goal.target or active_goal.goal_name or "").strip()
+        if not goal:
+            goal = course.goal
+
         # mastery / confidence / misconceptions 派生
         mastery_map: Dict[str, Optional[float]] = {}
         conf_map: Dict[str, Optional[float]] = {}
@@ -124,20 +134,22 @@ class LearningMapService:
                     if m not in misconception_map[kc]:
                         misconception_map[kc].append(m)
 
+        # P2-1：recent_error 只看最近 N 条 tutoring evidence；最新一条为 incorrect 才标。
+        _recent_error_map = {
+            k: bool(v and v[0].get("correctness") == "incorrect")
+            for k, v in recent_evidence_map.items()
+        }
+
         goal_kcs = [c.kc_id for c in course.components]
         policy = HeuristicAdaptivePolicy(course, goal_kcs=goal_kcs)
         recommended_path = policy.recommended_path(
-            mastery_map, misconception_map,
-            {k: True for k, v in recent_evidence_map.items()
-             if any(e.get("correctness") == "incorrect" for e in recent_evidence_map[k])},
+            mastery_map, misconception_map, _recent_error_map,
         )
 
         nodes: List[LearningMapNode] = []
         for c in course.components:
             eval_res = policy.evaluate_kc(
-                c.kc_id, mastery_map, misconception_map,
-                {k: True for k, v in recent_evidence_map.items()
-                 if any(e.get("correctness") == "incorrect" for e in recent_evidence_map[k])},
+                c.kc_id, mastery_map, misconception_map, _recent_error_map,
             )
             nodes.append(
                 LearningMapNode(
@@ -165,7 +177,7 @@ class LearningMapService:
 
         return LearningMapResponse(
             course_id=course.course_id,
-            goal=course.goal,
+            goal=goal,
             nodes=nodes,
             edges=edges,
             recommended_path=recommended_path,

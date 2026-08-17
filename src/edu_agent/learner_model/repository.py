@@ -240,3 +240,13 @@ class LearnerRepository(ABC):
 
     @abstractmethod
     def delete_course_source(self, user_id: str, course_id: str, source_id: str) -> None: ...
+
+    # ---- dynamic KCGraph snapshot（canonical Knowledge Graph）-------------
+    @abstractmethod
+    def upsert_course_kc_graph(self, row: Dict[str, Any]) -> None: ...
+
+    @abstractmethod
+    def get_course_kc_graph(self, user_id: str, course_id: str) -> Optional[dict]: ...
+
+    @abstractmethod
+    def delete_course_kc_graph(self, user_id: str, course_id: str) -> None: ...

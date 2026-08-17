@@ -12,6 +12,17 @@ from typing import List, Optional
 from pydantic import BaseModel, Field
 
 
+class PrerequisiteNotMet(Exception):
+    """Locked KC 尝试开始 Tutor 时抛出（P1-3）。携带结构化前置信息供上层返回 409/400。"""
+
+    def __init__(self, kc_id: str, prerequisites: List[str]):
+        self.kc_id = kc_id
+        self.prerequisites = prerequisites
+        super().__init__(
+            f"prerequisite(s) not met for '{kc_id}': {', '.join(prerequisites)}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Teaching Action
 # ---------------------------------------------------------------------------
@@ -71,6 +82,7 @@ class TutorRequest(BaseModel):
     message: Optional[str] = None          # None = 开始 / 下一轮教学
     learning_goal: Optional[str] = None
     difficulty: int = 1
+    turn_id: Optional[str] = None          # P1-5：本轮教学上下文 id（start 返回，answer 回传）
 
 
 # ---------------------------------------------------------------------------
@@ -125,6 +137,8 @@ class TutorResponse(BaseModel):
     next_recommended_kc: Optional[str] = None
     # 给前端展示的"为什么"（非 Chain of Thought）
     explanation: str = ""
+    # P1-5：当前轮教学上下文 id（start 返回；answer 时用于关联 Diagnoser 上下文 + 防重复计分）
+    turn_id: Optional[str] = None
 
 
 LearnerKCSnapshot.model_rebuild()

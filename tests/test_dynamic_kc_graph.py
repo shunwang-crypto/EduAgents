@@ -528,9 +528,19 @@ def test_end_to_end_numpy_with_evidence(learner, monkeypatch):
     before = svc.build(uid, course_id)
     assert next(n for n in before.nodes if n.id == "numpy_array").mastery is None
 
+    # P1-6：确定性证据路径（离线）。通过 8 条 strong/correct 教学证据推进 mastery。
+    # 注意：不能靠“提到向量就判正确”的万能规则（已按 P1-6 移除）。
     wf = TutoringWorkflow(course_id, learner, user_id=uid)
     for _ in range(8):
-        wf.answer_turn(uid, TutorRequest(kc_id="numpy_array", message="向量数组练习"))
+        learner.apply_event({
+            "event_type": "TUTOR_EVIDENCE", "user_id": uid, "course_id": course_id,
+            "kc_id": "numpy_array", "source": "seed",
+            "evidence_strength": "strong",
+            "payload": {"kc_id": "numpy_array", "kc_name": "NumPy 数组基础",
+                        "correctness": "correct", "difficulty": 2, "hint_level": 0,
+                        "confidence": 0.9, "evidence_strength": "strong",
+                        "misconceptions": [], "evidence_type": "tutor_turn", "teaching_action": ""},
+        })
 
     after = svc.build(uid, course_id)
     assert (next(n for n in after.nodes if n.id == "numpy_array").mastery or 0) >= 0.7

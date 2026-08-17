@@ -403,6 +403,87 @@
   min-height: 200px;
 }
 
+/* P0：无计划时的 Map empty state（非红色错误） */
+.learning-map-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 100%;
+  min-height: 320px;
+  text-align: center;
+  padding: 24px;
+  color: var(--ea-text-muted);
+}
+.learning-map-empty-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 999px;
+  background: var(--ea-bg-hover);
+  color: var(--ea-text-muted);
+}
+.learning-map-empty h3 {
+  margin: 0;
+  font-size: 15px;
+  color: var(--ea-text);
+}
+.learning-map-empty p {
+  margin: 0;
+  font-size: 13px;
+  max-width: 340px;
+  line-height: 1.6;
+}
+
+/* 真实 server error → 错误态（带重试），区别于 empty state */
+.learning-map-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  height: 100%;
+  min-height: 320px;
+  text-align: center;
+  padding: 24px;
+  color: var(--ea-text-muted);
+}
+.learning-map-error p {
+  margin: 0;
+  color: var(--ea-danger);
+  font-size: 13px;
+}
+
+/* §27：Learning Map 轻量 legend（角落，不占太多空间） */
+.learning-map-legend {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid var(--ea-border);
+  font-size: 11px;
+  color: var(--ea-text-muted);
+  pointer-events: none;
+}
+.learning-map-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.learning-map-legend-icon {
+  width: 12px;
+  text-align: center;
+}
+
 @media (max-width: 900px) {
   .learning-map-layout {
     grid-template-columns: 1fr;

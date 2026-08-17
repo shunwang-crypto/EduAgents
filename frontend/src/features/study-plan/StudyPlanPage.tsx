@@ -8,6 +8,7 @@ import {
   Circle,
   CircleDot,
   LoaderCircle,
+  Map,
   MessageCircleQuestion,
 } from "lucide-react";
 import { useApi, ApiError } from "../../api/ApiProvider";
@@ -165,44 +166,69 @@ export function StudyPlanPage() {
   //  在 await 前后比对 scope，过期响应直接丢弃，避免串课污染
   const scopeSeq = useRef(0);
 
+  // P0-1：Learning Map 请求必须独立生命周期，只能用新的 Learning Map 请求取消。
+  //   mapRequestSeq 只由 map 请求相关代码自增，绝不与 course/plan/tutor 共享，
+  //   避免 course/plan 请求把 map 请求的响应误判为过期而永久 loading。
+  const mapRequestSeq = useRef(0);
+
   // Adaptive Learning Map 标签页
   const [tab, setTab] = useState<"map" | "plan">("map");
   const [learningMap, setLearningMap] = useState<LearningMapResponse | null>(null);
   const [mapLoading, setMapLoading] = useState(false);
   const [mapError, setMapError] = useState<string | null>(null);
+  //  无计划 / 无 graph（getLearningMap 404）→ empty state；真正的 server error 才显示错误
+  const [mapEmpty, setMapEmpty] = useState(false);
   const [selectedKc, setSelectedKc] = useState<LearningMapNode | null>(null);
 
   const loadLearningMap = useCallback(
-    async (reqScope: number) => {
+    async (reqMapSeq: number) => {
       if (!courseId) return;
       setMapLoading(true);
       setMapError(null);
+      setMapEmpty(false);
       try {
         const data = await api.getLearningMap(courseId);
-        if (reqScope !== scopeSeq.current) return;
+        if (reqMapSeq !== mapRequestSeq.current) return;
         setLearningMap(data);
-        // 默认选中当前推荐 KC
-        const recId = data.current_recommended_kc;
-        const rec = data.nodes.find((n) => n.id === recId) ?? null;
+        setMapEmpty(false);
+        // 默认选中当前推荐 KC（current_recommended_kc，或 recommended_path[0]）
+        const recId = data.current_recommended_kc ?? data.recommended_path?.[0];
+        const rec = (recId ? data.nodes.find((n) => n.id === recId) : null) ?? null;
         setSelectedKc((prev) => {
           if (prev && data.nodes.some((n) => n.id === prev.id)) return prev;
           return rec;
         });
       } catch (e) {
-        if (reqScope !== scopeSeq.current) return;
-        setMapError(e instanceof Error ? e.message : "学习地图加载失败");
+        if (reqMapSeq !== mapRequestSeq.current) return;
+        // 404 = 还没有生成学习计划 / KCGraph → empty state（非错误）
+        const errStatus = (e as { status?: number } | null)?.status
+          ?? (e instanceof ApiError ? e.status : 0);
+        if (errStatus === 404) {
+          setLearningMap(null);
+          setMapEmpty(true);
+          setSelectedKc(null);
+        } else {
+          setMapEmpty(false);
+          setMapError(e instanceof Error ? e.message : "学习地图加载失败");
+        }
       } finally {
-        if (reqScope === scopeSeq.current) setMapLoading(false);
+        if (reqMapSeq === mapRequestSeq.current) setMapLoading(false);
       }
     },
     [courseId, api]
   );
 
-  // 课程加载完成后拉取 Learning Map
+  // P0-2：外部（generate / tutor）需要无参刷新 Map 时，始终开一个新的独立请求
+  const refreshLearningMap = useCallback(() => {
+    if (!courseId) return;
+    const seq = ++mapRequestSeq.current;
+    void loadLearningMap(seq);
+  }, [courseId, loadLearningMap]);
+
+  // 课程加载完成后拉取 Learning Map（独立生命周期，只被新的 Map 请求取消）
   useEffect(() => {
     if (!courseId) return;
-    const seq = ++loadSeq.current;
-    scopeSeq.current++;
+    const seq = ++mapRequestSeq.current;
     void loadLearningMap(seq);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [courseId, api]);
@@ -340,6 +366,9 @@ export function StudyPlanPage() {
         setPlanStatus("ready");
         setShowMarkdown(false);
         setConfirmRegenerate(false);
+        // P0-2：生成计划成功后必须立即刷新 Learning Map（后端已生成 KCGraph），
+        //  不能要求用户刷新页面。Map 请求有独立生命周期，不受本请求影响。
+        refreshLearningMap();
         // 同步后端写回的设置
         if (p && typeof override?.duration_days === "number") {
           setSettings((s) => ({ ...s, duration_days: override.duration_days! }));
@@ -358,7 +387,7 @@ export function StudyPlanPage() {
         if (reqScope === scopeSeq.current) setGenerating(false);
       }
     },
-    [courseId, api, settings, course]
+    [courseId, api, settings, course, refreshLearningMap]
   );
 
   const toggleStep = useCallback(
@@ -901,11 +930,37 @@ export function StudyPlanPage() {
               <div className="learning-map-canvas">
                 {mapLoading && <div style={{ padding: 16, color: "#64748b" }}>加载学习地图…</div>}
                 {mapError && (
-                  <div className="inline-error" role="alert">
-                    {mapError}
+                  <div className="learning-map-error" role="alert">
+                    <p>学习地图暂时无法加载</p>
+                    <button
+                      type="button"
+                      className="ea-button"
+                      onClick={refreshLearningMap}
+                    >
+                      重试
+                    </button>
                   </div>
                 )}
-                {!mapLoading && !mapError && (
+                {mapEmpty && !mapLoading && !mapError && (
+                  <div className="learning-map-empty">
+                    <div className="learning-map-empty-icon">
+                      <Map size={28} aria-hidden />
+                    </div>
+                    <h3>学习地图将在生成学习计划后创建</h3>
+                    <p>
+                      系统会根据你的目标生成知识依赖图，
+                      并根据学习进度动态更新学习路径。
+                    </p>
+                    <button
+                      type="button"
+                      className="ea-button primary"
+                      onClick={() => setTab("plan")}
+                    >
+                      生成学习计划
+                    </button>
+                  </div>
+                )}
+                {!mapLoading && !mapError && !mapEmpty && (
                   <LearningMapView
                     data={learningMap}
                     selectedKcId={selectedKc?.id ?? null}
@@ -913,16 +968,26 @@ export function StudyPlanPage() {
                   />
                 )}
               </div>
-              <aside className="learning-map-side">
-                <KnowledgeDetailPanel node={selectedKc} allNodes={learningMap?.nodes ?? []} />
-              </aside>
-              <div className="learning-map-tutor">
-                <TutorPanel
-                  courseId={activeCourseId}
-                  currentKc={selectedKc}
-                  onMapChanged={() => void loadLearningMap(scopeSeq.current)}
-                />
-              </div>
+              {!mapEmpty && (
+                <aside className="learning-map-side">
+                  <KnowledgeDetailPanel node={selectedKc} allNodes={learningMap?.nodes ?? []} />
+                </aside>
+              )}
+              {!mapEmpty && (
+                <div className="learning-map-tutor">
+                  <TutorPanel
+                    courseId={activeCourseId}
+                    currentKc={selectedKc}
+                    allNodes={learningMap?.nodes ?? []}
+                    onMapChanged={refreshLearningMap}
+                    // P1-4：用户点击“进入下一知识点”后才切换 selected node
+                    onStartNextKc={(kcId) => {
+                      const next = learningMap?.nodes.find((n) => n.id === kcId) ?? null;
+                      setSelectedKc(next);
+                    }}
+                  />
+                </div>
+              )}
             </div>
           )}
         </div>

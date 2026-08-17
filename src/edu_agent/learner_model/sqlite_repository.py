@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -182,6 +183,10 @@ class SQLiteLearnerRepository(LearnerRepository):
         # 课程资料（user-scoped）：删除课程时一并清除元数据
         self._conn().execute(
             "DELETE FROM course_sources WHERE user_id=? AND course_id=?", (user_id, course_id)
+        )
+        # 动态 canonical KCGraph：删除课程时一并清除，避免重建同名课程时复活旧 graph
+        self._conn().execute(
+            "DELETE FROM course_kc_graph WHERE user_id=? AND course_id=?", (user_id, course_id)
         )
         self._commit()
 
@@ -402,16 +407,36 @@ class SQLiteLearnerRepository(LearnerRepository):
         return row is not None
 
     def list_events(self, user_id: str, course_id: str = "", limit: int = 200) -> List[dict]:
+        """返回事件列表，并把 ``payload_json`` 反序列化为 ``payload`` dict。
+
+        事件 payload 以 JSON 文本存于 ``payload_json`` 列；消费者（snapshot /
+        turn context / recent_error）依赖 ``event["payload"]`` dict 结构。
+        """
         if course_id:
-            return self._fetchall(
+            rows = self._fetchall(
                 "SELECT * FROM learning_events WHERE user_id=? AND course_id=? "
                 "ORDER BY timestamp DESC LIMIT ?",
                 (user_id, course_id, limit),
             )
-        return self._fetchall(
-            "SELECT * FROM learning_events WHERE user_id=? ORDER BY timestamp DESC LIMIT ?",
-            (user_id, limit),
-        )
+        else:
+            rows = self._fetchall(
+                "SELECT * FROM learning_events WHERE user_id=? ORDER BY timestamp DESC LIMIT ?",
+                (user_id, limit),
+            )
+        return [self._deserialize_event(r) for r in rows]
+
+    @staticmethod
+    def _deserialize_event(row: dict) -> dict:
+        ev = dict(row)
+        payload = ev.get("payload_json")
+        if isinstance(payload, str):
+            try:
+                ev["payload"] = json.loads(payload)
+            except (ValueError, TypeError):
+                ev["payload"] = {}
+        else:
+            ev["payload"] = payload or {}
+        return ev
 
     def count_events(self, user_id: str, course_id: str = "") -> int:
         if course_id:
@@ -574,6 +599,14 @@ class SQLiteLearnerRepository(LearnerRepository):
             "SELECT * FROM course_kc_graph WHERE user_id=? AND course_id=?",
             (user_id, course_id),
         )
+
+    def delete_course_kc_graph(self, user_id: str, course_id: str) -> None:
+        """删除某 (user_id, course_id) 的动态 KCGraph 快照（课程删除时调用）。"""
+        self._conn().execute(
+            "DELETE FROM course_kc_graph WHERE user_id=? AND course_id=?",
+            (user_id, course_id),
+        )
+        self._commit()
 
     # ---- conversations（recent list + 标题）------------------------------
     def list_conversations(self, user_id: str, course_id: str, limit: int = 6) -> List[dict]:

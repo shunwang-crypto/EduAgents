@@ -9,6 +9,40 @@ import {
 } from "react-router-dom";
 import { StudyPlanPage } from "./StudyPlanPage";
 
+// 避免在 jsdom 中真正挂载 React Flow（依赖大量浏览器测量 API，测试脆弱）。
+// 我们测的是 StudyPlanPage 的编排（loading/empty/error/generate 联动），
+// 而非 React Flow 图本身的渲染，因此用轻量桩替换。
+vi.mock("./LearningMap/LearningMapView", () => ({
+  default: ({
+    data,
+    selectedKcId,
+    onSelect,
+  }: {
+    data: unknown;
+    selectedKcId: string | null;
+    onSelect: (node: { id: string; name: string; locked?: boolean; mastery?: number | null }) => void;
+  }) => {
+    const list = (data as { nodes?: Array<{ id: string; name: string; locked?: boolean; mastery?: number | null }> })?.nodes ?? [];
+    return (
+      <div>
+        {list.map((n) => (
+          <button
+            key={n.id}
+            type="button"
+            data-node-id={n.id}
+            data-locked={n.locked ? "1" : "0"}
+            className="mock-kc-node"
+            onClick={() => onSelect(n)}
+          >
+            {n.name}
+          </button>
+        ))}
+        <div data-testid="map-selected">{selectedKcId ?? "none"}</div>
+      </div>
+    );
+  },
+}));
+
 // vi.mock factory 会被提升到文件顶部，mock 数据必须用 vi.hoisted 定义
 const { mockPlan, mockApi } = vi.hoisted(() => {
   const mockPlan = {
@@ -101,6 +135,42 @@ const { mockPlan, mockApi } = vi.hoisted(() => {
         title: "NumPy 数组基础",
       })
     ),
+    // Adaptive Map + Tutor：StudyPlanPage 挂载时即会 GET learning-map
+    getLearningMap: vi.fn().mockResolvedValue({
+      course_id: "PY",
+      goal: "掌握 NumPy 数组计算",
+      nodes: [
+        {
+          id: "numpy_array", name: "NumPy 数组", description: "ndarray",
+          difficulty: "easy", mastery: null, confidence: null, status: "unknown",
+          recommended: true, locked: false, prerequisites: [], misconceptions: [],
+          recent_evidence: [], reason_codes: ["LOW_MASTERY"],
+        },
+        {
+          id: "numpy_broadcasting", name: "NumPy 广播", description: "broadcast",
+          difficulty: "hard", mastery: null, confidence: null, status: "unknown",
+          recommended: false, locked: true, prerequisites: ["numpy_array"], misconceptions: [],
+          recent_evidence: [], reason_codes: [],
+        },
+      ],
+      edges: [{ source: "numpy_array", target: "numpy_broadcasting", relation: "prerequisite", weight: 1 }],
+      recommended_path: ["numpy_array", "numpy_broadcasting"],
+      current_recommended_kc: "numpy_array",
+      graph_source: "generated",
+    }),
+    tutorTurn: vi.fn().mockResolvedValue({
+      kc_id: "numpy_array",
+      teaching_action: "ASSESS",
+      message: "请解释一下语义相似的句子其 embedding 的特点",
+      learner_state_changed: true,
+      learning_map_changed: true,
+      mastery: 0.42,
+      confidence: 0.68,
+      reason_codes: ["LOW_MASTERY"],
+      next_recommended_kc: "numpy_broadcasting",
+      explanation: "",
+      turn_id: "TURN-1",
+    }),
   };
   return { mockPlan, mockApi };
 });
@@ -122,6 +192,17 @@ function renderPage(initialPath = "/courses/PY/plan") {
     /* tab 未渲染时忽略 */
   }
   return utils;
+}
+
+// Map 标签测试：默认 Map 标签，不切换到计划列表
+function renderMapPage(initialPath = "/courses/PY/plan") {
+  return render(
+    <MemoryRouter initialEntries={[initialPath]}>
+      <Routes>
+        <Route path="/courses/:courseId/plan" element={<StudyPlanPage />} />
+      </Routes>
+    </MemoryRouter>
+  );
 }
 
 // 可导航 router（用于跨课程切换的 stale-async 回归测试）
@@ -150,6 +231,169 @@ function deferred<T = unknown>() {
 
 describe("StudyPlanPage", () => {
   beforeEach(() => vi.clearAllMocks());
+
+// ---------------------------------------------------------------------------
+// Adaptive Learning Map 回归测试（§43 Test A~J）
+// ---------------------------------------------------------------------------
+describe("StudyPlanPage · Learning Map", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  // Test A + E + J：Learning Map 正常渲染动态节点；mastery=null 显示 ?
+  it("renders learning map with unknown mastery as ? and dynamic numpy nodes (A/E/J)", async () => {
+    renderMapPage();
+    // 挂载后即 GET learning-map
+    await waitFor(() => expect(mockApi.getLearningMap).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(screen.getAllByRole("button", { name: "NumPy 数组" }).length).toBeGreaterThan(0)
+    );
+    expect(screen.getAllByRole("button", { name: "NumPy 广播" }).length).toBeGreaterThan(0);
+    // Test J：不 hardcode embedding/rag/agent
+    expect(screen.queryByRole("button", { name: "embedding" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "rag" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "agent" })).toBeNull();
+    // Test E：UNKNOWN 节点掌握度显示 ?（默认选中 numpy_array，detail 中展示 ?）
+    await waitFor(() =>
+      expect(screen.getByTestId("map-selected").textContent).toBe("numpy_array")
+    );
+    expect(screen.queryByText("0%")).toBeNull();
+  });
+
+  // Test C：没有 plan / graph → 显示 Empty State，不显示红色 error
+  it("no plan shows empty state, not error (C)", async () => {
+    (mockApi.getPlan as ReturnType<typeof vi.fn>).mockResolvedValueOnce(null);
+    (mockApi.getLearningMap as ReturnType<typeof vi.fn>).mockRejectedValueOnce({
+      status: 404,
+    });
+    renderMapPage();
+    await waitFor(() => expect(screen.getByText("学习地图将在生成学习计划后创建")).toBeTruthy());
+    expect(screen.queryByText("学习地图暂时无法加载")).toBeNull();
+    expect(screen.queryByText("加载学习地图失败")).toBeNull();
+  });
+
+  // Test C'：真实 server error → 错误态（带重试），区别于 empty state
+  it("real server error shows retry, not empty state", async () => {
+    (mockApi.getLearningMap as ReturnType<typeof vi.fn>).mockRejectedValueOnce({
+      status: 500,
+      message: "boom",
+    });
+    renderMapPage();
+    await waitFor(() => expect(screen.getByText("学习地图暂时无法加载")).toBeTruthy());
+    expect(screen.queryByText("学习地图将在生成学习计划后创建")).toBeNull();
+  });
+
+  // Test B：generatePlan 成功后 getLearningMap 再次被调用（P0-2）
+  it("generatePlan success triggers getLearningMap again (B)", async () => {
+    // 用 Once 避免持久污染后续用例（clearAllMocks 不清除 mockResolvedValue 实现）
+    (mockApi.getPlan as ReturnType<typeof vi.fn>).mockResolvedValueOnce(null);
+    (mockApi.getLearningMap as ReturnType<typeof vi.fn>).mockRejectedValueOnce({ status: 404 });
+    renderMapPage();
+    await waitFor(() => expect(mockApi.getLearningMap).toHaveBeenCalled());
+    const callsBefore = (mockApi.getLearningMap as ReturnType<typeof vi.fn>).mock.calls.length;
+    // 切到计划列表 empty 态并生成
+    fireEvent.click(screen.getByText("计划列表"));
+    await waitFor(() => expect(screen.getByText("还没有学习计划")).toBeTruthy());
+    fireEvent.click(screen.getByText("生成学习计划"));
+    await waitFor(() => expect(mockApi.generatePlan).toHaveBeenCalled());
+    // P0-2：生成成功后必须再次 GET learning-map（第二次 getLearningMap 用默认 resolve）
+    await waitFor(() =>
+      expect((mockApi.getLearningMap as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(
+        callsBefore
+      )
+    );
+  });
+
+  // Test H：tutorTurn 成功后 getLearningMap 再次被调用
+  it("tutor success triggers getLearningMap refetch (H)", async () => {
+    renderMapPage();
+    await waitFor(() =>
+      expect(screen.getByTestId("map-selected").textContent).toBe("numpy_array")
+    );
+    const callsBefore = (mockApi.getLearningMap as ReturnType<typeof vi.fn>).mock.calls.length;
+    // 默认选中 recommended 节点（numpy_array），点击「开始学习」→ send(null) → tutorTurn
+    fireEvent.click(screen.getByText("开始学习"));
+    await waitFor(() => expect(mockApi.tutorTurn).toHaveBeenCalled());
+    await waitFor(() =>
+      expect((mockApi.getLearningMap as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(
+        callsBefore
+      )
+    );
+  });
+
+  // Test D：locked 节点 → detail 可查看，但 Start Tutor 被禁用
+  it("locked node: detail viewable, start tutor disabled (D)", async () => {
+    renderMapPage();
+    // 点击 locked 节点（mock 节点按钮）
+    await waitFor(() =>
+      expect(screen.getAllByRole("button", { name: "NumPy 广播" }).length).toBeGreaterThan(0)
+    );
+    fireEvent.click(screen.getAllByRole("button", { name: "NumPy 广播" })[0]);
+    // detail 可查看：Tutor 区显示 locked 提示（文本前有 emoji，用 exact:false）
+    await waitFor(() =>
+      expect(screen.getByText("该知识点尚未解锁", { exact: false })).toBeTruthy()
+    );
+    // 开始学习按钮不存在（locked 时不会出现「开始学习」）
+    expect(screen.queryByText("开始学习")).toBeNull();
+  });
+
+  // Test F/G：Tutor 返回 current kc + next recommended 分离，进入下一知识点才切换
+  it("current kc mastered shows enter-next button, only switches on click (F/G)", async () => {
+    // 把当前选中节点设为 mastered，且 next_recommended_kc 指向另一个节点
+    (mockApi.getLearningMap as ReturnType<typeof vi.fn>).mockResolvedValue({
+      course_id: "PY",
+      goal: "g",
+      nodes: [
+        {
+          id: "embedding", name: "Embedding", description: "", difficulty: "easy",
+          mastery: 0.8, confidence: 0.9, status: "mastered",
+          recommended: false, locked: false, prerequisites: [], misconceptions: [],
+          recent_evidence: [], reason_codes: [],
+        },
+        {
+          id: "vector_db", name: "Vector DB", description: "", difficulty: "medium",
+          mastery: null, confidence: null, status: "unknown",
+          recommended: true, locked: false, prerequisites: ["embedding"], misconceptions: [],
+          recent_evidence: [], reason_codes: [],
+        },
+      ],
+      edges: [],
+      recommended_path: ["vector_db"],
+      current_recommended_kc: "vector_db",
+    });
+    // Tutor 返回 next_recommended_kc = vector_db（P1-4：response.kc_id 保持 embedding）
+    (mockApi.tutorTurn as ReturnType<typeof vi.fn>).mockResolvedValue({
+      kc_id: "embedding",
+      teaching_action: "FEEDBACK",
+      message: "很好",
+      learner_state_changed: true,
+      learning_map_changed: true,
+      mastery: 0.8,
+      confidence: 0.9,
+      reason_codes: ["RECENT_SUCCESS"],
+      next_recommended_kc: "vector_db",
+      explanation: "",
+      turn_id: "TURN-F",
+    });
+    renderMapPage();
+    await waitFor(() =>
+      expect(screen.getAllByRole("button", { name: "Embedding" }).length).toBeGreaterThan(0)
+    );
+    // 选中 Embedding 并开始 Tutor
+    fireEvent.click(screen.getAllByRole("button", { name: "Embedding" })[0]);
+    fireEvent.click(screen.getByText("开始学习"));
+    await waitFor(() => expect(screen.getByText("进入下一知识点")).toBeTruthy());
+    // P1-4：selected node 仍是 embedding（current kc 不被自动切换）
+    expect(
+      screen.getByText("当前知识点：", { exact: false }).textContent
+    ).toContain("Embedding");
+    // 点击「进入下一知识点」后才切换到 Vector DB
+    fireEvent.click(screen.getByText("进入下一知识点"));
+    await waitFor(() =>
+      expect(
+        screen.getByText("当前知识点：", { exact: false }).textContent
+      ).toContain("Vector DB")
+    );
+  });
+});
 
   it("renders exactly 3 stage sections", async () => {
     renderPage();

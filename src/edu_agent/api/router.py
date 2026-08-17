@@ -398,11 +398,13 @@ class TutorTurnRequest(BaseModel):
     """POST /api/courses/{course_id}/tutor/turn 请求体。
 
     message=None 表示开始 / 下一轮教学（ASSESS / 新 KC）。
+    turn_id：start 返回后，answer 必须回传，用于关联本轮教学上下文 + 防重复计分（P1-5）。
     """
     kc_id: str = Field(description="当前学习的知识组件 ID（稳定 KC id）")
     message: Optional[str] = Field(default=None, description="学习者回复；None=开始")
     learning_goal: Optional[str] = Field(default=None)
     difficulty: int = Field(default=1, ge=1, le=3)
+    turn_id: Optional[str] = Field(default=None, description="本轮教学上下文 id（可选；新前端必须传）")
 
 
 @router.get("/courses/{course_id}/learning-map")
@@ -428,13 +430,14 @@ def tutor_turn(course_id: str, req: TutorTurnRequest,
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-    from edu_agent.workflows.tutoring.schemas import TutorRequest
+    from edu_agent.workflows.tutoring.schemas import PrerequisiteNotMet, TutorRequest
 
     t_req = TutorRequest(
         kc_id=req.kc_id,
         message=req.message,
         learning_goal=req.learning_goal,
         difficulty=req.difficulty,
+        turn_id=req.turn_id,
     )
     try:
         if req.message is None:
@@ -447,5 +450,18 @@ def tutor_turn(course_id: str, req: TutorTurnRequest,
             status_code=503,
             detail="未配置 AI 模型，请先配置 API Key 后再使用 Tutor",
         ) from None
+    except PrerequisiteNotMet as exc:
+        # P1-3：locked KC 无法开始 Tutor → 409 + 结构化原因（含缺失前置）。
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(
+            status_code=409,
+            content={
+                "code": "PREREQUISITE_NOT_MET",
+                "kc_id": exc.kc_id,
+                "prerequisites": exc.prerequisites,
+                "detail": f"需要先掌握以下前置知识：{', '.join(exc.prerequisites) or '（无）'}",
+            },
+        )
     except (RuntimeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
