@@ -13,6 +13,26 @@ from edu_agent.workflows.study_plan.schemas import (
 )
 
 
+def _objective_for(title: str, category: str) -> str:
+    """§46-48：按 category 生成 observable / KC-specific / actionable 学习目标。
+
+    LLM 缺失时也使用此确定性 fallback，而非统一模板。
+    """
+    cat = (category or "").lower()
+    t = title or "该知识点"
+    if any(w in cat for w in ("framework", "tool", "api", "框架", "工具", "库", "cli")):
+        return f"能够使用「{t}」完成基础操作，并解释关键步骤。"
+    if any(w in cat for w in ("math", "数学", "线性代数", "微积分", "concept")):
+        return f"能够解释「{t}」的核心关系，并说明它在目标任务中的作用。"
+    if any(w in cat for w in ("architecture", "架构", "系统设计")):
+        return f"能够解释「{t}」的主要组成和数据流。"
+    if any(w in cat for w in ("code", "编程", "开发", "implementation")):
+        return f"能够使用「{t}」完成一个最小实现，并解释关键参数。"
+    if any(w in cat for w in ("前置", "入门", "prerequisite")):
+        return f"能够说明「{t}」的基本概念与用途，并完成一个最小示例。"
+    return f"能够说明「{t}」的核心内容，并完成一个与之相关的最小实践。"
+
+
 def _clean_title(value: str) -> str:
     max_length = 32
     value = re.sub(r"^[\d一二三四五六七八九十]+[.、：:]\s*", "", value.strip())
@@ -213,7 +233,7 @@ def build_knowledge_map(
         stage1_nodes.append(make(
             title=title, summary=summary, category="前置知识", difficulty="入门", minutes=30,
             stage=stages[0], prerequisites=[],
-            objective=f"能用自己的话说明「{title}」并完成一个最小示例。"
+            objective=_objective_for(title, "前置知识")
         ))
     if not stage1_nodes:
         stage1_nodes.append(make(
@@ -221,7 +241,7 @@ def build_knowledge_map(
             summary=f"了解「{topic}」的核心术语、学习环境与整体知识结构。",
             category="前置知识", difficulty="入门", minutes=30,
             stage=stages[0], prerequisites=[],
-            objective=f"能用自己的话说明「{topic}」的基本概念与用途。"
+            objective=_objective_for(topic, "前置知识")
         ))
 
     # ---- Stage 2：核心知识（无则补主线方法节点，这是关键兜底） ----

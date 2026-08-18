@@ -14,9 +14,12 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger("edu_agent.db")
 
 DEFAULT_DB_PATH = Path(__file__).resolve().parents[3] / "data" / "learner_model.db"
 
@@ -348,7 +351,37 @@ def connect(db_path: Optional[str | Path] = None) -> sqlite3.Connection:
 def init_db(conn: sqlite3.Connection) -> None:
     """建 Baseline 表（幂等）。"""
     conn.executescript(_DDL)
+    _migrate_columns(conn)
     conn.commit()
+
+
+def _table_columns(conn: sqlite3.Connection, table: str) -> set:
+    try:
+        rows = conn.execute(f'PRAGMA table_info("{table}")').fetchall()
+    except sqlite3.OperationalError:
+        return set()
+    return {str(r["name"]) for r in rows}
+
+
+# additive 列迁移：旧库已存在的表不会因 CREATE IF NOT EXISTS 而获得新列，
+# 这里用 ALTER TABLE ADD COLUMN 补齐（不删数据、不改类型 → 非 destructive）。
+_ADDITIVE_COLUMNS: dict[str, list[tuple[str, str]]] = {
+    "study_plans": [
+        ("plan_brief_json", "TEXT NOT NULL DEFAULT '{}'"),
+    ],
+}
+
+
+def _migrate_columns(conn: sqlite3.Connection) -> None:
+    for table, cols in _ADDITIVE_COLUMNS.items():
+        existing = _table_columns(conn, table)
+        for col, ddl in cols:
+            if col not in existing:
+                try:
+                    conn.execute(f'ALTER TABLE "{table}" ADD COLUMN "{col}" {ddl}')
+                    logger.info("migrated: added column %s.%s", table, col)
+                except sqlite3.OperationalError as exc:  # pragma: no cover - 并发/已存在防御
+                    logger.warning("migration skip %s.%s: %s", table, col, exc)
 
 
 def get_connection(db_path: Optional[str | Path] = None) -> sqlite3.Connection:

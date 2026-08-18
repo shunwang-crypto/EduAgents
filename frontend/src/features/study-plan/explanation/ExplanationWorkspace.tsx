@@ -61,7 +61,7 @@ export default function ExplanationWorkspace({
   if (!stepId) {
     return (
       <div className="explanation-workspace explanation-workspace-empty">
-        点击计划步骤的「查看讲解」，或在地图中选择一个知识组件。
+        选择一个知识点查看学习讲解。
       </div>
     );
   }
@@ -70,7 +70,7 @@ export default function ExplanationWorkspace({
     <div className="explanation-workspace">
       <div className="explanation-header">
         <div>
-          <div className="explanation-title">{explanation?.title ?? "结构化讲解"}</div>
+          <div className="explanation-title">{explanation?.title ?? "学习讲解"}</div>
           {explanation?.objective && (
             <div className="explanation-objective">{explanation.objective}</div>
           )}

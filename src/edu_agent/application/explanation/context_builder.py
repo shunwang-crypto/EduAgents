@@ -31,8 +31,12 @@ class ExplanationContext:
     kc_description: str
     kc_category: str
     kc_difficulty: str
-    prerequisites: List[str] = field(default_factory=list)
-    dependents: List[str] = field(default_factory=list)
+    # 内部身份（用于 context_hash / 稳定性签名）
+    prerequisite_ids: List[str] = field(default_factory=list)
+    dependent_ids: List[str] = field(default_factory=list)
+    # 人类可读名称（LLM prompt 只使用 titles，§39）
+    prerequisite_titles: List[str] = field(default_factory=list)
+    dependent_titles: List[str] = field(default_factory=list)
     step_title: str = ""
     step_objective: str = ""
     step_minutes: int = 30
@@ -47,14 +51,14 @@ class ExplanationContext:
         lines = [
             f"课程：{self.course_title}",
             f"学习目标：{self.goal}" if self.goal else "学习目标：（未提供）",
-            f"知识点：{self.kc_title}（{self.kc_id}）",
+            f"知识点：{self.kc_title}",
         ]
         if self.kc_description:
             lines.append(f"描述：{self.kc_description}")
-        if self.prerequisites:
-            lines.append("前置：" + "、".join(self.prerequisites))
-        if self.dependents:
-            lines.append("后继/作用到：" + "、".join(self.dependents))
+        if self.prerequisite_titles:
+            lines.append("前置：" + "、".join(self.prerequisite_titles))
+        if self.dependent_titles:
+            lines.append("后继/作用到：" + "、".join(self.dependent_titles))
         if self.step_objective:
             lines.append(f"本步骤学习目标：{self.step_objective}")
         if self.background_facts:
@@ -145,8 +149,6 @@ class ExplanationContextBuilder:
             kc_description=kc.description if kc else "",
             kc_category=kc.category if kc else "core",
             kc_difficulty=kc.difficulty if kc else "medium",
-            prerequisites=course.prerequisites(kc_id),
-            dependents=course.dependents(kc_id),
             step_title=step.get("title", ""),
             step_objective=step.get("learning_objective", ""),
             step_minutes=int(step.get("minutes") or 30),
@@ -156,6 +158,19 @@ class ExplanationContextBuilder:
             misconceptions=misconceptions,
             source_refs=source_refs[:6],
         )
+        # §39：内部 identity 用 ids；自然语言用 titles
+        pre_ids = course.prerequisites(kc_id)
+        dep_ids = course.dependents(kc_id)
+        ctx.prerequisite_ids = pre_ids
+        ctx.dependent_ids = dep_ids
+        ctx.prerequisite_titles = [
+            (course.kc_by_id(i).title if course.kc_by_id(i) else i) for i in pre_ids
+        ]
+        ctx.dependent_titles = [
+            (course.kc_by_id(i).title if course.kc_by_id(i) else i) for i in dep_ids
+        ]
+        ctx.context_hash = self.compute_hash(ctx)
+        return ctx
         ctx.context_hash = self.compute_hash(ctx)
         return ctx
 
@@ -172,7 +187,7 @@ class ExplanationContextBuilder:
             "step_title": ctx.step_title,
             "step_objective": ctx.step_objective,
             "goal": ctx.goal,
-            "prerequisites": ctx.prerequisites,
+            "prerequisites": ctx.prerequisite_ids,
             "known_topics": ctx.known_topics,
             "preferred_style": ctx.preferred_style,
         }

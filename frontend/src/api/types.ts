@@ -85,6 +85,11 @@ export interface PlanBriefStage {
   kc_count: number;
 }
 
+export interface PathItem {
+  kc_id: string;
+  name: string;
+}
+
 export interface PlanBrief {
   course_id: string;
   plan_id: string;
@@ -92,10 +97,11 @@ export interface PlanBrief {
   target_outcome: string;
   why_this_plan: string[];
   stage_overview: PlanBriefStage[];
-  critical_path: string[]; // kc_id 列表
+  critical_path: PathItem[];
   difficulty_hotspots: string[];
   known_skills: string[];
   skill_gaps: string[];
+  unassessed_skills: string[];
   adaptation_rules: string[];
   time_budget: string;
 }
@@ -249,8 +255,14 @@ export interface LearningMapResponse {
   goal: string;
   nodes: LearningMapNode[];
   edges: LearningMapEdge[];
+  /** 兼容旧字段：排序后的可学节点（不再作为真实路径）。 */
   recommended_path: string[];
+  /** 当前推荐（最多一个）：现在最建议学的知识点。 */
   current_recommended_kc: string | null;
+  /** 其它可学候选（1~3 个，不显示推荐 badge）。 */
+  recommended_candidates: string[];
+  /** 当前学习路径（真实 DAG 路径，相邻节点必有 prerequisite edge）。 */
+  active_path: string[];
   /** 图来源：generated（动态生成）/ builtin（内置）/ legacy；调试用。 */
   graph_source?: string | null;
   graph_version?: number | null;

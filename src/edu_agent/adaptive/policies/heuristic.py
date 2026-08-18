@@ -232,3 +232,59 @@ class HeuristicAdaptivePolicy:
 
     def current_recommended_kc(self, path: List[str]) -> Optional[str]:
         return path[0] if path else None
+
+    # -- 推荐候选（current + candidates）-----------------------------------
+    def recommended_candidates(
+        self,
+        mastery_map: Dict[str, Optional[float]],
+        misconception_map: Optional[Dict[str, List[str]]] = None,
+        recent_error_map: Optional[Dict[str, bool]] = None,
+        max_candidates: int = 3,
+    ) -> List[str]:
+        """返回可学的推荐候选（排除当前推荐后的 1~max_candidates 个）。"""
+        path = self.recommended_path(mastery_map, misconception_map, recent_error_map)
+        if not path:
+            return []
+        return path[1:1 + max_candidates]
+
+    # -- active_path：真实 DAG 路径（相邻节点必须有 prerequisite edge）------
+    def active_path(
+        self,
+        mastery_map: Dict[str, Optional[float]],
+        misconception_map: Optional[Dict[str, List[str]]] = None,
+        recent_error_map: Optional[Dict[str, bool]] = None,
+        start_kc: Optional[str] = None,
+        max_len: int = 6,
+    ) -> List[str]:
+        """沿 prerequisite 依赖方向（当前 → 后继）走出真实路径。
+
+        保证：path 中任意相邻 (p, n) 都满足 ``n`` 是 ``p`` 的后继（即存在
+        p→n 的 prerequisite edge）。起点取当前推荐；若当前推荐已被掌握，
+        从首个未掌握且未锁定的可学节点开始。
+        """
+        path_ordered = self.recommended_path(mastery_map, misconception_map, recent_error_map)
+        cur = start_kc or (path_ordered[0] if path_ordered else None)
+        if cur is None:
+            return []
+
+        result: List[str] = [cur]
+        for _ in range(max_len - 1):
+            # 沿后继方向：选择未掌握、未锁定的后继；若有多个，优先推荐顺序中靠前的。
+            dependents = [d for d in self.course.dependents(cur)]
+            if not dependents:
+                break
+            # 过滤出可继续学习的后继（未掌握 + 未锁定）
+            candidates = [
+                d for d in dependents
+                if not self.is_mastered(mastery_map.get(d))
+                and not self.is_locked(d, mastery_map)
+            ]
+            if not candidates:
+                break
+            # 与推荐顺序对齐（推荐顺序里越靠前的后继越优先）
+            rank = {k: i for i, k in enumerate(path_ordered)}
+            candidates.sort(key=lambda d: rank.get(d, len(path_ordered)))
+            nxt = candidates[0]
+            result.append(nxt)
+            cur = nxt
+        return result

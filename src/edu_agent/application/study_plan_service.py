@@ -241,7 +241,16 @@ def generate_plan(
              "summary": summary, "plan_markdown": final_plan, "progress": 0.0,
              "created_at": _now_iso(), "updated_at": _now_iso()}
         )
+        # §51：step 前置知识以“人类可读标题”持久化（内部 canonical id 只在 graph / API 参数中使用）。
+        can_title_of: Dict[str, str] = {}
+        if dyn_course is not None:
+            can_title_of = {c.kc_id: c.title for c in dyn_course.components}
         for idx, node in enumerate(nodes, start=1):
+            # 前置：draft id → canonical id → 标题；无法解析的原样保留（多为可读标题）。
+            prereq_titles: List[str] = []
+            for p in (node.get("prerequisites") or []):
+                p_cid = id_map.get(p, p)
+                prereq_titles.append(can_title_of.get(p_cid, p))
             learner.repo.upsert_plan_step(
                 {"step_id": f"PLANSTEP-{uuid.uuid4().hex[:10]}", "plan_id": plan_id, "seq": idx,
                  "stage_id": node.get("stage_id", "stage-1"),
@@ -250,7 +259,7 @@ def generate_plan(
                  "kc_id": node.get("id") or "",
                  "title": node.get("title", ""), "description": node.get("summary", ""),
                  "learning_objective": node.get("learning_objective", ""),
-                 "prerequisites_json": json.dumps(node.get("prerequisites") or [], ensure_ascii=False),
+                 "prerequisites_json": json.dumps(prereq_titles, ensure_ascii=False),
                  "difficulty": node.get("difficulty", ""),
                  "minutes": int(node.get("estimated_minutes", 30) or 30),
                  "status": "not_started", "created_at": _now_iso(), "updated_at": _now_iso()}
@@ -348,7 +357,7 @@ def get_plan(user_id: str, course_id: str,
         "title": plan.get("title", ""),
         "summary": plan.get("summary", ""),
         "plan_markdown": plan.get("plan_markdown", ""),
-        "plan_brief": _load_plan_brief(plan.get("plan_brief_json")),
+        "plan_brief": _ensure_plan_brief(user_id, course_id, plan, learner),
         "progress": float(plan.get("progress", 0.0)),
         "created_at": plan.get("created_at"),
         "updated_at": plan.get("updated_at"),
@@ -364,6 +373,27 @@ def _load_plan_brief(raw: Optional[str]) -> Optional[dict]:
         data = json.loads(raw)
         return data if isinstance(data, dict) else None
     except json.JSONDecodeError:
+        return None
+
+
+def _ensure_plan_brief(
+    user_id: str, course_id: str, plan: dict, learner: LearnerModelService
+) -> Optional[dict]:
+    """§44：旧 Plan（plan_brief_json 为空）自动 lazy backfill。
+
+    返回 PlanBrief dict；缺失则确定性构建并持久化，下次直接复用。
+    """
+    existing = _load_plan_brief(plan.get("plan_brief_json"))
+    if existing is not None:
+        return existing
+    try:
+        from edu_agent.application.plan_brief_service import PlanBriefService
+
+        brief = PlanBriefService(learner).build(user_id, course_id)
+        learner.repo.update_plan_brief(plan["plan_id"], brief.model_dump_json())
+        return brief.model_dump(mode="json")
+    except Exception:  # noqa: BLE001 - backfill 失败不阻断取计划
+        logger.warning("[plan] brief backfill failed: course=%s", course_id, exc_info=True)
         return None
 
 

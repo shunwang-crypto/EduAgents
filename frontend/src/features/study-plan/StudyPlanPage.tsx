@@ -402,20 +402,67 @@ export function StudyPlanPage() {
     [courseId, api]
   );
 
-  // 打开 Structured Explanation Workspace（§16：不再在列表内展开长文，
-  // 而是选中该 Step 对应 KC 并打开结构化讲解）
-  const openExplanation = useCallback(
+  // Explanation Workspace 滚动锚点（§33：state 更新后再 scrollIntoView）
+  const explanationRef = useRef<HTMLDivElement | null>(null);
+
+  // §36：KC → PlanStep（优先 in_progress，then not_started，then completed，then lowest seq）
+  const findPlanStepForKc = useCallback(
+    (kcId: string): PlanStep | null => {
+      if (!plan) return null;
+      const steps = plan.stages.flatMap((st) => st.steps);
+      const rank = (s: PlanStep) =>
+        s.status === "in_progress" ? 0 : s.status === "not_started" ? 1 : s.status === "completed" ? 2 : 3;
+      const matches = steps.filter((s) => s.kc_id === kcId);
+      if (matches.length === 0) return null;
+      return matches.slice().sort((a, b) => rank(a) - rank(b) || a.seq - b.seq)[0];
+    },
+    [plan]
+  );
+
+  // 打开 Structured Explanation Workspace（§16/§32：选中 KC + 切到 map + 立即进入 Workspace）
+  const openExplanationStep = useCallback(
     (step: PlanStep) => {
       setShowHandoffNotice(false);
       setExplanationStep({ stepId: step.step_id, kcId: step.kc_id });
-      // 同步在 Learning Map 中选中对应 KC（若存在于图）
       if (learningMap) {
         const node = learningMap.nodes.find((n) => n.id === step.kc_id) ?? null;
         if (node) setSelectedKc(node);
       }
-      setTab("plan");
+      setTab("map");
     },
     [learningMap]
+  );
+
+  // §32：设置 explanationStep 后，在 rAF 中 scrollIntoView
+  useEffect(() => {
+    if (!explanationStep) return;
+    const raf = requestAnimationFrame(() => {
+      explanationRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [explanationStep]);
+
+  const openExplanation = openExplanationStep;
+
+  // §35：根据 KC 讲解状态计算 CTA 文案
+  const explanationCtaForKc = useCallback(
+    (kcId: string): string | null => {
+      if (!kcId) return null;
+      const step = findPlanStepForKc(kcId);
+      if (!step) return null;
+      if (step.status === "completed") return "再次查看讲解";
+      if (step.status === "in_progress") return "继续讲解";
+      return "开始讲解";
+    },
+    [findPlanStepForKc]
+  );
+
+  const startExplanationForKc = useCallback(
+    (kcId: string) => {
+      const step = findPlanStepForKc(kcId);
+      if (step) openExplanationStep(step);
+    },
+    [findPlanStepForKc, openExplanationStep]
   );
 
   // 请求一个 step 的 Structured Explanation（GET-OR-GENERATE，后端按 context_hash 缓存）
@@ -710,7 +757,6 @@ export function StudyPlanPage() {
                           )}
                           <div className="plan-step-footer">
                             <span className="plan-step-time">约 {step.minutes} 分钟</span>
-                            <span className="plan-step-kc">KC: {step.kc_id}</span>
                             <button
                               type="button"
                               className="step-ask-btn"
@@ -897,15 +943,23 @@ export function StudyPlanPage() {
               </div>
               {!mapEmpty && (
                 <aside className="learning-map-side">
-                  <KnowledgeDetailPanel node={selectedKc} allNodes={learningMap?.nodes ?? []} />
+                  <KnowledgeDetailPanel
+                    node={selectedKc}
+                    allNodes={learningMap?.nodes ?? []}
+                    // §35：点击节点即可进入讲解（根据该 KC 对应 step 状态变化文案）
+                    explanationCta={selectedKc ? explanationCtaForKc(selectedKc.id) : null}
+                    onStartExplanation={() =>
+                      selectedKc && startExplanationForKc(selectedKc.id)
+                    }
+                  />
                 </aside>
               )}
             </div>
           )}
 
-          {/* Structured Explanation Workspace（§10/§14：地图下方的主体学习区域） */}
-          {(explanationStep || planStatus === "ready") && (
-            <section className="explanation-section">
+          {/* §34：只有选中某个知识点时才渲染 Explanation Workspace（不再空渲染） */}
+          {explanationStep && (
+            <section ref={explanationRef} className="explanation-section">
               <ExplanationWorkspace
                 stepId={explanationStep?.stepId ?? ""}
                 kcId={explanationStep?.kcId ?? ""}
@@ -922,9 +976,9 @@ export function StudyPlanPage() {
               {showHandoffNotice && (
                 <div className="handoff-notice" role="status">
                   <p>
-                    实践模块接口待接入（Practice module）。
+                    相关实践功能暂未开放。
                     <br />
-                    <small>完成基础实践后，系统会根据练习证据更新你的知识掌握度。</small>
+                    <small>后续完成基础实践后，系统会根据学习记录更新你的知识掌握度。</small>
                   </p>
                   <button
                     type="button"

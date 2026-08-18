@@ -59,6 +59,8 @@ class LearningMapResponse(BaseModel):
     edges: List[LearningMapEdge] = Field(default_factory=list)
     recommended_path: List[str] = Field(default_factory=list)
     current_recommended_kc: Optional[str] = None
+    recommended_candidates: List[str] = Field(default_factory=list)
+    active_path: List[str] = Field(default_factory=list)
     graph_source: Optional[str] = None        # generated / builtin / legacy
     graph_version: Optional[int] = None
 
@@ -150,10 +152,21 @@ class LearningMapService:
             for k, v in recent_evidence_map.items()
         }
 
-        goal_kcs = [c.kc_id for c in course.components]
-        policy = HeuristicAdaptivePolicy(course, goal_kcs=goal_kcs)
-        recommended_path = policy.recommended_path(
-            mastery_map, misconception_map, _recent_error_map,
+        # §28：goal KC 优先来自显式 target；缺省 = 无后继的末端叶子 KC（不能是所有组件）。
+        goal_kcs = self._terminal_kcs(course)
+        policy = HeuristicAdaptivePolicy(course, goal_kcs=list(goal_kcs), target_kcs=list(goal_kcs))
+
+        # 推荐语义拆分（§23-27）：
+        # - current_recommended_kc：最多一个（现在最建议学）
+        # - recommended_candidates：其它 1~3 个可学候选
+        # - active_path：真实 DAG 路径（相邻节点必有 prerequisite edge）
+        recommended_path = policy.recommended_path(mastery_map, misconception_map, _recent_error_map)
+        current_kc = policy.current_recommended_kc(recommended_path)
+        candidates = policy.recommended_candidates(
+            mastery_map, misconception_map, _recent_error_map, max_candidates=3
+        )
+        active_path = policy.active_path(
+            mastery_map, misconception_map, _recent_error_map, start_kc=current_kc
         )
 
         nodes: List[LearningMapNode] = []
@@ -161,6 +174,8 @@ class LearningMapService:
             eval_res = policy.evaluate_kc(
                 c.kc_id, mastery_map, misconception_map, _recent_error_map,
             )
+            # 只有单个 current_recommended_kc 标 ★ 当前推荐；候选不标推荐 badge
+            is_current = (current_kc == c.kc_id)
             nodes.append(
                 LearningMapNode(
                     id=c.kc_id,
@@ -170,7 +185,7 @@ class LearningMapService:
                     mastery=mastery_map.get(c.kc_id),
                     confidence=conf_map.get(c.kc_id),
                     status=eval_res["status"],
-                    recommended=eval_res["recommended"],
+                    recommended=is_current,
                     locked=eval_res["locked"],
                     prerequisites=course.prerequisites(c.kc_id),
                     misconceptions=misconception_map.get(c.kc_id, []),
@@ -191,7 +206,17 @@ class LearningMapService:
             nodes=nodes,
             edges=edges,
             recommended_path=recommended_path,
-            current_recommended_kc=recommended_path[0] if recommended_path else None,
+            current_recommended_kc=current_kc,
+            recommended_candidates=candidates,
+            active_path=active_path,
             graph_source=graph_source,
             graph_version=graph_version,
         )
+
+    @staticmethod
+    def _terminal_kcs(course: Course) -> List[str]:
+        """末端叶子 KC（无后继），作为目标节点候选。"""
+        return [
+            c.kc_id for c in course.components
+            if not course.dependents(c.kc_id)
+        ] or [c.kc_id for c in course.components]

@@ -59,10 +59,15 @@ const { mockPlan, mockApi } = vi.hoisted(() => {
       target_outcome: "独立完成数据分析流程",
       why_this_plan: ["你已经具备：基础 Python", "当前主要能力缺口：NumPy"],
       stage_overview: [],
-      critical_path: ["knowledge-1", "knowledge-2", "knowledge-3"],
+      critical_path: [
+        { kc_id: "knowledge-1", name: "NumPy 数组基础" },
+        { kc_id: "knowledge-2", name: "数据分析" },
+        { kc_id: "knowledge-3", name: "Pandas" },
+      ],
       difficulty_hotspots: [],
       known_skills: [],
       skill_gaps: [],
+      unassessed_skills: ["NumPy 数组基础", "数据分析"],
       adaptation_rules: [],
       time_budget: "",
     },
@@ -206,6 +211,8 @@ const { mockPlan, mockApi } = vi.hoisted(() => {
       edges: [{ source: "numpy_array", target: "numpy_broadcasting", relation: "prerequisite", weight: 1 }],
       recommended_path: ["numpy_array", "numpy_broadcasting"],
       current_recommended_kc: "numpy_array",
+      recommended_candidates: [],
+      active_path: ["numpy_array", "numpy_broadcasting"],
       graph_source: "generated",
     }),
   };
@@ -347,6 +354,92 @@ describe("StudyPlanPage · Learning Map", () => {
     expect(screen.queryByPlaceholderText(/请输入你的回答/)).toBeNull();
     expect(screen.queryByText("智能导师")).toBeNull();
   });
+
+  // §54：生产 UI 不泄露内部工程概念
+  it("no internal terminology leaks in visible UI", async () => {
+    renderPage();
+    await waitFor(() => expect(screen.getAllByText("开始学习").length).toBe(3));
+    const body = document.body.textContent ?? "";
+    for (const leaked of [
+      "KC:",
+      "kc_",
+      "UNKNOWN_STATE",
+      "GOAL_RELEVANT",
+      "NEXT_IN_PLAN",
+      "PREREQUISITE_",
+      "Learner Model",
+      "Practice module",
+      "Structured Explanation",
+      "知识组件",
+      "Knowledge Component",
+    ]) {
+      expect(body).not.toContain(leaked);
+    }
+  });
+
+  // §62：Plan List / Detail / PlanBrief 不显示 raw id
+  it("no raw kc_ ids in plan list and detail", async () => {
+    renderPage();
+    await waitFor(() => expect(screen.getAllByText("开始学习").length).toBe(3));
+    const body = document.body.textContent ?? "";
+    expect(body.match(/kc_[a-z0-9]+/)).toBeNull();
+  });
+
+  // §35/§61：选择 Map 节点出现「开始讲解」CTA，点击进入 Explanation Workspace
+  it("selecting map node shows 开始讲解 CTA and opens workspace", async () => {
+    // 用与 plan step 匹配的 kc_id（knowledge-1），保证 findPlanStepForKc 命中（Once 避免污染后续用例）
+    (mockApi.getLearningMap as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      course_id: "PY", goal: "g",
+      nodes: [
+        { id: "knowledge-1", name: "NumPy 数组基础", description: "", difficulty: "easy",
+          mastery: null, confidence: null, status: "unknown", recommended: true, locked: false,
+          prerequisites: [], misconceptions: [], recent_evidence: [], reason_codes: [] },
+        { id: "knowledge-2", name: "DataFrame 基础", description: "", difficulty: "easy",
+          mastery: null, confidence: null, status: "unknown", recommended: false, locked: false,
+          prerequisites: ["knowledge-1"], misconceptions: [], recent_evidence: [], reason_codes: [] },
+      ],
+      edges: [{ source: "knowledge-1", target: "knowledge-2", relation: "prerequisite", weight: 1 }],
+      recommended_path: ["knowledge-1"],
+      current_recommended_kc: "knowledge-1",
+      recommended_candidates: [], active_path: ["knowledge-1"],
+    });
+    renderMapPage();
+    await waitFor(() =>
+      expect(screen.getAllByRole("button", { name: "NumPy 数组基础" }).length).toBeGreaterThan(0)
+    );
+    fireEvent.click(screen.getAllByRole("button", { name: "NumPy 数组基础" })[0]);
+    // 右侧出现讲解 CTA（该 KC 对应 step 未开始 → 开始讲解）
+    await waitFor(() => expect(screen.getByText("开始讲解")).toBeTruthy());
+    fireEvent.click(screen.getByText("开始讲解"));
+    // 进入 Explanation Workspace
+    await waitFor(() => expect(screen.getByText("第 1 / 3 部分")).toBeTruthy());
+  });
+
+  // §43/§56：PlanBrief 显示「尚待评估」（UNKNOWN 不进能力缺口）
+  it("plan brief shows 尚待评估 for unknown skills", async () => {
+    (mockApi.getLearningMap as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      course_id: "PY", goal: "g",
+      nodes: [
+        { id: "k1", name: "K1", description: "", difficulty: "easy", mastery: null,
+          confidence: null, status: "unknown", recommended: true, locked: false,
+          prerequisites: [], misconceptions: [], recent_evidence: [], reason_codes: [] },
+      ],
+      edges: [], recommended_path: ["k1"], current_recommended_kc: "k1",
+      recommended_candidates: [], active_path: ["k1"],
+    });
+    (mockApi.getPlan as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ...mockPlan,
+      plan_brief: {
+        ...mockPlan.plan_brief,
+        critical_path: [{ kc_id: "k1", name: "K1" }],
+        known_skills: [], skill_gaps: [], unassessed_skills: ["K1"],
+      },
+    });
+    renderPage();
+    await waitFor(() => expect(screen.getByText("尚待评估")).toBeTruthy());
+    expect(screen.queryByText("建议加强")).toBeNull();
+    expect(screen.queryByText("已确认掌握")).toBeNull();
+  });
 });
 
   it("renders exactly 3 stage sections", async () => {
@@ -361,7 +454,10 @@ describe("StudyPlanPage · Learning Map", () => {
 
   it("every stage has at least one step", async () => {
     renderPage();
-    await waitFor(() => expect(screen.getByText("NumPy 数组基础")).toBeTruthy());
+    // PlanBrief 关键路径与步骤标题可能同名 → 用 getAllByText
+    await waitFor(() =>
+      expect(screen.getAllByText("NumPy 数组基础").length).toBeGreaterThan(0)
+    );
     expect(screen.getByText("DataFrame 基础")).toBeTruthy();
     expect(screen.getByText("数据清洗案例")).toBeTruthy();
   });

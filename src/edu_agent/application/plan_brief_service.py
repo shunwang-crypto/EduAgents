@@ -27,6 +27,11 @@ class StageOverview(BaseModel):
     kc_count: int
 
 
+class PathItem(BaseModel):
+    kc_id: str
+    name: str
+
+
 class PlanBrief(BaseModel):
     course_id: str
     plan_id: str
@@ -35,10 +40,11 @@ class PlanBrief(BaseModel):
 
     why_this_plan: List[str] = Field(default_factory=list)
     stage_overview: List[StageOverview] = Field(default_factory=list)
-    critical_path: List[str] = Field(default_factory=list)   # kc_id 列表
+    critical_path: List[PathItem] = Field(default_factory=list)
     difficulty_hotspots: List[str] = Field(default_factory=list)
     known_skills: List[str] = Field(default_factory=list)
     skill_gaps: List[str] = Field(default_factory=list)
+    unassessed_skills: List[str] = Field(default_factory=list)
     adaptation_rules: List[str] = Field(default_factory=list)
     time_budget: str = ""
 
@@ -63,21 +69,25 @@ class PlanBriefService:
         if bundle.active_goal is not None:
             goal = (bundle.active_goal.target or bundle.active_goal.goal_name or "").strip() or goal
 
-        # known skills / skill gaps（来自 learner mastery；mastery>=0.7 → known）
-        mastery_map: Dict[str, float] = {}
+        # UNKNOWN != skill gap（§10）：mastery missing ≠ mastery 0。
+        # 拆成三类：known / skill_gaps / unassessed。
+        mastery_map: Dict[str, Optional[float]] = {}
         for item in bundle.course_state.knowledge:
-            if item.mastery is not None:
-                mastery_map[item.kc_id] = item.mastery
+            mastery_map[item.kc_id] = item.mastery
         known_skills = [
             c.title for c in course.components
-            if mastery_map.get(c.kc_id, 0) >= 0.7
+            if mastery_map.get(c.kc_id) is not None and mastery_map.get(c.kc_id) >= 0.7
         ][:8]
         skill_gaps = [
             c.title for c in course.components
-            if mastery_map.get(c.kc_id, 0) < 0.7
+            if mastery_map.get(c.kc_id) is not None and mastery_map.get(c.kc_id) < 0.7
+        ][:8]
+        unassessed_skills = [
+            c.title for c in course.components
+            if mastery_map.get(c.kc_id) is None
         ][:8]
 
-        # critical path：从 recommended_path 或 KCGraph 的“目标后继”推导
+        # critical path：真实 DAG longest path（§42）
         critical_path = self._critical_path(course)
 
         # stage overview（结构化 StudyPlan 是唯一真值）
@@ -98,18 +108,18 @@ class PlanBriefService:
                 )
             )
 
-        # why_this_plan / adaptation_rules（确定性，来自 learner 状态）
+        # why_this_plan / adaptation_rules（确定性，来自 learner 状态；§9 不出现内部术语）
         why = [
             f"目标：{goal}",
         ]
         if known_skills:
             why.append("你已经具备：" + "、".join(known_skills[:4]))
         if skill_gaps:
-            why.append("当前主要能力缺口：" + "、".join(skill_gaps[:4]))
+            why.append("建议加强：" + "、".join(skill_gaps[:4]))
 
         adaptation_rules = [
-            "如果 Learner Model 显示某知识点已掌握，系统会跳过重复基础内容。",
-            "如果外部实践结果显示某前置知识仍薄弱，系统会重新调整推荐路径。",
+            "如果后续学习结果表明某个知识点已经掌握，系统会减少重复基础内容。",
+            "如果后续实践表明某个前置知识仍需加强，系统会调整推荐路径。",
         ]
 
         pc = plan_context or {}
@@ -129,6 +139,7 @@ class PlanBriefService:
             difficulty_hotspots=self._difficulty_hotspots(steps),
             known_skills=known_skills,
             skill_gaps=skill_gaps,
+            unassessed_skills=unassessed_skills,
             adaptation_rules=adaptation_rules,
             time_budget=time_budget,
         )
@@ -137,18 +148,24 @@ class PlanBriefService:
         return self.build(user_id, course_id).model_dump(mode="json")
 
     @staticmethod
-    def _critical_path(course: Course) -> List[str]:
-        """从 KCGraph 推导一条关键路径（无环；取最长依赖链）。"""
+    def _critical_path(course: Course) -> List[PathItem]:
+        """真实 DAG 最长路径（§42）：DP on topological order。
+
+        dist[node] = 1 + max(dist[prereq]); parent 回溯。
+        保证返回路径中相邻节点之间都有 prerequisite edge。
+        """
         if not course.components:
             return []
-        # 拓扑排序后的依赖链
-        order: List[str] = []
-        indeg = {c.kc_id: 0 for c in course.components}
-        children: Dict[str, List[str]] = {c.kc_id: [] for c in course.components}
+        nodes = [c.kc_id for c in course.components]
+        # 建图：from_kc -> [to_kc]
+        children: Dict[str, List[str]] = {k: [] for k in nodes}
+        indeg: Dict[str, int] = {k: 0 for k in nodes}
         for r in course.relations:
-            if r.relation == "prerequisite":
-                indeg[r.to_kc] = indeg.get(r.to_kc, 0) + 1
-                children.setdefault(r.from_kc, []).append(r.to_kc)
+            if r.relation == "prerequisite" and r.from_kc in children and r.to_kc in indeg:
+                children[r.from_kc].append(r.to_kc)
+                indeg[r.to_kc] += 1
+        # Kahn 拓扑序
+        order: List[str] = []
         queue = [k for k, d in indeg.items() if d == 0]
         while queue:
             k = queue.pop(0)
@@ -157,10 +174,32 @@ class PlanBriefService:
                 indeg[c] -= 1
                 if indeg[c] == 0:
                     queue.append(c)
-        # 从最后一个入序节点向前回溯最长链（简化：直接取 topological 顺序的尾部子序列）
-        if not order:
-            return [c.kc_id for c in course.components]
-        return order[-min(len(order), 5):]
+        # 若存在环（不应有），用原始顺序兜底
+        if len(order) != len(nodes):
+            order = nodes
+
+        dist: Dict[str, int] = {}
+        parent: Dict[str, Optional[str]] = {}
+        for k in order:
+            best = 0
+            best_p: Optional[str] = None
+            for p in course.prerequisites(k):
+                if dist.get(p, 0) + 1 > best:
+                    best = dist.get(p, 0) + 1
+                    best_p = p
+            dist[k] = best
+            parent[k] = best_p
+        # 找到 dist 最大的节点（末端最长链终点）
+        end = max(nodes, key=lambda k: dist.get(k, 0))
+        path_ids: List[str] = []
+        cur: Optional[str] = end
+        while cur is not None:
+            path_ids.append(cur)
+            cur = parent.get(cur)
+        path_ids.reverse()
+        # 相邻节点有 edge 保证（DP 只从 prerequisite 回溯）
+        title_of = {c.kc_id: c.title for c in course.components}
+        return [PathItem(kc_id=k, name=title_of.get(k, k)) for k in path_ids[:8]]
 
     @staticmethod
     def _difficulty_hotspots(steps: List[dict]) -> List[str]:

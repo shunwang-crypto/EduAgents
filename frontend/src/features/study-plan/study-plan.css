@@ -484,6 +484,40 @@
   text-align: center;
 }
 
+/* §30：地图模式切换（当前学习路径 / 完整知识图） */
+.learning-map-mode-switch {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 5;
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid var(--ea-border);
+}
+.learning-map-mode-btn {
+  font-size: 12px;
+  padding: 3px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ea-text-muted);
+  cursor: pointer;
+}
+.learning-map-mode-btn.active {
+  background: var(--ea-primary);
+  color: #fff;
+}
+
+/* §41：PlanBrief 技能标签 */
+.plan-brief-skills {
+  font-size: 13px;
+  color: var(--ea-text-muted);
+  line-height: 1.7;
+}
+
 @media (max-width: 900px) {
   .learning-map-layout {
     grid-template-columns: 1fr;

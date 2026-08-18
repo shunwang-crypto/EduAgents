@@ -9,7 +9,7 @@ EduAgents 只提供三个用户可见核心能力：
 3. **普通 AI 对话** — 无课程普通对话，或带当前课程上下文的对话
 
 后台保留轻量 **Dynamic Learner Model**（SQLite），用于让学习计划更贴合用户背景、让对话更个性化。
-**不提供**：今日学习、最近学习、学习画像页面、学习路径、Topic Tutor、KB QA、Quiz/Practice/Mistake、排行榜等任何复杂教育平台功能。
+**不提供**：今日学习、最近学习、学习画像页面、Topic Tutor、KB QA、Quiz/Practice/Grading/Assessment/Mistake、排行榜等任何复杂教育平台功能（练习/评测属于外部 Practice 模块职责，本模块仅提供 Handoff 接口）。
 
 ## 课程分类（Course Categories）
 
@@ -66,11 +66,13 @@ Course + Goal + Learner Context + Course Domain
         ↓
 PlanContext（known / unknown / review / background / preferred_style）
         ↓
-StudyPlanWorkflow（analyzer → decomposer → planner → validator → reviewer）
+StudyPlanWorkflow（analyzer → decomposer → canonical KCGraph → plan builder → validator）
         ↓
-study_plans + plan_steps（SQLite）
+study_plans + plan_steps + course_kc_graph（SQLite）
         ↓
-前端「学习计划」文档式视图
+PlanBriefService（确定性 PlanBrief） + ExplanationService（结构化讲解，lazy + cache）
+        ↓
+前端：PlanBrief → Learning Map（ELK DAG）→ Structured Explanation → Practice Handoff
 ```
 
 ### 对话

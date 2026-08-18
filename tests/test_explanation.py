@@ -124,6 +124,24 @@ def test_explanation_validator_rejects_invalid(learner):
     assert any("forbidden practice content" in i.message for i in issues2)
 
 
+def test_deterministic_fallback_no_raw_ids(learner, made_course):
+    """§40：确定性 fallback 的可见 block 文本不得包含 kc_ 内部 id。"""
+    uid, cid, plan_id, step_id, kc_id = made_course
+    # 强制离线（EDU_OFFLINE=1 已在文件顶部），走确定性 fallback
+    exp = ExplanationService(learner).get_explanation(uid, cid, plan_id, step_id)
+    # 用户可见的 block 内容 / data / title 不得含 kc_ 内部 id
+    for block in exp["blocks"]:
+        text = f"{block.get('title','')}{block.get('content','')}".lower()
+        data = str(block.get("data", {})).lower()
+        assert "kc_" not in text
+        assert "kc_" not in data
+    # 前置/后继使用人类名称（title），非 id
+    all_text = " ".join(
+        str(b.get("content", "")) + str(b.get("data", {})) for b in exp["blocks"]
+    ).lower()
+    assert "kc_" not in all_text
+
+
 def test_practice_handoff_interface_only(learner, made_course):
     uid, cid, plan_id, step_id, kc_id = made_course
     h = build_practice_handoff(uid, cid, plan_id, step_id, learner)

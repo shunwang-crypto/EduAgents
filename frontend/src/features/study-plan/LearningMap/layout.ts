@@ -1,5 +1,6 @@
-/** 基于 prerequisite 边的分层 DAG 布局（确定性、无外部依赖）。 */
+/** 基于 ELK 的分层 DAG 布局（§17-22）。 */
 
+import ELK, { type ElkNode, type LayoutOptions } from "elkjs/lib/elk.bundled.js";
 import type { LearningMapEdge, LearningMapNode } from "../../../api/types";
 
 export interface PositionedNode {
@@ -8,46 +9,65 @@ export interface PositionedNode {
   y: number;
 }
 
-const X_GAP = 220;
-const Y_GAP = 140;
+const elk = new ELK();
 
-/** 计算每个节点的层级（最长前置链深度），用于横向分层。 */
-function computeLayers(
+const NODE_W = 220;
+const NODE_H = 96;
+
+/** ELK 配置（§18）：layered + RIGHT 方向 + orthogonal routing，减少边交叉与节点重叠。 */
+const ELK_OPTIONS: LayoutOptions = {
+  "elk.algorithm": "layered",
+  "elk.direction": "RIGHT",
+  "elk.edgeRouting": "ORTHOGONAL",
+  "elk.spacing.nodeNode": "40",
+  "elk.layered.spacing.nodeNodeBetweenLayers": "90",
+  "elk.layered.crossingMinimization.strategy": "LAYER_SWEEP",
+  "elk.layered.nodePlacement.strategy": "NETWORK_SIMPLEX",
+};
+
+/**
+ * 用 ELK 计算 DAG 布局。
+ */
+export async function layoutDagElk(
   nodes: LearningMapNode[],
-): Map<string, number> {
-  const prereqs = new Map<string, string[]>();
-  for (const n of nodes) prereqs.set(n.id, n.prerequisites ?? []);
-  const layer = new Map<string, number>();
+  edges: LearningMapEdge[],
+): Promise<PositionedNode[]> {
+  const elkNodes: ElkNode[] = nodes.map((n) => ({
+    id: n.id,
+    width: NODE_W,
+    height: NODE_H,
+  }));
+  const elkEdges = edges.map((e) => ({
+    id: `${e.source}->${e.target}`,
+    sources: [e.source],
+    targets: [e.target],
+  }));
 
-  const resolve = (id: string, stack: Set<string>): number => {
-    if (layer.has(id)) return layer.get(id)!;
-    if (stack.has(id)) return 0; // 环保护
-    stack.add(id);
-    const ps = prereqs.get(id) ?? [];
-    let depth = 0;
-    for (const p of ps) {
-      depth = Math.max(depth, resolve(p, stack) + 1);
-    }
-    stack.delete(id);
-    layer.set(id, depth);
-    return depth;
+  const graph: ElkNode = {
+    id: "root",
+    layoutOptions: ELK_OPTIONS,
+    children: elkNodes,
+    edges: elkEdges,
   };
 
-  for (const n of nodes) resolve(n.id, new Set());
-  return layer;
+  const laid = await elk.layout(graph);
+  const result = new Map<string, PositionedNode>();
+  for (const child of laid.children ?? []) {
+    result.set(child.id, { id: child.id, x: child.x ?? 0, y: child.y ?? 0 });
+  }
+  // 返回节点顺序（node 顺序展示），附带 dim 标记供调用方使用
+  return nodes
+    .map((n) => result.get(n.id))
+    .filter((p): p is PositionedNode => Boolean(p));
 }
 
-export function layoutDag(
-  nodes: LearningMapNode[],
-  _edges: LearningMapEdge[],
-): PositionedNode[] {
-  const layers = computeLayers(nodes);
-  // 每层按出现顺序分配行号
-  const perLayerCount = new Map<number, number>();
-  return nodes.map((n) => {
-    const l = layers.get(n.id) ?? 0;
-    const row = perLayerCount.get(l) ?? 0;
-    perLayerCount.set(l, row + 1);
-    return { id: n.id, x: l * X_GAP, y: row * Y_GAP };
-  });
+/** 判断节点是否属于当前学习路径模式（active_path 内，或 active_path 的直接前置）。 */
+export function isOnActivePath(
+  nodeId: string,
+  activePath: string[],
+  edges: LearningMapEdge[],
+): boolean {
+  if (activePath.includes(nodeId)) return true;
+  // 直接前置支撑节点也算可见（非隐藏），但可弱化
+  return edges.some((e) => e.target === nodeId && activePath.includes(e.source));
 }

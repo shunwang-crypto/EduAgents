@@ -165,8 +165,9 @@ def _parse(text: str):
 def _deterministic_blocks(ctx: ExplanationContext, order: List[str]) -> List[ExplanationBlock]:
     """离线降级：从 context 确定性构造结构化讲解（无 LLM）。"""
     blocks: List[ExplanationBlock] = []
-    prereq_str = "、".join(ctx.prerequisites) if ctx.prerequisites else "无直接前置"
-    depend_str = "、".join(ctx.dependents) if ctx.dependents else "后续知识点"
+    # §40：使用人类可读名称（titles），绝不使用 kc_xxx 内部 id。
+    prereq_str = "、".join(ctx.prerequisite_titles) if ctx.prerequisite_titles else "无直接前置"
+    depend_str = "、".join(ctx.dependent_titles) if ctx.dependent_titles else "后续知识点"
     blocks.append(
         ExplanationBlock(
             type=BlockType.ORIENTATION,
@@ -182,7 +183,7 @@ def _deterministic_blocks(ctx: ExplanationContext, order: List[str]) -> List[Exp
         ExplanationBlock(
             type=BlockType.BIG_PICTURE,
             title="先看整体",
-            data={"items": [ctx.kc_title, "→", *[d for d in ctx.dependents]] or [ctx.kc_title]},
+            data={"items": [ctx.kc_title, "→", *[d for d in ctx.dependent_titles]] or [ctx.kc_title]},
         )
     )
     blocks.append(

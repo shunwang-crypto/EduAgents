@@ -69,12 +69,52 @@ StudyPlanService.generate_plan(user_id, course_id, goal, ...)
     ├─ 校验课程存在 / 取课程 goal
     ├─ 写 optional_background → USER_EXPLICIT_PROFILE_FACT（若填）
     ├─ build_plan_context（画像 → PlanContext）
-    ├─ run_study_plan_workflow（analyzer → decomposer → planner → validator → reviewer）
+    ├─ run_study_plan_workflow（analyzer → decomposer → canonical KCGraph → plan builder → validator）
     ├─ 保存 study_plans + plan_steps（事务）
+    ├─ 持久化 / 更新 dynamic KCGraph（course_kc_graph）
+    ├─ 持久化 PlanBrief（plan_brief_json；缺失时 get_plan 懒 backfill）
+    ├─ 失效旧 Structured Explanation 缓存（step_explanations）
     ├─ 更新 course progress / goal
     └─ PLAN_CREATED 事件
 ```
 
+## PlanBrief（为什么这样安排）
+
+`PlanBriefService` 从 StudyPlan + KCGraph + LearnerModel 确定性构建，不额外调用 LLM：
+- goal / target_outcome
+- `known_skills`（mastery ≥ 0.7）、`skill_gaps`（mastery < 0.7）、`unassessed_skills`（mastery=None；**UNKNOWN 绝不进能力缺口**）
+- `critical_path`：真实 DAG 最长路径（DP on topological order），DTO 为 `PathItem{kc_id, name}`，前端只显示 name
+- `adaptation_rules` / `difficulty_hotspots` / `stage_overview`
+
+## Learning Map 推荐语义
+
+`LearningMapService`（application/learning_map_service.py）：
+- **goal KC**：优先显式 target；缺省取**末端叶子 KC**（无后继），**不等于全部组件**
+- **current_recommended_kc**：最多一个（现在最建议学）
+- **recommended_candidates**：其它 1~3 个可学候选（不显示推荐 badge）
+- **active_path**：真实 DAG 路径（相邻节点必有 prerequisite edge）
+- 兼容旧 `recommended_path` 字段（新前端不再当真实路径使用）
+- 旧课程（Plan 存在、graph 缺失）：`CourseGraphService.try_recover_from_plan` 从 plan_steps 自动恢复并 migrate
+
+## Structured Explanation（结构化讲解）
+
+`ExplanationService`（application/explanation/）替换旧 lesson_markdown 长文：
+- `ExplanationContextBuilder`：learner profile + course goal + KC（titles）+ plan context + RAG sources
+- `ExplanationGenerator`：LLM schema 输出结构化 blocks（orientation/big_picture/concept/worked_example/code_walkthrough/contrast/misconception/application/recap/handoff）；离线用确定性 fallback（只使用知识点名称，不含 kc_id）
+- `ExplanationValidator`：block type 合法 / 非空 / 无 exercise / 无重复
+- 缓存：`step_explanations` 表，按 `context_hash` 复用；`invalidate_explanation` 在重建计划 / 删课程时清理
+- **不生成练习 / 判题**（见 test_no_exercise）
+
+## Practice Handoff
+
+只定义接口契约（`PracticeHandoff` DTO：course_id/plan_id/step_id/kc_id/objective/difficulty/source=study_plan/return_url），本模块**不实现练习**。
+
+## 用户界面去工程化
+
+内部 KC / kc_id / ReasonCode / Evidence / LearnerModel 是内部概念；用户界面统一显示：
+- 知识点 / 掌握度 / 评估可信度 / 学习状态 / 推荐原因 / 学习记录 / 学习讲解 / 当前推荐 / 前置知识未满足
+- 内部 ID 只作为 React key / API 参数，绝不作为 visible text
+
 ## API
 
-见 [api.md](./api.md)：`POST /api/courses/{id}/plan/generate`、`GET .../plan`、`PATCH .../plan/steps/{step_id}`、`GET .../plan/steps/{step_id}`。
+见 [api.md](./api.md)：`POST /api/courses/{id}/plan/generate`、`GET .../plan`、`PATCH .../plan/steps/{step_id}`、`GET .../plan/steps/{step_id}`、`GET /api/courses/{id}/plan-brief`、`GET /api/courses/{id}/plans/{plan_id}/steps/{step_id}/explanation`、`POST /api/courses/{id}/plans/{plan_id}/steps/{step_id}/handoff`。

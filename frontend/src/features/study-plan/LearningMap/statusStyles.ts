@@ -41,11 +41,6 @@ export const STATUS_STYLES: Record<KCStatus, StatusStyle> = {
   },
 };
 
-export function masteryText(mastery: number | null): string {
-  if (mastery === null || mastery === undefined) return "?";
-  return `${Math.round(mastery * 100)}%`;
-}
-
 export function statusOf(node: {
   status: KCStatus;
   recommended?: boolean;
