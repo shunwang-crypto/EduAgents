@@ -299,6 +299,10 @@ class LearnerModelService:
         )
         return changes[0] if changes else {"operation": "NONE", "reason": "no change", "scope": "global"}
 
+    def list_profile_facts(self, user_id: str) -> List[dict]:
+        """读取用户画像事实（供 ExplanationContext 等只读消费）。"""
+        return self._repo.list_profile_facts(user_id)
+
     def set_preference(self, user_id: str, preference_key: str, score: Optional[float] = None,
                        direction: str = "pos", course_id: str = "") -> Dict[str, Any]:
         payload: Dict[str, Any] = {"preference_key": preference_key}

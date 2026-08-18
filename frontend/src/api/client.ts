@@ -8,11 +8,12 @@ import type {
   CourseCategory,
   CourseSource,
   LearningMapResponse,
+  PlanBrief,
   PlanStep,
+  PracticeHandoff,
   SourceSearchResult,
+  StepExplanation,
   StudyPlan,
-  TutorResponse,
-  TutorTurnRequest,
 } from "./types";
 
 /** API 错误：优先解析后端 JSON detail/message，不把 {"detail":...} 原文直接给用户。 */
@@ -63,6 +64,11 @@ export interface ApiClient {
     stepId: string,
   ) => Promise<{ step_id: string; lesson_markdown: string; lesson_generated_at: string | null; title: string }>;
 
+  // Structured Explanation / Plan Brief / Practice Handoff
+  getPlanBrief: (courseId: string) => Promise<PlanBrief>;
+  getExplanation: (courseId: string, planId: string, stepId: string) => Promise<StepExplanation>;
+  getPracticeHandoff: (courseId: string, planId: string, stepId: string) => Promise<PracticeHandoff>;
+
   // Chat
   createConversation: (courseId?: string | null) => Promise<{ conversation_id: string; course_id: string | null }>;
   chat: (body: {
@@ -87,7 +93,6 @@ export interface ApiClient {
 
   // Adaptive Learning Map + Tutor
   getLearningMap: (courseId: string) => Promise<LearningMapResponse>;
-  tutorTurn: (courseId: string, req: TutorTurnRequest) => Promise<TutorResponse>;
 }
 
 /** 按 userId 创建 ApiClient（X-User-Id 头随请求发送）。
@@ -172,6 +177,14 @@ export function createApiClient(userId: string): ApiClient {
         `/api/courses/${courseId}/plan/steps/${stepId}/lesson`,
         { method: "POST" },
       ),
+    getPlanBrief: (courseId) =>
+      request<PlanBrief>(`/api/courses/${courseId}/plan-brief`),
+    getExplanation: (courseId, planId, stepId) =>
+      request<StepExplanation>(`/api/courses/${courseId}/plans/${planId}/steps/${stepId}/explanation`),
+    getPracticeHandoff: (courseId, planId, stepId) =>
+      request<PracticeHandoff>(`/api/courses/${courseId}/plans/${planId}/steps/${stepId}/handoff`, {
+        method: "POST",
+      }),
 
     // Chat
     createConversation: (courseId) =>
@@ -215,10 +228,5 @@ export function createApiClient(userId: string): ApiClient {
     // Adaptive Learning Map + Tutor
     getLearningMap: (courseId) =>
       request<LearningMapResponse>(`/api/courses/${courseId}/learning-map`),
-    tutorTurn: (courseId, req) =>
-      request<TutorResponse>(`/api/courses/${courseId}/tutor/turn`, {
-        method: "POST",
-        body: JSON.stringify(req),
-      }),
   };
 }

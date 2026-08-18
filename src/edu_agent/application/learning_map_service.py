@@ -80,7 +80,17 @@ class LearningMapService:
 
     def build(self, user_id: str, course_id: str) -> LearningMapResponse:
         active = self.graph_service.load_active_graph(user_id, course_id)
+        # Legacy：旧课程有 StudyPlan 但无 graph → 尝试从 plan_steps 恢复（自动 migrate）。
         if active is None:
+            plan = self.learner_model.repo.get_plan(user_id, course_id)
+            if plan is not None:
+                course_row = self.learner_model.repo.get_user_course(user_id, course_id)
+                display = (course_row or {}).get("display_name") or course_id
+                active = self.graph_service.try_recover_from_plan(
+                    user_id, course_id, display_name=display
+                )
+        if active is None:
+            # 无 plan 也无 graph → 明确「需生成计划/需升级」，不是「无计划」误导。
             raise ValueError(f"course not found: {course_id}")
         course = active.course
         graph_source = active.graph_source

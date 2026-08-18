@@ -226,6 +226,7 @@ CREATE TABLE IF NOT EXISTS study_plans (
     title TEXT DEFAULT '',
     summary TEXT DEFAULT '',
     plan_markdown TEXT NOT NULL,
+    plan_brief_json TEXT DEFAULT '{}',
     progress REAL DEFAULT 0.0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -259,6 +260,24 @@ CREATE TABLE IF NOT EXISTS plan_steps (
     CHECK (stage_order BETWEEN 1 AND 3),
     CHECK (minutes > 0)
 );
+
+-- 结构化讲解（Structured Explanation；替换旧 lesson_markdown 长文）。
+-- additive：不删除 lesson_markdown 列，新旧并存兼容旧数据。
+CREATE TABLE IF NOT EXISTS step_explanations (
+    explanation_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    course_id TEXT NOT NULL,
+    plan_id TEXT NOT NULL DEFAULT '',
+    step_id TEXT NOT NULL,
+    kc_id TEXT NOT NULL DEFAULT '',
+    schema_version INTEGER NOT NULL DEFAULT 1,
+    content_json TEXT NOT NULL DEFAULT '{}',
+    context_hash TEXT NOT NULL DEFAULT '',
+    generated_at TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT '',
+    UNIQUE (step_id)
+);
+CREATE INDEX IF NOT EXISTS idx_exp_step ON step_explanations(step_id, course_id);
 
 -- 课程资料（Course Sources：用户导入的 Web / GitHub 学习资料；user-scoped）
 -- import_token：每次 import attempt 的 generation 身份（同 URL 多代请求并发时区分新旧，

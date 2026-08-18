@@ -14,22 +14,3 @@ export const REASON_CODE_LABELS: Record<string, string> = {
 export function reasonCodeToHuman(code: string): string {
   return REASON_CODE_LABELS[code] ?? code;
 }
-
-/** Teaching Action → 中文教学动作（§36）。 */
-export const TEACHING_ACTION_LABELS: Record<string, string> = {
-  ASSESS: "诊断",
-  PROBE: "追问",
-  HINT: "提示",
-  EXPLAIN: "讲解",
-  EXAMPLE: "示例",
-  COMPARE: "对比",
-  PRACTICE: "练习",
-  FEEDBACK: "反馈",
-  REFLECT: "反思",
-  CHALLENGE: "挑战",
-  APPLICATION: "应用",
-};
-
-export function teachingActionToHuman(action: string): string {
-  return TEACHING_ACTION_LABELS[action] ?? action;
-}

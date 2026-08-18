@@ -188,6 +188,10 @@ class SQLiteLearnerRepository(LearnerRepository):
         self._conn().execute(
             "DELETE FROM course_kc_graph WHERE user_id=? AND course_id=?", (user_id, course_id)
         )
+        # 结构化讲解缓存：删除课程时一并清除
+        self._conn().execute(
+            "DELETE FROM step_explanations WHERE user_id=? AND course_id=?", (user_id, course_id)
+        )
         self._commit()
 
     # ---- course categories（纯组织层，user scoped；零 adaptive 数据）--------
@@ -561,6 +565,13 @@ class SQLiteLearnerRepository(LearnerRepository):
             "SELECT * FROM plan_steps WHERE plan_id=? AND step_id=?", (plan_id, step_id)
         )
 
+    def update_plan_brief(self, plan_id: str, plan_brief_json: str) -> None:
+        self._conn().execute(
+            "UPDATE study_plans SET plan_brief_json=?, updated_at=? WHERE plan_id=?",
+            (plan_brief_json, _now_iso(), plan_id),
+        )
+        self._commit()
+
     def update_plan_progress(self, plan_id: str, progress: float) -> None:
         self._conn().execute(
             "UPDATE study_plans SET progress=?, updated_at=? WHERE plan_id=?",
@@ -573,6 +584,22 @@ class SQLiteLearnerRepository(LearnerRepository):
         self._conn().execute("DELETE FROM plan_steps WHERE plan_id=?", (plan_id,))
         self._conn().execute("DELETE FROM study_plans WHERE plan_id=?", (plan_id,))
         self._commit()
+
+    # ---- Structured Explanation（step_explanations）-------------------------
+    def upsert_step_explanation(self, row: Dict[str, Any]) -> None:
+        self._insert_or_update("step_explanations", row, ["explanation_id"])
+
+    def get_step_explanation(self, user_id: str, course_id: str, step_id: str) -> Optional[dict]:
+        return self._fetchone(
+            "SELECT * FROM step_explanations WHERE step_id=? AND user_id=? AND course_id=?",
+            (step_id, user_id, course_id),
+        )
+
+    def delete_step_explanations(self, user_id: str, course_id: str) -> None:
+        self._conn().execute(
+            "DELETE FROM step_explanations WHERE user_id=? AND course_id=?",
+            (user_id, course_id),
+        )
 
     def get_plan_step_by_id(self, user_id: str, course_id: str, step_id: str) -> Optional[dict]:
         """按 step_id 跨 plan 定位，并校验属于 user+course（Chat plan_step context 用）。"""

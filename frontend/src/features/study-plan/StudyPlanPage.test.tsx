@@ -52,6 +52,20 @@ const { mockPlan, mockApi } = vi.hoisted(() => {
     title: "Python 数据分析 学习计划",
     summary: "14 天 · 每天 60 分钟",
     plan_markdown: "## 完整计划\n\n- 步骤",
+    plan_brief: {
+      course_id: "PY",
+      plan_id: "P-1",
+      goal: "掌握 Pandas、NumPy 和数据分析流程",
+      target_outcome: "独立完成数据分析流程",
+      why_this_plan: ["你已经具备：基础 Python", "当前主要能力缺口：NumPy"],
+      stage_overview: [],
+      critical_path: ["knowledge-1", "knowledge-2", "knowledge-3"],
+      difficulty_hotspots: [],
+      known_skills: [],
+      skill_gaps: [],
+      adaptation_rules: [],
+      time_budget: "",
+    },
     progress: 0,
     created_at: "2026-08-11T00:00:00Z",
     updated_at: "2026-08-11T00:00:00Z",
@@ -135,6 +149,42 @@ const { mockPlan, mockApi } = vi.hoisted(() => {
         title: "NumPy 数组基础",
       })
     ),
+    getExplanation: vi.fn((_cid: string, _planId: string, stepId: string) =>
+      Promise.resolve({
+        step_id: stepId,
+        plan_id: "P-1",
+        kc_id: "knowledge-1",
+        title: "NumPy 数组基础",
+        objective: "能创建数组",
+        estimated_minutes: 30,
+        blocks: [
+          { type: "orientation", title: "为什么现在学它？", content: "前置知识", data: {}, source_refs: [] },
+          { type: "big_picture", title: "先看整体", content: "", data: { items: ["NumPy 数组"] }, source_refs: [] },
+          { type: "concept", title: "核心概念", content: "ndarray 表示数据", data: {}, source_refs: [] },
+        ],
+        context_hash: "hash-1",
+        generated_at: "2026-08-11T00:00:00Z",
+      })
+    ),
+    getPlanBrief: vi.fn().mockResolvedValue({
+      course_id: "PY",
+      plan_id: "P-1",
+      goal: "掌握 Pandas、NumPy 和数据分析流程",
+      target_outcome: "独立完成数据分析流程",
+      why_this_plan: [],
+      stage_overview: [],
+      critical_path: [],
+      difficulty_hotspots: [],
+      known_skills: [],
+      skill_gaps: [],
+      adaptation_rules: [],
+      time_budget: "",
+    }),
+    getPracticeHandoff: vi.fn().mockResolvedValue({
+      course_id: "PY", plan_id: "P-1", step_id: "S1", kc_id: "knowledge-1",
+      learning_objective: "能创建数组", recommended_difficulty: "easy",
+      source: "study_plan", return_url: "",
+    }),
     // Adaptive Map + Tutor：StudyPlanPage 挂载时即会 GET learning-map
     getLearningMap: vi.fn().mockResolvedValue({
       course_id: "PY",
@@ -157,19 +207,6 @@ const { mockPlan, mockApi } = vi.hoisted(() => {
       recommended_path: ["numpy_array", "numpy_broadcasting"],
       current_recommended_kc: "numpy_array",
       graph_source: "generated",
-    }),
-    tutorTurn: vi.fn().mockResolvedValue({
-      kc_id: "numpy_array",
-      teaching_action: "ASSESS",
-      message: "请解释一下语义相似的句子其 embedding 的特点",
-      learner_state_changed: true,
-      learning_map_changed: true,
-      mastery: 0.42,
-      confidence: 0.68,
-      reason_codes: ["LOW_MASTERY"],
-      next_recommended_kc: "numpy_broadcasting",
-      explanation: "",
-      turn_id: "TURN-1",
     }),
   };
   return { mockPlan, mockApi };
@@ -302,96 +339,13 @@ describe("StudyPlanPage · Learning Map", () => {
     );
   });
 
-  // Test H：tutorTurn 成功后 getLearningMap 再次被调用
-  it("tutor success triggers getLearningMap refetch (H)", async () => {
+  // 重构后：TutorPanel 不再属于 StudyPlan 主页面（§52-53）。主页面无「发送答案/提问」输入。
+  it("study plan main page has no chat/tutor input (was TutorPanel)", async () => {
     renderMapPage();
-    await waitFor(() =>
-      expect(screen.getByTestId("map-selected").textContent).toBe("numpy_array")
-    );
-    const callsBefore = (mockApi.getLearningMap as ReturnType<typeof vi.fn>).mock.calls.length;
-    // 默认选中 recommended 节点（numpy_array），点击「开始学习」→ send(null) → tutorTurn
-    fireEvent.click(screen.getByText("开始学习"));
-    await waitFor(() => expect(mockApi.tutorTurn).toHaveBeenCalled());
-    await waitFor(() =>
-      expect((mockApi.getLearningMap as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(
-        callsBefore
-      )
-    );
-  });
-
-  // Test D：locked 节点 → detail 可查看，但 Start Tutor 被禁用
-  it("locked node: detail viewable, start tutor disabled (D)", async () => {
-    renderMapPage();
-    // 点击 locked 节点（mock 节点按钮）
-    await waitFor(() =>
-      expect(screen.getAllByRole("button", { name: "NumPy 广播" }).length).toBeGreaterThan(0)
-    );
-    fireEvent.click(screen.getAllByRole("button", { name: "NumPy 广播" })[0]);
-    // detail 可查看：Tutor 区显示 locked 提示（文本前有 emoji，用 exact:false）
-    await waitFor(() =>
-      expect(screen.getByText("该知识点尚未解锁", { exact: false })).toBeTruthy()
-    );
-    // 开始学习按钮不存在（locked 时不会出现「开始学习」）
-    expect(screen.queryByText("开始学习")).toBeNull();
-  });
-
-  // Test F/G：Tutor 返回 current kc + next recommended 分离，进入下一知识点才切换
-  it("current kc mastered shows enter-next button, only switches on click (F/G)", async () => {
-    // 把当前选中节点设为 mastered，且 next_recommended_kc 指向另一个节点
-    (mockApi.getLearningMap as ReturnType<typeof vi.fn>).mockResolvedValue({
-      course_id: "PY",
-      goal: "g",
-      nodes: [
-        {
-          id: "embedding", name: "Embedding", description: "", difficulty: "easy",
-          mastery: 0.8, confidence: 0.9, status: "mastered",
-          recommended: false, locked: false, prerequisites: [], misconceptions: [],
-          recent_evidence: [], reason_codes: [],
-        },
-        {
-          id: "vector_db", name: "Vector DB", description: "", difficulty: "medium",
-          mastery: null, confidence: null, status: "unknown",
-          recommended: true, locked: false, prerequisites: ["embedding"], misconceptions: [],
-          recent_evidence: [], reason_codes: [],
-        },
-      ],
-      edges: [],
-      recommended_path: ["vector_db"],
-      current_recommended_kc: "vector_db",
-    });
-    // Tutor 返回 next_recommended_kc = vector_db（P1-4：response.kc_id 保持 embedding）
-    (mockApi.tutorTurn as ReturnType<typeof vi.fn>).mockResolvedValue({
-      kc_id: "embedding",
-      teaching_action: "FEEDBACK",
-      message: "很好",
-      learner_state_changed: true,
-      learning_map_changed: true,
-      mastery: 0.8,
-      confidence: 0.9,
-      reason_codes: ["RECENT_SUCCESS"],
-      next_recommended_kc: "vector_db",
-      explanation: "",
-      turn_id: "TURN-F",
-    });
-    renderMapPage();
-    await waitFor(() =>
-      expect(screen.getAllByRole("button", { name: "Embedding" }).length).toBeGreaterThan(0)
-    );
-    // 选中 Embedding 并开始 Tutor
-    fireEvent.click(screen.getAllByRole("button", { name: "Embedding" })[0]);
-    fireEvent.click(screen.getByText("开始学习"));
-    await waitFor(() => expect(screen.getByText("进入下一知识点")).toBeTruthy());
-    // P1-4：selected node 仍是 embedding（current kc 不被自动切换）
-    expect(
-      screen.getByText("当前知识点：", { exact: false }).textContent
-    ).toContain("Embedding");
-    // 点击「进入下一知识点」后才切换到 Vector DB
-    fireEvent.click(screen.getByText("进入下一知识点"));
-    await waitFor(() =>
-      expect(
-        screen.getByText("当前知识点：", { exact: false }).textContent
-      ).toContain("Vector DB")
-    );
+    await waitFor(() => expect(mockApi.getLearningMap).toHaveBeenCalled());
+    // 不出现 Tutor 聊天式输入框
+    expect(screen.queryByPlaceholderText(/请输入你的回答/)).toBeNull();
+    expect(screen.queryByText("智能导师")).toBeNull();
   });
 });
 
@@ -460,34 +414,29 @@ describe("StudyPlanPage · Learning Map", () => {
     await waitFor(() => expect(screen.getByText("还没有学习计划")).toBeTruthy());
   });
 
-  it("clicking 开始学习 expands lesson panel and lazily loads it", async () => {
+  // 重构后：Plan List 不再展开长文 Lesson（§16），而是打开结构化讲解 Workspace。
+  it("clicking 开始学习 opens Explanation Workspace (not lesson article)", async () => {
     renderPage();
     await waitFor(() => expect(screen.getAllByText("开始学习").length).toBe(3));
     fireEvent.click(screen.getAllByText("开始学习")[0]);
-    // 展开后出现「标记完成」与「收起」
-    await waitFor(() => expect(screen.getByText("标记完成")).toBeTruthy());
-    expect(screen.getByText("收起")).toBeTruthy();
-    // Lesson 懒加载完成（getLesson mock 返回的 Markdown 渲染出标题）
-    await waitFor(() =>
-      expect(screen.getByRole("heading", { name: "本节要学什么" })).toBeTruthy()
-    );
-    // getLesson 仅调用一次（缓存）
-    expect((mockApi.getLesson as ReturnType<typeof vi.fn>).mock.calls.length).toBe(1);
+    // 打开结构化讲解：出现分块导航 + 首个 block 标题，而非 Markdown 长文
+    await waitFor(() => expect(screen.getByText("第 1 / 3 部分")).toBeTruthy());
+    expect(screen.getAllByText("为什么现在学它？").length).toBeGreaterThan(0);
+    // 不出现聊天式输入框（TutorPanel 已移除）
+    expect(screen.queryByPlaceholderText(/请输入你的回答/)).toBeNull();
+    // 不直接在列表内展开整篇 lesson markdown（无「本节要学什么」标题）
+    expect(screen.queryByRole("heading", { name: "本节要学什么" })).toBeNull();
   });
 
-  it("clicking 标记完成 calls updateStep with completed", async () => {
+  // 点击「下一部分」可以逐块浏览（不是一篇文章 / 不是 chat 时间轴）
+  it("explanation navigates block by block", async () => {
     renderPage();
     await waitFor(() => expect(screen.getAllByText("开始学习").length).toBe(3));
     fireEvent.click(screen.getAllByText("开始学习")[0]);
-    await waitFor(() => expect(screen.getByText("标记完成")).toBeTruthy());
-    fireEvent.click(screen.getByText("标记完成"));
-    await waitFor(() =>
-      expect((mockApi.updateStep as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith(
-        "PY",
-        "S1",
-        "completed"
-      )
-    );
+    await waitFor(() => expect(screen.getByText("第 1 / 3 部分")).toBeTruthy());
+    fireEvent.click(screen.getByText("下一部分"));
+    await waitFor(() => expect(screen.getByText("第 2 / 3 部分")).toBeTruthy());
+    expect(screen.getAllByText("先看整体").length).toBeGreaterThan(0);
   });
 
   it("shows plan settings inputs initialized from course and applies them on regenerate", async () => {
@@ -605,9 +554,9 @@ describe("StudyPlanPage · Learning Map", () => {
       await waitFor(() =>
         expect(screen.queryByText("Python 数据分析 学习计划")).toBeNull()
       );
-      // 旧 toggleStep(A) 过期 → 返回 false → 不会触发 openLesson(A)
+      // 旧 toggleStep(A) 过期 → 返回 false → 不会触发 openExplanation(A)
       expect(
-        (mockApi.getLesson as ReturnType<typeof vi.fn>).mock.calls.some((c) => c[0] === "PY")
+        (mockApi.getExplanation as ReturnType<typeof vi.fn>).mock.calls.some((c) => c[0] === "PY")
       ).toBe(false);
     } finally {
       (mockApi.updateStep as ReturnType<typeof vi.fn>).mockResolvedValue(mockPlan);
@@ -658,41 +607,46 @@ describe("StudyPlanPage · Learning Map", () => {
     }
   });
 
-  it("cross-course: pending openLesson(A) then switch B does not show A lesson (C)", async () => {
-    const lessonDefer = deferred<{
-      step_id: string; lesson_markdown: string; lesson_generated_at: string; title: string;
+  it("cross-course: pending openExplanation(A) then switch B does not show A explanation (C)", async () => {
+    const expDefer = deferred<{
+      step_id: string; plan_id: string; kc_id: string; title: string;
+      objective: string; estimated_minutes: number;
+      blocks: Array<{ type: string; title: string; content: string; data: unknown; source_refs: string[] }>;
+      context_hash: string; generated_at: string;
     }>();
-    (mockApi.getLesson as ReturnType<typeof vi.fn>).mockReturnValue(lessonDefer.promise);
+    (mockApi.getExplanation as ReturnType<typeof vi.fn>).mockReturnValue(expDefer.promise);
     const router = renderNavigablePlan("/courses/PY/plan");
     try {
       await waitFor(() => expect(screen.getAllByText("开始学习").length).toBe(3));
-      // 点「开始学习」：toggleStep 默认 resolve → 触发 openLesson(PY)（pending）
+      // 点「开始学习」：toggleStep 默认 resolve → 触发 openExplanation(PY)（pending）
       fireEvent.click(screen.getAllByText("开始学习")[0]);
       await waitFor(() =>
-        expect((mockApi.getLesson as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith("PY", "S1")
+        expect((mockApi.getExplanation as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith(
+          "PY", "PLAN-1", "S1"
+        )
       );
       // 切换到 B（JAVA）
       await act(async () => { router.navigate("/courses/JAVA/plan"); });
       await waitFor(() =>
         expect((mockApi.getPlan as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith("JAVA")
       );
-      // 解析迟到的 A lesson
+      // 解析迟到的 A explanation
       await act(async () => {
-        lessonDefer.resolve({
-          step_id: "S1",
-          lesson_markdown: "## 本节要学什么\nPY专属讲解",
-          lesson_generated_at: "2026-08-11T00:00:00Z",
-          title: "NumPy 数组基础",
+        expDefer.resolve({
+          step_id: "S1", plan_id: "P-1", kc_id: "knowledge-1",
+          title: "NumPy 数组基础", objective: "能创建数组", estimated_minutes: 30,
+          blocks: [{ type: "concept", title: "PY专属概念", content: "A课程讲解", data: {}, source_refs: [] }],
+          context_hash: "hash", generated_at: "2026-08-11T00:00:00Z",
         });
       });
-      // B 页面不应出现 A 的 lesson 内容（stale 保护仍有效）
-      await waitFor(() => expect(screen.queryByText("PY专属讲解")).toBeNull());
+      // B 页面不应出现 A 的讲解内容（stale 保护仍有效）
+      await waitFor(() => expect(screen.queryByText("PY专属概念")).toBeNull());
     } finally {
-      (mockApi.getLesson as ReturnType<typeof vi.fn>).mockResolvedValue({
-        step_id: "S1",
-        lesson_markdown: "## 本节要学什么\nNumPy 数组是…",
-        lesson_generated_at: "2026-08-11T00:00:00Z",
-        title: "NumPy 数组基础",
+      (mockApi.getExplanation as ReturnType<typeof vi.fn>).mockResolvedValue({
+        step_id: "S1", plan_id: "P-1", kc_id: "knowledge-1",
+        title: "NumPy 数组基础", objective: "能创建数组", estimated_minutes: 30,
+        blocks: [{ type: "concept", title: "核心概念", content: "ndarray", data: {}, source_refs: [] }],
+        context_hash: "hash-1", generated_at: "2026-08-11T00:00:00Z",
       });
     }
   });

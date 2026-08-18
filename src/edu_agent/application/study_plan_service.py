@@ -233,7 +233,8 @@ def generate_plan(
         old_plan = learner.repo.get_plan(user_id, course_id)
         if old_plan is not None:
             learner.repo.delete_plan(old_plan["plan_id"])
-        # 把本次解析出的周期/每日时长写回课程，作为新的默认值（沿用或覆盖都保持一致）
+        # 新 plan 不再把 plan_markdown 当作核心业务真值（structured steps 才是唯一真值）。
+        # plan_markdown 仅保留为可选的导出/展示文本（由 workflow 的 structured data 派生）。
         learner.repo.upsert_plan(
             {"plan_id": plan_id, "user_id": user_id, "course_id": course_id,
              "goal_id": goal_id, "title": f"{fresh_name} 学习计划",
@@ -279,6 +280,26 @@ def generate_plan(
             )
         learner.record_event({"event_type": "PLAN_CREATED", "user_id": user_id,
                               "course_id": course_id, "payload": {"plan_id": plan_id, "goal_id": goal_id}})
+
+    # 计划重建后：结构化讲解按 step/context_hash 懒生成，因此只需失效旧缓存
+    # （计划已删除重建，旧 step_id 不复存在；此处防御性清理）。
+    try:
+        from edu_agent.application.explanation.service import ExplanationService
+
+        ExplanationService(learner).invalidate_explanation(user_id, course_id)
+    except Exception:  # noqa: BLE001 - 失效失败不影响计划生成主流程
+        logger.warning("[plan] explanation invalidation failed: course=%s", course_id, exc_info=True)
+
+    # 持久化 PlanBrief（确定性构建；只作为展示，不是第二套 plan）。
+    try:
+        from edu_agent.application.plan_brief_service import PlanBriefService
+
+        brief = PlanBriefService(learner).build(
+            user_id, course_id, plan_context=plan_context
+        )
+        learner.repo.update_plan_brief(plan_id, brief.model_dump_json())
+    except Exception:  # noqa: BLE001 - PlanBrief 失败不阻断主流程
+        logger.warning("[plan] plan brief build failed: course=%s", course_id, exc_info=True)
 
     return get_plan(user_id, course_id, learner)
 
@@ -327,12 +348,23 @@ def get_plan(user_id: str, course_id: str,
         "title": plan.get("title", ""),
         "summary": plan.get("summary", ""),
         "plan_markdown": plan.get("plan_markdown", ""),
+        "plan_brief": _load_plan_brief(plan.get("plan_brief_json")),
         "progress": float(plan.get("progress", 0.0)),
         "created_at": plan.get("created_at"),
         "updated_at": plan.get("updated_at"),
         "stages": [stages[order] for order in sorted(stages)],
         "steps": step_dicts,
     }
+
+
+def _load_plan_brief(raw: Optional[str]) -> Optional[dict]:
+    if not raw or not raw.strip():
+        return None
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else None
+    except json.JSONDecodeError:
+        return None
 
 
 _DEFAULT_STAGE_TITLES = {1: "基础准备", 2: "核心学习", 3: "综合应用"}

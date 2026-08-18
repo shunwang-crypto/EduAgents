@@ -18,6 +18,7 @@ import type {
   LearningMapNode,
   LearningMapResponse,
   PlanStep,
+  StepExplanation,
   StudyPlan,
 } from "../../api/types";
 import RichMarkdown from "../../components/content/RichMarkdown";
@@ -25,16 +26,12 @@ import { CourseHeader } from "../../layout/CourseHeader";
 import { useLearningNav } from "../../app/useLearningNav";
 import LearningMapView from "./LearningMap/LearningMapView";
 import KnowledgeDetailPanel from "./LearningMap/KnowledgeDetailPanel";
-import TutorPanel from "./Tutor/TutorPanel";
+import ExplanationWorkspace from "./explanation/ExplanationWorkspace";
+import PlanBriefPanel from "./plan-brief/PlanBriefPanel";
 import "./study-plan.css";
 
 interface OutletCtx {
   openMobileSidebar: () => void;
-}
-
-interface LessonCache {
-  markdown: string;
-  generatedAt: string | null;
 }
 
 interface PlanSettingsFieldsProps {
@@ -151,18 +148,17 @@ export function StudyPlanPage() {
     background: "",
   });
 
-  // 展开的 Lesson 步骤 + Lesson 缓存（懒加载，按 stepId 缓存，避免重复调 LLM）
-  const [expandedStepId, setExpandedStepId] = useState<string | null>(null);
-  const [lessonByStep, setLessonByStep] = useState<Record<string, LessonCache>>({});
-  const [lessonLoadingStep, setLessonLoadingStep] = useState<string | null>(null);
-  const [lessonErrorStep, setLessonErrorStep] = useState<string | null>(null);
-  const [lessonErrorKind, setLessonErrorKind] = useState<"stale" | "config" | "error" | null>(null);
+  // 当前打开的 Structured Explanation（结构化讲解，非 lesson_markdown 长文）
+  const [explanationStep, setExplanationStep] = useState<{
+    stepId: string;
+    kcId: string;
+  } | null>(null);
+  // Practice Handoff 待接入提示（feature flag；不实现练习）
+  const [showHandoffNotice, setShowHandoffNotice] = useState(false);
 
   //  stale-async 保护：courseId 快速切换时，旧请求的响应不许覆盖新页面
   const loadSeq = useRef(0);
-  //  Lesson 请求级 stale 保护：一次只保留最后一个 Lesson 响应，过期响应丢弃
-  const lessonRequestSeq = useRef(0);
-  //  scope 代际：courseId / api(user) 改变时自增；generate/toggleStep/openLesson
+  //  scope 代际：courseId / api(user) 改变时自增；generate/toggleStep
   //  在 await 前后比对 scope，过期响应直接丢弃，避免串课污染
   const scopeSeq = useRef(0);
 
@@ -246,13 +242,9 @@ export function StudyPlanPage() {
     // 切换课程时清空旧 course：getCourse(B) 与 getPlan(B) 并行，B 加载完成前若仍保留 A 的
     // course（含 A 的 30/90 设置），一次抢先的「生成」会用 A 的设置去生成 B 的计划。
     setCourse(null);
-    // 切换课程时清空 Lesson 展开/缓存，避免串课；并使进行中的 Lesson 请求失效
-    setExpandedStepId(null);
-    setLessonByStep({});
-    setLessonErrorStep(null);
-    setLessonErrorKind(null);
-    setLessonLoadingStep(null);
-    lessonRequestSeq.current++;
+    // 切换课程时清空 Explanation 打开态，避免串课
+    setExplanationStep(null);
+    setShowHandoffNotice(false);
     api
       .getCourse(courseId)
       .then((c) => {
@@ -410,65 +402,49 @@ export function StudyPlanPage() {
     [courseId, api]
   );
 
-  //  懒加载 Lesson：展开时按需 GET-OR-GENERATE；已缓存则跳过；后端缓存（lesson_markdown）亦复用
-  const openLesson = useCallback(
-    async (stepId: string) => {
-      if (!courseId) return;
-      const reqSeq = ++lessonRequestSeq.current;
-      const reqScope = scopeSeq.current;
-      setExpandedStepId(stepId);
-      if (lessonByStep[stepId]?.markdown) return;
-      const s = plan?.stages.flatMap((st) => st.steps).find((x) => x.step_id === stepId);
-      if (s?.lesson_markdown) {
-        setLessonByStep((prev) => ({
-          ...prev,
-          [stepId]: { markdown: s.lesson_markdown as string, generatedAt: s.lesson_generated_at },
-        }));
-        return;
+  // 打开 Structured Explanation Workspace（§16：不再在列表内展开长文，
+  // 而是选中该 Step 对应 KC 并打开结构化讲解）
+  const openExplanation = useCallback(
+    (step: PlanStep) => {
+      setShowHandoffNotice(false);
+      setExplanationStep({ stepId: step.step_id, kcId: step.kc_id });
+      // 同步在 Learning Map 中选中对应 KC（若存在于图）
+      if (learningMap) {
+        const node = learningMap.nodes.find((n) => n.id === step.kc_id) ?? null;
+        if (node) setSelectedKc(node);
       }
-      setLessonLoadingStep(stepId);
-      setLessonErrorStep((curr) => (curr === stepId ? null : curr));
-      setLessonErrorKind(null);
-      try {
-        const res = await api.getLesson(courseId, stepId);
-        // stale 保护：过期响应（课程/用户已切换、或已有更新的 Lesson 请求）直接丢弃
-        if (reqSeq !== lessonRequestSeq.current) return;
-        if (reqScope !== scopeSeq.current) return;
-        setLessonByStep((prev) => ({
-          ...prev,
-          [stepId]: { markdown: res.lesson_markdown, generatedAt: res.lesson_generated_at },
-        }));
-      } catch (e) {
-        if (reqSeq !== lessonRequestSeq.current) return;
-        if (reqScope !== scopeSeq.current) return;
-        const status = e instanceof ApiError ? e.status : 0;
-        setLessonErrorKind(status === 404 ? "stale" : status === 503 ? "config" : "error");
-        setLessonErrorStep(stepId);
-      } finally {
-        if (reqSeq === lessonRequestSeq.current && reqScope === scopeSeq.current)
-          setLessonLoadingStep((curr) => (curr === stepId ? null : curr));
-      }
+      setTab("plan");
     },
-    [courseId, api, plan, lessonByStep]
+    [learningMap]
+  );
+
+  // 请求一个 step 的 Structured Explanation（GET-OR-GENERATE，后端按 context_hash 缓存）
+  const requestExplanation = useCallback(
+    async (stepId: string): Promise<StepExplanation> => {
+      if (!courseId || !plan) throw new Error("no plan loaded");
+      return api.getExplanation(courseId, plan.plan_id, stepId);
+    },
+    [courseId, api, plan]
   );
 
   const handleStart = useCallback(
     async (step: PlanStep) => {
       if (step.status === "not_started") {
         const ok = await toggleStep(step.step_id, "in_progress");
-        // status 更新本身失败 → 不继续生成 Lesson，避免 not_started + 已展开 lesson 状态冲突
+        // status 更新失败 → 不继续打开讲解，避免 not_started + 已打开讲解状态冲突
         if (!ok) return;
       }
-      await openLesson(step.step_id);
+      openExplanation(step);
     },
-    [toggleStep, openLesson]
+    [toggleStep, openExplanation]
   );
-  const handleContinue = useCallback((step: PlanStep) => void openLesson(step.step_id), [openLesson]);
-  const handleViewAgain = useCallback((step: PlanStep) => void openLesson(step.step_id), [openLesson]);
-  const handleComplete = useCallback(
-    (step: PlanStep) => void toggleStep(step.step_id, "completed"),
-    [toggleStep]
-  );
+  const handleContinue = useCallback((step: PlanStep) => void openExplanation(step), [openExplanation]);
+  const handleViewAgain = useCallback((step: PlanStep) => void openExplanation(step), [openExplanation]);
+
+  // Practice Handoff（§36/§92）：只定义入口；外部模块未接入 → placeholder 提示
+  const handlePracticeHandoff = useCallback(() => {
+    setShowHandoffNotice(true);
+  }, []);
 
   const stages = plan?.stages?.length ? plan.stages : [];
   // progress 单一来源：Backend plan.progress（completed steps / total steps 已由后端算好）
@@ -503,13 +479,6 @@ export function StudyPlanPage() {
 
   // 课程目标是否存在（后端 Active Goal 文本；null/空串 = 未设置）
   const hasGoal = !!(course?.current_goal && course.current_goal.trim());
-
-  const lessonForStep = (stepId: string): LessonCache => {
-    const cached = lessonByStep[stepId];
-    if (cached) return cached;
-    const s = plan?.stages.flatMap((st) => st.steps).find((x) => x.step_id === stepId);
-    return { markdown: s?.lesson_markdown || "", generatedAt: s?.lesson_generated_at ?? null };
-  };
 
   return (
     <>
@@ -700,6 +669,9 @@ export function StudyPlanPage() {
                 </div>
               </div>
 
+              {/* PlanBrief（§60：先知道“为什么这么学”，再看怎么走） */}
+              <PlanBriefPanel brief={plan.plan_brief ?? null} />
+
               {/* 三阶段 */}
               {stages.map((stage) => (
                 <section key={stage.stage_id} className="plan-stage">
@@ -708,14 +680,11 @@ export function StudyPlanPage() {
                     <h2 className="plan-stage-title">{stage.stage_title}</h2>
                   </div>
                   {stage.steps.map((step) => {
-                    const expanded = expandedStepId === step.step_id;
-                    const lesson = lessonForStep(step.step_id);
-                    const lessonLoading = lessonLoadingStep === step.step_id;
-                    const lessonError = lessonErrorStep === step.step_id;
+                    const isExplanationOpen = explanationStep?.stepId === step.step_id;
                     return (
                       <div
                         key={step.step_id}
-                        className={`plan-step ${expanded ? "expanded" : ""}`}
+                        className={`plan-step ${isExplanationOpen ? "expanded" : ""}`}
                       >
                         <div className="plan-step-index">{String(step.seq).padStart(2, "0")}</div>
                         <div className="plan-step-body">
@@ -741,6 +710,7 @@ export function StudyPlanPage() {
                           )}
                           <div className="plan-step-footer">
                             <span className="plan-step-time">约 {step.minutes} 分钟</span>
+                            <span className="plan-step-kc">KC: {step.kc_id}</span>
                             <button
                               type="button"
                               className="step-ask-btn"
@@ -750,58 +720,15 @@ export function StudyPlanPage() {
                             >
                               <MessageCircleQuestion size={14} aria-hidden /> 就此提问
                             </button>
+                            {/* §16：不再在列表内展开长文，而是打开结构化讲解 Workspace */}
+                            <button
+                              type="button"
+                              className="step-ask-btn"
+                              onClick={() => void handleStart(step)}
+                            >
+                              <BookOpen size={14} aria-hidden /> 查看讲解
+                            </button>
                           </div>
-
-                          {/* 展开的 Lesson 讲解（懒加载） */}
-                          {expanded && (
-                            <div className="plan-step-lesson">
-                              {lessonLoading && (
-                                <div className="plan-lesson-loading" aria-busy="true">
-                                  <LoaderCircle size={14} className="spin" aria-hidden /> 正在生成讲解…
-                                </div>
-                              )}
-                              {lessonError && !lessonLoading && (
-                                <div className="inline-error" role="alert">
-                                  {lessonErrorKind === "stale"
-                                    ? "该学习步骤已失效，请刷新计划"
-                                    : lessonErrorKind === "config"
-                                      ? "未配置 AI 模型，请先配置 API Key"
-                                      : "讲解生成失败"}
-                                  <button
-                                    type="button"
-                                    className="lesson-retry"
-                                    onClick={() => void openLesson(step.step_id)}
-                                  >
-                                    重试
-                                  </button>
-                                </div>
-                              )}
-                              {!lessonLoading && !lessonError && lesson.markdown && (
-                                <RichMarkdown content={lesson.markdown} />
-                              )}
-                              {!lessonLoading && !lessonError && !lesson.markdown && (
-                                <div className="plan-lesson-empty">本节暂无讲解</div>
-                              )}
-                              <div className="plan-lesson-footer">
-                                {step.status !== "completed" && (
-                                  <button
-                                    type="button"
-                                    className="ea-button primary"
-                                    onClick={() => handleComplete(step)}
-                                  >
-                                    <CheckCircle2 size={14} aria-hidden /> 标记完成
-                                  </button>
-                                )}
-                                <button
-                                  type="button"
-                                  className="ea-button"
-                                  onClick={() => setExpandedStepId(null)}
-                                >
-                                  收起
-                                </button>
-                              </div>
-                            </div>
-                          )}
                         </div>
                         <div className="plan-step-status">
                           {step.status === "not_started" && (
@@ -973,22 +900,42 @@ export function StudyPlanPage() {
                   <KnowledgeDetailPanel node={selectedKc} allNodes={learningMap?.nodes ?? []} />
                 </aside>
               )}
-              {!mapEmpty && (
-                <div className="learning-map-tutor">
-                  <TutorPanel
-                    courseId={activeCourseId}
-                    currentKc={selectedKc}
-                    allNodes={learningMap?.nodes ?? []}
-                    onMapChanged={refreshLearningMap}
-                    // P1-4：用户点击“进入下一知识点”后才切换 selected node
-                    onStartNextKc={(kcId) => {
-                      const next = learningMap?.nodes.find((n) => n.id === kcId) ?? null;
-                      setSelectedKc(next);
-                    }}
-                  />
+            </div>
+          )}
+
+          {/* Structured Explanation Workspace（§10/§14：地图下方的主体学习区域） */}
+          {(explanationStep || planStatus === "ready") && (
+            <section className="explanation-section">
+              <ExplanationWorkspace
+                stepId={explanationStep?.stepId ?? ""}
+                kcId={explanationStep?.kcId ?? ""}
+                onRequestExplanation={requestExplanation}
+                onBackToMap={() => {
+                  setTab("map");
+                  if (explanationStep?.kcId && learningMap) {
+                    const node = learningMap.nodes.find((n) => n.id === explanationStep.kcId) ?? null;
+                    if (node) setSelectedKc(node);
+                  }
+                }}
+                onPracticeHandoff={handlePracticeHandoff}
+              />
+              {showHandoffNotice && (
+                <div className="handoff-notice" role="status">
+                  <p>
+                    实践模块接口待接入（Practice module）。
+                    <br />
+                    <small>完成基础实践后，系统会根据练习证据更新你的知识掌握度。</small>
+                  </p>
+                  <button
+                    type="button"
+                    className="ea-button"
+                    onClick={() => setShowHandoffNotice(false)}
+                  >
+                    关闭
+                  </button>
                 </div>
               )}
-            </div>
+            </section>
           )}
         </div>
       </div>

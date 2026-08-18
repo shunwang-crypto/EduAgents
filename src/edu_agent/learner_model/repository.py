@@ -193,6 +193,16 @@ class LearnerRepository(ABC):
     def update_plan_step_lesson(self, step_id: str, lesson_markdown: str,
                                 lesson_generated_at: str, updated_at: str) -> bool: ...
 
+    # ---- Structured Explanation（step_explanations）---------------------
+    @abstractmethod
+    def upsert_step_explanation(self, row: Dict[str, Any]) -> None: ...
+
+    @abstractmethod
+    def get_step_explanation(self, user_id: str, course_id: str, step_id: str) -> Optional[dict]: ...
+
+    @abstractmethod
+    def delete_step_explanations(self, user_id: str, course_id: str) -> None: ...
+
     @abstractmethod
     def list_plan_steps(self, plan_id: str) -> List[dict]: ...
 
@@ -201,6 +211,9 @@ class LearnerRepository(ABC):
 
     @abstractmethod
     def update_plan_progress(self, plan_id: str, progress: float) -> None: ...
+
+    @abstractmethod
+    def update_plan_brief(self, plan_id: str, plan_brief_json: str) -> None: ...
 
     @abstractmethod
     def delete_plan(self, plan_id: str) -> None: ...

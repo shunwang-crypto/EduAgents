@@ -249,6 +249,60 @@ def generate_step_lesson(course_id: str, step_id: str,
 
 
 # ---------------------------------------------------------------------------
+# Plan Brief / Structured Explanation / Practice Handoff（结构化讲解模块）
+# ---------------------------------------------------------------------------
+
+
+@router.get("/courses/{course_id}/plan-brief")
+def get_plan_brief(course_id: str, user_id: str = Depends(_user_id)) -> dict:
+    """PlanBrief：解释“为什么这样安排学习计划”（确定性构建）。"""
+    from edu_agent.application.plan_brief_service import PlanBriefService
+
+    try:
+        return PlanBriefService(_learner_model()).get(user_id, course_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/courses/{course_id}/plans/{plan_id}/steps/{step_id}/explanation")
+def get_step_explanation(course_id: str, plan_id: str, step_id: str,
+                         user_id: str = Depends(_user_id)) -> dict:
+    """Structured Explanation（GET-OR-GENERATE，懒生成 + context_hash 缓存）。
+
+    返回结构化 blocks，不是 Markdown 长文。不生成练习/判题。
+    """
+    from edu_agent.application.explanation.service import ExplanationService
+
+    try:
+        return ExplanationService(_learner_model()).get_explanation(
+            user_id, course_id, plan_id, step_id
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except LLMConfigurationError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="未配置 AI 模型，请先配置 API Key 后再生成讲解",
+        ) from exc
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/courses/{course_id}/plans/{plan_id}/steps/{step_id}/handoff")
+def get_practice_handoff(course_id: str, plan_id: str, step_id: str,
+                         user_id: str = Depends(_user_id)) -> dict:
+    """Practice Handoff：返回进入外部实践模块的接口契约（只定义入口，不实现练习）。"""
+    from edu_agent.application.explanation.service import build_practice_handoff
+
+    try:
+        return build_practice_handoff(
+            user_id, course_id, plan_id, step_id, _learner_model()
+        ).model_dump(mode="json")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
 # Course Sources（Web / GitHub / Internet Search）
 # ---------------------------------------------------------------------------
 
@@ -421,7 +475,7 @@ def get_learning_map(course_id: str, user_id: str = Depends(_user_id)) -> dict:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@router.post("/courses/{course_id}/tutor/turn")
+@router.post("/courses/{course_id}/tutor/turn", deprecated=True)
 def tutor_turn(course_id: str, req: TutorTurnRequest,
                user_id: str = Depends(_user_id)) -> dict:
     """一轮教学交互闭环：Planner → Tutor / (Diagnoser → Evidence → LearnerModel → Re-plan)。"""

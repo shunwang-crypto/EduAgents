@@ -64,11 +64,83 @@ export interface StudyPlan {
   title: string;
   summary: string;
   plan_markdown: string;
+  /** PlanBrief（结构化“为什么这样安排”）；可能为 null（旧数据 / 未生成）。 */
+  plan_brief?: PlanBrief | null;
   progress: number;
   created_at: string;
   updated_at: string;
   stages: PlanStage[];
   steps: PlanStep[];
+}
+
+// ---------------------------------------------------------------------------
+// Plan Brief / Structured Explanation / Practice Handoff
+// ---------------------------------------------------------------------------
+
+export interface PlanBriefStage {
+  stage_id: string;
+  title: string;
+  objective: string;
+  order: number;
+  kc_count: number;
+}
+
+export interface PlanBrief {
+  course_id: string;
+  plan_id: string;
+  goal: string;
+  target_outcome: string;
+  why_this_plan: string[];
+  stage_overview: PlanBriefStage[];
+  critical_path: string[]; // kc_id 列表
+  difficulty_hotspots: string[];
+  known_skills: string[];
+  skill_gaps: string[];
+  adaptation_rules: string[];
+  time_budget: string;
+}
+
+export type ExplanationBlockType =
+  | "orientation"
+  | "big_picture"
+  | "concept"
+  | "worked_example"
+  | "code_walkthrough"
+  | "contrast"
+  | "misconception"
+  | "application"
+  | "recap"
+  | "handoff";
+
+export interface ExplanationBlock {
+  type: ExplanationBlockType;
+  title: string;
+  content: string;
+  data: Record<string, unknown>;
+  source_refs: string[];
+}
+
+export interface StepExplanation {
+  step_id: string;
+  plan_id: string;
+  kc_id: string;
+  title: string;
+  objective: string;
+  estimated_minutes: number;
+  blocks: ExplanationBlock[];
+  context_hash: string;
+  generated_at: string;
+}
+
+export interface PracticeHandoff {
+  course_id: string;
+  plan_id: string;
+  step_id: string;
+  kc_id: string;
+  learning_objective: string;
+  recommended_difficulty: string;
+  source: string;
+  return_url: string;
 }
 
 export interface ChatMessage {
@@ -184,39 +256,4 @@ export interface LearningMapResponse {
   graph_version?: number | null;
 }
 
-export type TeachingAction =
-  | "ASSESS"
-  | "PROBE"
-  | "HINT"
-  | "EXPLAIN"
-  | "EXAMPLE"
-  | "COMPARE"
-  | "PRACTICE"
-  | "FEEDBACK"
-  | "REFLECT"
-  | "CHALLENGE"
-  | "APPLICATION";
 
-export interface TutorTurnRequest {
-  kc_id: string;
-  message?: string | null;
-  learning_goal?: string | null;
-  difficulty?: number;
-  /** P1-5：本轮教学上下文 id（start 返回后 answer 回传；新前端必须传）。 */
-  turn_id?: string | null;
-}
-
-export interface TutorResponse {
-  kc_id: string;
-  teaching_action: TeachingAction;
-  message: string;
-  learner_state_changed: boolean;
-  learning_map_changed: boolean;
-  mastery: number | null;
-  confidence: number | null;
-  reason_codes: string[];
-  next_recommended_kc: string | null;
-  explanation: string;
-  /** P1-5：本轮教学上下文 id（start 返回；answer 回传）。 */
-  turn_id?: string | null;
-}
