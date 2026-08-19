@@ -124,6 +124,11 @@ def _resolve_main_settings():
 def get_llm(temperature: float = 0.3, **kwargs):
     """创建带多模型 fallback 的 ChatOpenAI：OPENAI_* 优先，未配置时回落星辰平台。"""
 
+    # OFFLINE 测试模式：跳过真实 LLM，立即触发调用方 fallback，避免无 API 环境等待超时。
+    import os as _os
+    if _os.environ.get("EDU_OFFLINE", "").strip() in ("1", "true", "True"):
+        raise RuntimeError("EDU_OFFLINE: skipping LLM")
+
     api_key, base_url, model_str = _resolve_main_settings()
     return FallbackChatOpenAI(
         models=_parse_model_list(model_str),

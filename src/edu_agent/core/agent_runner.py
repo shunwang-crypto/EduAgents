@@ -75,6 +75,12 @@ def invoke_structured_output(
 ) -> BaseModel:
     """Ask a model for JSON and parse it locally instead of relying on provider response_format."""
 
+    # OFFLINE 测试模式：跳过真实 LLM 调用，立即触发调用方的确定性 fallback，
+    # 避免在无 API 环境下等待超时。仅影响 EDU_OFFLINE=1 的测试路径。
+    import os as _os
+    if _os.environ.get("EDU_OFFLINE", "").strip() in ("1", "true", "True"):
+        raise RuntimeError("EDU_OFFLINE: skipping LLM call")
+
     from langchain_core.output_parsers import PydanticOutputParser
     from langchain_core.prompts import ChatPromptTemplate
 

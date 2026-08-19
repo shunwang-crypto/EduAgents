@@ -74,6 +74,7 @@ def test_explanation_generated_and_valid(learner, made_course):
 
     assert exp["step_id"] == step_id
     assert exp["kc_id"] == kc_id
+    assert exp["schema_version"] == 2
     assert len(exp["blocks"]) >= 3
     valid_types = {t.value for t in BlockType}
     for b in exp["blocks"]:
@@ -122,6 +123,26 @@ def test_explanation_validator_rejects_invalid(learner):
                                                    content="请选择 correct_answer")])
     issues2 = v.validate(bad)
     assert any("forbidden practice content" in i.message for i in issues2)
+
+
+def test_validator_does_not_enforce_fixed_section_count():
+    """Adaptive Rich Explanation 允许一个或很多 section，不套固定七段。"""
+    validator = ExplanationValidator()
+    one = StepExplanation(
+        explanation_id="one", course_id="c", plan_id="p", step_id="s", kc_id="k",
+        title="简单知识点",
+        blocks=[ExplanationBlock(type="concept", title="完整解释", content="内容")],
+    )
+    many = StepExplanation(
+        explanation_id="many", course_id="c", plan_id="p", step_id="s", kc_id="k",
+        title="复杂知识点",
+        blocks=[
+            ExplanationBlock(type="concept", title=f"区段 {i}", content="可包含很长的 Markdown")
+            for i in range(16)
+        ],
+    )
+    assert validator.validate(one) == []
+    assert validator.validate(many) == []
 
 
 def test_deterministic_fallback_no_raw_ids(learner, made_course):
