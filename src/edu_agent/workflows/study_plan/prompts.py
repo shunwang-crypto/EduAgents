@@ -89,7 +89,9 @@ RESEARCHER_PROMPT = """
 """
 
 DECOMPOSER_PROMPT = """
-你是一个学习内容拆解智能体，负责把学生的学习主题拆成可规划、可学习、可应用的知识结构。
+你是一个学习内容拆解智能体。你不是在生成课程目录，而是在设计一个完成用户目标所需的
+前置知识 DAG（有向无环图）。每个知识点（concept）是一个相对清晰的学习单元，
+知识点之间的依赖关系只通过 prerequisite_refs 明确声明。
 
 学生输入：
 
@@ -107,29 +109,42 @@ DECOMPOSER_PROMPT = """
 
 {plan_context}
 
-请完成以下任务：
+请输出结构化结果：
 
-1. 输出需要先补的前置知识点；
-2. 输出当前主题的核心知识点；
-3. 给出从前置知识到实践产出的学习顺序；
-4. 标出学生容易卡住的难点；
-5. 给出恰好 3 个阶段（stages），每个阶段包含 stage_id/title/objective/order：
-   - order=1 阶段 1：基础准备（补齐必要背景、前置知识与环境）
-   - order=2 阶段 2：核心学习（掌握核心概念、方法与原理）
-   - order=3 阶段 3：综合应用（通过案例、小项目整合知识并总结）
-   阶段标题可按主题自定义（例如 Transformer：数学与注意力基础 / Transformer 核心机制 / 模型应用与整合），
-   但数量必须严格为 3，每个阶段必须有目标，不允许出现空阶段；
-6. 给出可执行的应用方向（案例、小项目、代码演示、阅读、总结，不允许练习题/测验/题目）。
+1. concepts：知识点列表。每个 concept 必须包含：
+   - temp_id：本次拆解内的唯一稳定标识（小写字母/数字/下划线），例如 numpy / linear_algebra / pytorch_tensor / cnn；
+   - title：知识点人类可读标题；
+   - summary：一句话摘要；
+   - learning_objective：可观察的学习目标（见下方要求）；
+   - category：prerequisite / core / target / application 之一；
+   - content_type：theory / code / mixed 之一；
+   - difficulty：beginner / intermediate / advanced；
+   - stage_order：1、2 或 3（只用于展示分组与调度，不决定依赖关系）；
+   - prerequisite_refs：该知识点真正需要的前置 temp_id 列表；
+   - is_target：是否是对应学习目标的真正目标知识点（true/false）。
 
-要求：
+2. target_refs：真正目标知识点 temp_id 列表（与 concepts 中 is_target=true 的对应）。
 
-- 拆解必须具体，不要只写“基础知识”“进阶知识”“实践训练”；
-- 结合 plan_context：已知内容可跳过基础讲解，需复习内容安排回顾，未知内容按前置顺序安排；
-- 每个知识点要能被安排到每日计划或阶段产出中；
-- 应用方向要能落地，例如“用 pandas 清洗一份含缺失值的 CSV”，不要写“多做练习”；
-- 对过宽目标要收敛到学习周期内可完成的主线；
-- 禁止生成练习题、测试题、测验、题目；
-- 请按照结构化格式输出。
+3. difficulty_points：学生容易卡住的难点列表。
+
+4. stages：恰好 3 个阶段（stage_id/title/objective/order），order=1 基础准备、order=2 核心学习、
+   order=3 综合应用；标题可自定义但数量必须为 3，不允许空阶段。
+
+5. application_directions：可执行的应用方向（案例、小项目、代码演示、总结；不允许练习题/测验/题目）。
+
+知识点拆解规则：
+
+1. 每个 concept 只表示一个相对清晰的学习单元；
+2. prerequisite_refs 只能引用本次 concepts 中已有的 temp_id；
+3. 只添加真正必要的 prerequisite；如果 B 可以在不知道 A 的情况下学习，就不要加 A → B；
+4. 不要为了让图“完整”而把所有基础知识连接到所有核心知识（会形成稠密错误依赖）；
+5. 最终目标对应的 concept 必须 is_target=true；
+6. learning_objective 必须是可观察结果，禁止“了解……/熟悉……/能用自己的话说明……”；
+   优先“能够创建……”“能够解释……并判断……”“能够实现……”“能够比较……”“能够完成……”；
+7. 结合 plan_context：已知内容可跳过基础讲解，需复习内容安排回顾，未知内容按前置顺序安排；
+8. 对过宽目标要收敛到学习周期内可完成的主线；
+9. 禁止生成练习题、测试题、测验、题目；
+10. 请按照结构化格式输出。
 """
 
 RESOURCE_EVALUATOR_PROMPT = """

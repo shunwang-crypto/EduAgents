@@ -67,6 +67,20 @@ class Course:
             stack.extend(self.prerequisites(current))
         return result
 
+    def all_dependents_transitive(self, kc_id: str) -> List[str]:
+        """kc_id 的所有传递后继（含间接）——即依赖 kc_id 才能完成的节点。"""
+        result: List[str] = []
+        stack = list(self.dependents(kc_id))
+        seen: set = set()
+        while stack:
+            current = stack.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            result.append(current)
+            stack.extend(self.dependents(current))
+        return result
+
     @classmethod
     def from_dag(
         cls,

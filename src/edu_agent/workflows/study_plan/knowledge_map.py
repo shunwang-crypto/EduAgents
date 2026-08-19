@@ -1,6 +1,6 @@
 import re
 from math import floor
-from typing import Iterable, List
+from typing import Dict, Iterable, List
 
 from edu_agent.workflows.study_plan.canonicalizer import canonicalize_kc_id
 from edu_agent.workflows.study_plan.schemas import (
@@ -13,24 +13,23 @@ from edu_agent.workflows.study_plan.schemas import (
 )
 
 
-def _objective_for(title: str, category: str) -> str:
-    """§46-48：按 category 生成 observable / KC-specific / actionable 学习目标。
+def _objective_for(title: str, category: str, content_type: str = "") -> str:
+    """§18：按 category/content_type 生成 observable / KC-specific / actionable 学习目标。
 
-    LLM 缺失时也使用此确定性 fallback，而非统一模板。
+    仅作为 ConceptSpec.learning_objective 缺失时的确定性 fallback；
+    正式流程以 LLM 提供的 ConceptSpec.learning_objective 为准。
     """
     cat = (category or "").lower()
+    ctype = (content_type or "").lower()
     t = title or "该知识点"
-    if any(w in cat for w in ("framework", "tool", "api", "框架", "工具", "库", "cli")):
-        return f"能够使用「{t}」完成基础操作，并解释关键步骤。"
-    if any(w in cat for w in ("math", "数学", "线性代数", "微积分", "concept")):
+    if ctype in ("code",) or any(w in cat for w in ("code", "编程", "开发", "implementation")):
+        return f"能够使用「{t}」完成基础实现，并解释关键调用和参数。"
+    if ctype in ("theory",) or any(w in cat for w in ("theory", "数学", "线性代数", "微积分", "concept")):
         return f"能够解释「{t}」的核心关系，并说明它在目标任务中的作用。"
-    if any(w in cat for w in ("architecture", "架构", "系统设计")):
-        return f"能够解释「{t}」的主要组成和数据流。"
-    if any(w in cat for w in ("code", "编程", "开发", "implementation")):
-        return f"能够使用「{t}」完成一个最小实现，并解释关键参数。"
-    if any(w in cat for w in ("前置", "入门", "prerequisite")):
+    if any(w in cat for w in ("prerequisite", "前置", "入门")):
         return f"能够说明「{t}」的基本概念与用途，并完成一个最小示例。"
-    return f"能够说明「{t}」的核心内容，并完成一个与之相关的最小实践。"
+    # mixed / 其它
+    return f"能够解释「{t}」的核心原理，并完成一个基础实现流程。"
 
 
 def _clean_title(value: str) -> str:
@@ -180,110 +179,154 @@ def build_knowledge_map(
 ) -> KnowledgeMap:
     """Build a stable, UI-friendly knowledge map without another LLM call.
 
-    - 一级结构固定 3 个阶段（stage_id/stage_title/stage_order）。
-    - **按阶段分桶生成**：stage1_nodes + stage2_nodes + stage3_nodes 顺序拼接，
-      node.id（=kc_id）严格按 1..N 连续编号，与 stage 顺序一致；
-      每个阶段即使输入为空也有兜底节点（Stage2 缺 core 同样补）。
-    - 阶段映射：prerequisite→Stage1 / core→Stage2 / application→Stage3。
+    结构化 decomposition：
+    - graph edge 只来自 ``ConceptSpec.prerequisite_refs``（显式声明的依赖）；
+    - Stage 只用于 Plan List grouping / schedule / presentation，不自动创造依赖；
+    - canonical KC id 由 canonicalizer 统一派生；此处使用 ``temp_id`` 建立
+      ``ConceptSpec → KnowledgeNode`` 的引用映射，并把 ``prerequisite_refs``
+      解析为对应 prerequisite 节点的 canonical id。
     - 步骤数量与预计分钟数受 ``days × daily_time`` 硬预算约束。
-    - 不允许出现练习/题目语义；活动类型限定为学习活动（阅读/案例/项目等）。
     """
 
-    node_index = 1
     stages = _normalize_stages(decomposition.stages)
+    stage_by_order = {s.order: s for s in stages}
+    concept_stage_of = {c.stage_order: stage_by_order.get(c.stage_order, stages[0]) for c in decomposition.concepts}
 
-    prerequisite_items = _unique_items(decomposition.prerequisite_concepts)
-    core_items = _unique_items(decomposition.core_concepts)
-    application_items = _unique_items(decomposition.application_directions)
-    prerequisite_titles = [title for title, _ in prerequisite_items]
-    core_titles = [title for title, _ in core_items]
+    def _node_id(c) -> str:
+        # 生产流程用 temp_id 作为稳定 seed；canonicalizer 后续会把 temp_id
+        # 映射为最终 canonical kc_id。这里直接派生，保证 id 稳定且可引用。
+        return c.temp_id
 
-    def make(
-        title: str,
-        summary: str,
-        category: str,
-        difficulty: str,
-        minutes: int,
-        stage: LearningStageSuggestion,
-        prerequisites: list[str],
-        objective: str,
-    ) -> KnowledgeNode:
-        nonlocal node_index
+    # 预建立 temp_id → KnowledgeNode，用于解析 prerequisite_refs。
+    # 注意：edge 只在明确声明的前置之间生成。
+    nodes_by_temp: Dict[str, KnowledgeNode] = {}
+    # 先构造基础节点（无 prerequisites），再补 edge。
+    prepared: List[KnowledgeNode] = []
+    for concept in decomposition.concepts:
+        stage = concept_stage_of[concept.stage_order]
+        minutes = concept.estimated_minutes or _default_minutes(concept)
+        raw_title = concept.title or concept.temp_id
         node = KnowledgeNode(
-            id=canonicalize_kc_id(title),
-            title=title,
-            category=category,
-            summary=summary,
-            prerequisites=prerequisites,
-            difficulty=difficulty,
+            id=_node_id(concept),
+            # 对长/带动词前缀标题做确定性收敛，避免 UI 长标题撑坏节点
+            # （结构化 ConceptSpec 已提供干净 title 时二次清洗是幂等的）。
+            title=_clean_title(raw_title),
+            # temp_id 作为 canonical_key 候选：合法则 canonicalizer 直接用
+            # 有意义的 temp_id（numpy / linear_algebra）作为 canonical kc_id。
+            canonical_key=concept.temp_id,
+            category=_category_label(concept.category),
+            summary=concept.summary or concept.title or "",
+            prerequisites=[],  # 稍后按 prerequisite_refs 填充
+            difficulty=_difficulty_label(concept.difficulty),
             estimated_minutes=minutes,
             stage_id=stage.stage_id,
             stage_title=stage.title,
             stage_order=stage.order,
-            learning_objective=objective,
+            learning_objective=concept.learning_objective or _objective_for(
+                concept.title or concept.temp_id, concept.category, concept.content_type
+            ),
         )
-        node_index += 1
-        return node
+        prepared.append(node)
+        nodes_by_temp[concept.temp_id] = node
 
-    topic = student_input.topic
+    # 建立 temp_id → canonical node.id 映射（temp_id 即 id）。
+    temp_to_id = {c.temp_id: c.temp_id for c in decomposition.concepts}
 
-    # ---- Stage 1：前置知识（无则补学习准备节点） ----
-    stage1_nodes: List[KnowledgeNode] = []
-    for title, summary in prerequisite_items:
-        stage1_nodes.append(make(
-            title=title, summary=summary, category="前置知识", difficulty="入门", minutes=30,
-            stage=stages[0], prerequisites=[],
-            objective=_objective_for(title, "前置知识")
-        ))
-    if not stage1_nodes:
-        stage1_nodes.append(make(
-            title=f"{topic} 核心术语与整体认识",
-            summary=f"了解「{topic}」的核心术语、学习环境与整体知识结构。",
-            category="前置知识", difficulty="入门", minutes=30,
-            stage=stages[0], prerequisites=[],
-            objective=_objective_for(topic, "前置知识")
-        ))
+    # 填充 prerequisites：只按显式 prerequisite_refs。
+    for concept in decomposition.concepts:
+        node = nodes_by_temp[concept.temp_id]
+        prereq_ids: List[str] = []
+        for ref in concept.prerequisite_refs or []:
+            if ref in temp_to_id:
+                prereq_ids.append(temp_to_id[ref])
+        node.prerequisites = prereq_ids
 
-    # ---- Stage 2：核心知识（无则补主线方法节点，这是关键兜底） ----
-    stage2_nodes: List[KnowledgeNode] = []
-    for title, summary in core_items:
-        stage2_nodes.append(make(
-            title=title, summary=summary, category="核心知识", difficulty="中等", minutes=45,
-            stage=stages[1], prerequisites=prerequisite_titles[:3],
-            objective=f"能解释「{title}」的核心原理，并在学习目标场景中正确使用。"
-        ))
-    if not stage2_nodes:
-        stage2_nodes.append(make(
-            title=f"{topic} 核心概念与主线方法",
-            summary=f"掌握「{topic}」的核心概念、关键方法与主流程。",
-            category="核心知识", difficulty="中等", minutes=45,
-            stage=stages[1], prerequisites=prerequisite_titles[:3],
-            objective=f"能解释「{topic}」的核心概念，并在学习目标场景中应用主线方法。"
-        ))
+    nodes = prepared
+    if not nodes:
+        # 空 decomposition 兜底：主题核心术语节点。
+        fallback = KnowledgeNode(
+            id=canonicalize_kc_id(f"{student_input.topic} 核心术语"),
+            title=f"{student_input.topic} 核心术语与整体认识",
+            category="核心知识",
+            summary=f"掌握「{student_input.topic}」的核心术语、关键方法与主流程。",
+            prerequisites=[],
+            difficulty="中等",
+            estimated_minutes=45,
+            stage_id=stages[1].stage_id,
+            stage_title=stages[1].title,
+            stage_order=stages[1].order,
+            learning_objective=_objective_for(student_input.topic, "core"),
+        )
+        nodes = [fallback]
 
-    # ---- Stage 3：综合应用（无则补综合案例与总结节点） ----
-    stage3_nodes: List[KnowledgeNode] = []
-    for title, summary in application_items:
-        stage3_nodes.append(make(
-            title=title, summary=summary, category="实践应用", difficulty="实践", minutes=60,
-            stage=stages[2], prerequisites=core_titles[:4],
-            objective=f"独立完成「{title}」并留下可检查的学习产出。"
-        ))
-    if not stage3_nodes:
-        stage3_nodes.append(make(
-            title=f"{topic} 综合案例与知识总结",
-            summary=f"通过案例或小项目整合「{topic}」所学知识并输出总结。",
-            category="实践应用", difficulty="实践", minutes=60,
-            stage=stages[2], prerequisites=core_titles[:4],
-            objective=f"独立完成「{topic}」的综合案例或小项目并输出复盘总结。"
-        ))
+    # 预算裁剪：保持结构，但按预算调整分钟数。
+    # 每个阶段至少保留一个节点（旧行为：阶段缺失时兜底补默认节点）。
+    grouped: List[List[KnowledgeNode]] = [[], [], []]
+    for node in nodes:
+        grouped[node.stage_order - 1].append(node)
+    _fill_stage_fallbacks(grouped, student_input.topic, stages)
+    nodes = _fit_nodes_to_budget(grouped, student_input)
 
-    nodes = _fit_nodes_to_budget(
-        [stage1_nodes, stage2_nodes, stage3_nodes],
-        student_input,
-    )
     return KnowledgeMap(
-        topic=topic,
+        topic=student_input.topic,
         nodes=nodes,
         recommended_path=[n.id for n in nodes],
     )
+
+
+def _fill_stage_fallbacks(
+    grouped: List[List[KnowledgeNode]],
+    topic: str,
+    stages: List[LearningStageSuggestion],
+) -> None:
+    """为空阶段补充兜底节点（保持三阶段结构，避免 UI 空阶段）。"""
+    defaults = [
+        (f"{topic} 核心术语与整体认识", "前置知识",
+         f"了解「{topic}」的核心术语、学习环境与整体知识结构。", "入门", 30),
+        (f"{topic} 核心概念与主线方法", "核心知识",
+         f"掌握「{topic}」的核心概念、关键方法与主流程。", "中等", 45),
+        (f"{topic} 综合案例与知识总结", "实践应用",
+         f"通过案例或小项目整合「{topic}」所学知识并输出总结。", "实践", 60),
+    ]
+    for idx, stage in enumerate(stages[:3]):
+        if grouped[idx]:
+            continue
+        title, cat, summary, diff, minutes = defaults[idx]
+        grouped[idx].append(KnowledgeNode(
+            id=canonicalize_kc_id(title),
+            title=title,
+            category=cat,
+            summary=summary,
+            prerequisites=[],
+            difficulty=diff,
+            estimated_minutes=minutes,
+            stage_id=stage.stage_id,
+            stage_title=stage.title,
+            stage_order=stage.order,
+            learning_objective=_objective_for(topic, cat),
+        ))
+
+
+def _default_minutes(concept) -> int:
+    """按分类给出确定性建议时长。"""
+    return {"prerequisite": 30, "core": 45, "target": 60, "application": 60}.get(
+        concept.category, 45
+    )
+
+
+def _category_label(category: str) -> str:
+    return {
+        "prerequisite": "前置知识",
+        "core": "核心知识",
+        "target": "核心知识",
+        "application": "实践应用",
+    }.get(category, "核心知识")
+
+
+def _difficulty_label(difficulty: str) -> str:
+    d = (difficulty or "").lower()
+    if d in ("beginner", "easy", "入门"):
+        return "入门"
+    if d in ("advanced", "hard", "困难", "进阶"):
+        return "进阶"
+    return "中等"

@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -45,10 +45,40 @@ class LearningStageSuggestion(BaseModel):
     order: int = Field(ge=1, le=3, description="阶段顺序 1-3")
 
 
+class ConceptSpec(BaseModel):
+    """一次 decomposition 内的结构化知识点（最终 canonical KC 的来源）。
+
+    temp_id：只在本次 decomposition 内用于建立 prerequisite_refs 引用；
+    它不是最终 canonical KC ID（canonicalization 负责 temp_id → canonical kc_id）。
+    """
+
+    temp_id: str = Field(description="本次分解内唯一临时标识，如 numpy / linear_algebra")
+    title: str = Field(description="知识点人类可读标题")
+    summary: str = Field(default="", description="知识点摘要")
+    learning_objective: str = Field(default="", description="可观察的学习目标（非模板化）")
+    category: Literal["prerequisite", "core", "target", "application"] = Field(
+        default="core", description="知识点分类"
+    )
+    content_type: Literal["theory", "code", "mixed"] = Field(
+        default="mixed", description="内容类型"
+    )
+    difficulty: str = Field(default="intermediate", description="难度（beginner/intermediate/advanced）")
+    stage_order: int = Field(ge=1, le=3, default=1, description="所属阶段（仅分组/展示/调度）")
+    prerequisite_refs: List[str] = Field(
+        default_factory=list, description="前置知识点 temp_id 列表（只能引用本次 concepts 中已有的 temp_id）"
+    )
+    is_target: bool = Field(default=False, description="是否是对应学习目标的真正目标知识点")
+    estimated_minutes: Optional[int] = Field(default=None, description="建议学习时间（分钟，可空）")
+
+
 class DecompositionResult(BaseModel):
-    core_concepts: List[str] = Field(description="核心知识点")
-    prerequisite_concepts: List[str] = Field(description="前置知识点")
-    learning_sequence: List[str] = Field(description="推荐学习顺序")
+    # 新生产流程只使用 concepts（显式 prerequisite_refs 决定 graph edge）。
+    # 旧字段仅保留 compatibility（legacy test / API），不再作为 Graph source of truth。
+    concepts: List[ConceptSpec] = Field(default_factory=list, description="结构化知识点（唯一 Graph source of truth）")
+    target_refs: List[str] = Field(default_factory=list, description="真正目标知识点 temp_id 列表")
+    core_concepts: List[str] = Field(default_factory=list, description="（compatibility）核心知识点")
+    prerequisite_concepts: List[str] = Field(default_factory=list, description="（compatibility）前置知识点")
+    learning_sequence: List[str] = Field(default_factory=list, description="（compatibility）推荐学习顺序")
     difficulty_points: List[str] = Field(description="学习难点")
     stages: List[LearningStageSuggestion] = Field(description="固定 3 个阶段，按 order 1→2→3")
     application_directions: List[str] = Field(description="推荐应用/产出方向（案例、项目等）")
@@ -72,6 +102,102 @@ class DecompositionResult(BaseModel):
             result.append(stage)
         self.stages = result
         return self
+
+    @model_validator(mode="after")
+    def _normalize_concepts(self) -> "DecompositionResult":
+        """compatibility：旧字段填充 concepts（当 concepts 为空时）。
+
+        仅当生产流程未提供结构化 concepts 时才从旧字段合成，保证 legacy
+        test / 调用方仍可得到可构建的 graph。
+
+        Compatibility fallback derives a conservative sparse prerequisite chain
+        from legacy learning_sequence when explicit ConceptSpec relations are
+        unavailable. 每个节点最多只依赖学习顺序中的前一个节点（A→B→C→D），
+        不产生 complete-bipartite dense graph，也不依赖 Stage 分组。
+        """
+        if self.concepts:
+            # 确保 target_refs 与 is_target 一致性
+            if not self.target_refs:
+                self.target_refs = [c.temp_id for c in self.concepts if c.is_target]
+            return self
+
+        def _dedup(items) -> List[str]:
+            seen: set = set()
+            out: List[str] = []
+            for x in items or []:
+                key = (x or "").strip()
+                if key and key not in seen:
+                    seen.add(key)
+                    out.append(key)
+            return out
+
+        # 1) 概念全集 = prereq ∪ core ∪ application（旧 behavior 的节点来源）。
+        #    learning_sequence 提供顺序 hint：仅保留能精确匹配某个概念的项，
+        #    其余（缩写/句子式 hint）丢弃，避免产生多余/语义重复节点。
+        prereq_list = _dedup(self.prerequisite_concepts)
+        core_list = _dedup(self.core_concepts)
+        app_list = _dedup(self.application_directions)
+        concept_pool = prereq_list + core_list + app_list
+        pool_set = set(concept_pool)
+
+        ordered: List[str] = []
+        seen: set = set()
+        for title in _dedup(self.learning_sequence):
+            if title in pool_set and title not in seen:
+                ordered.append(title)
+                seen.add(title)
+        for title in concept_pool:
+            if title not in seen:
+                ordered.append(title)
+                seen.add(title)
+        if not ordered:
+            self.concepts = []
+            return self
+
+        # 2) 分类映射：title → (category, stage, difficulty)
+        prereq_set = set(prereq_list)
+        app_set = set(app_list)
+
+        def _meta(title):
+            if title in prereq_set:
+                return ("prerequisite", 1, "beginner")
+            if title in app_set:
+                return ("application", 3, "advanced")
+            return ("core", 2, "intermediate")
+
+        synthesized: List[ConceptSpec] = []
+        # 每个节点最多依赖前一个序列节点（sparse conservative chain）。
+        prev_temp: Optional[str] = None
+        for title in ordered:
+            category, stage, difficulty = _meta(title)
+            refs = [prev_temp] if prev_temp is not None else []
+            synthesized.append(ConceptSpec(
+                temp_id=_slugify(title), title=title, summary=title, category=category,
+                content_type="mixed", difficulty=difficulty, stage_order=stage,
+                prerequisite_refs=refs, is_target=False,
+            ))
+            prev_temp = _slugify(title)
+        # 3) target fallback：优先 target_refs/is_target；缺省 sequence 末节点。
+        self.concepts = synthesized
+        target_refs = _dedup(self.target_refs)
+        if not target_refs:
+            target_refs = [synthesized[-1].temp_id]
+        # 标记 is_target（保持与 target_refs 一致）。
+        target_set = set(target_refs)
+        for c in synthesized:
+            if c.temp_id in target_set:
+                c.is_target = True
+        self.target_refs = target_refs
+        return self
+
+
+def _slugify(value: str) -> str:
+    """把人类标题派生为稳定临时 id（仅 legacy 合成用）。"""
+    import re
+    norm = re.sub(r"[^a-zA-Z0-9\u4e00-\u9fff]+", "_", value or "").strip("_")
+    if not norm:
+        norm = "concept"
+    return norm.lower()
 
 
 class KnowledgeNode(BaseModel):

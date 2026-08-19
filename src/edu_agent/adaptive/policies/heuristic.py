@@ -32,6 +32,7 @@ class HeuristicAdaptivePolicy:
         target_kcs: Optional[List[str]] = None,
         mastered_threshold: float = MASTERED_THRESHOLD,
         weak_threshold: float = WEAK_THRESHOLD,
+        plan_order: Optional[Dict[str, int]] = None,
     ) -> None:
         self.course = course
         self.goal_kcs = set(goal_kcs or [])
@@ -44,6 +45,9 @@ class HeuristicAdaptivePolicy:
                 c.kc_id for c in course.components
                 if not course.dependents(c.kc_id)
             }
+        # StudyPlan.seq 排序：kc_id → seq。同分时优先按计划顺序，
+        # 绝不由 hash 类 canonical kc_id 决定学习顺序（§22）。
+        self.plan_order = plan_order or {}
         self._goal_rel_memo: Dict[str, bool] = {}
         self.mastered_threshold = mastered_threshold
         self.weak_threshold = weak_threshold
@@ -145,8 +149,11 @@ class HeuristicAdaptivePolicy:
         goal_relevant = self.is_goal_relevant(kc_id, mastery_map)
         if goal_relevant:
             reason_codes.append(ReasonCode.GOAL_RELEVANT.value)
-            if kc_id in self.goal_kcs or any(
-                d in self.goal_kcs for d in self.course.all_prerequisites_transitive(kc_id)
+            # PREREQUISITE_FOR_GOAL 方向：kc 必须是某个 target 的传递前置
+            # （kc ∈ transitive_prerequisites(target)），即 target ∈ kc 的传递后继。
+            # target 自身不算（它是目标，不是"达成目标的前置"）。
+            if any(
+                t in self.course.all_dependents_transitive(kc_id) for t in self.target_kcs
             ):
                 reason_codes.append(ReasonCode.PREREQUISITE_FOR_GOAL.value)
 
@@ -224,8 +231,10 @@ class HeuristicAdaptivePolicy:
                 + recent_err * 0.5
                 + current_plan * 0.5
             )
-            # 同分时稳定排序：kc_id
-            return (-score, r["kc_id"])
+            # 同分时优先按 StudyPlan.seq（越小越先），再按拓扑深度，
+            # kc_id 仅作为最终确定性 fallback（§22：不由 hash 决定顺序）。
+            seq = self.plan_order.get(r["kc_id"], 10**9)
+            return (-score, seq, r["kc_id"])
 
         ordered = sorted(candidates, key=priority)
         return [r["kc_id"] for r in ordered]
@@ -246,6 +255,93 @@ class HeuristicAdaptivePolicy:
         if not path:
             return []
         return path[1:1 + max_candidates]
+
+    # -- active_subgraph：goal prerequisite closure --------------------------
+    def active_subgraph(self) -> tuple[set[str], set[tuple[str, str]]]:
+        """当前目标仍相关的知识 DAG 子图（§20）。
+
+        计算：targets + targets 的所有传递前置（goal prerequisite closure）。
+        mastered 节点仍保留（已完成上下文）；unknown/weak/learning 属于剩余学习工作；
+        未来 locked 节点也必须出现在子图中（locked 只代表“现在不能作推荐入口”）。
+        """
+        keep: set[str] = set()
+        stack = list(self.target_kcs)
+        seen: set[str] = set()
+        while stack:
+            current = stack.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            keep.add(current)
+            stack.extend(self.course.prerequisites(current))
+        edges = {
+            (r.from_kc, r.to_kc)
+            for r in self.course.relations
+            if r.relation == "prerequisite"
+            and r.from_kc in keep
+            and r.to_kc in keep
+        }
+        return keep, edges
+
+    # -- primary_route：从当前推荐到主目标的真实 DAG 路径 -------------------
+    def primary_route(
+        self,
+        mastery_map: Dict[str, Optional[float]],
+        misconception_map: Optional[Dict[str, List[str]]] = None,
+        recent_error_map: Optional[Dict[str, bool]] = None,
+        start_kc: Optional[str] = None,
+        max_len: int = 8,
+    ) -> List[str]:
+        """给用户一条容易理解的主要学习线（§24）。
+
+        从 current_recommended_kc 出发，沿真实 DAG 边走到某个 primary target。
+        未来 locked 节点允许存在；保证 route[i] → route[i+1] 的边真实存在。
+        """
+        if not self.course.components:
+            return []
+        path_ordered = self.recommended_path(mastery_map, misconception_map, recent_error_map)
+        cur = start_kc or (path_ordered[0] if path_ordered else None)
+        if cur is None:
+            cur = next((c.kc_id for c in self.course.components), None)
+        if cur is None:
+            return []
+        # 优先目标：从候选 target 中选当前推荐可达的（沿依赖方向）。
+        targets = [t for t in self.target_kcs if t in self.course.all_dependents_transitive(cur)] or list(self.target_kcs)
+        # 选择离 cur 最远的 target（更完整的主线）。
+        def depth_to(t: str) -> int:
+            return len(self._path_to(cur, t))
+        primary = max(targets, key=depth_to) if targets else cur
+        route = self._path_to(cur, primary)
+        return route[:max_len]
+
+    def _path_to(self, start: str, goal: str) -> List[str]:
+        """BFS 沿 prerequisite 依赖方向（start → goal）找一条真实路径。"""
+        if start == goal:
+            return [start]
+        from collections import deque
+        prev: Dict[str, Optional[str]] = {start: None}
+        queue = deque([start])
+        visited = {start}
+        while queue:
+            node = queue.popleft()
+            for d in self.course.dependents(node):
+                if d in visited:
+                    continue
+                visited.add(d)
+                prev[d] = node
+                if d == goal:
+                    break
+                queue.append(d)
+        if goal not in prev:
+            # 不可达（goal 在 start 上游等）：退化为单节点。
+            return [start]
+        path: List[str] = []
+        cur: Optional[str] = goal
+        while cur is not None:
+            path.append(cur)
+            cur = prev.get(cur)
+        path.reverse()
+        return path
 
     # -- active_path：真实 DAG 路径（相邻节点必须有 prerequisite edge）------
     def active_path(

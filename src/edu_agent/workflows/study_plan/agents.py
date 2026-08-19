@@ -74,19 +74,23 @@ def _fallback_decomposition(
     if reason is not None:
         logger.warning("fallback decomposition used due to error: %r", reason)
 
+    core = [
+        f"{topic} 的核心术语、常见输入输出和适用场景",
+        f"{topic} 的主流程和关键操作步骤",
+        f"{topic} 学习目标中需要交付的作品或结果",
+    ]
+    applications = [
+        f"围绕 {topic} 制作一份概念卡片和错误清单",
+        f"完成一个能体现学习目标的 {topic} 小案例",
+    ]
+    # Compatibility fallback derives a conservative sparse prerequisite chain
+    # from legacy learning_sequence when explicit ConceptSpec relations are
+    # unavailable. learning_sequence 由真实概念标题组成（前置→核心→应用），
+    # 以便构建稀疏依赖链（A→B→C→D），而非 complete-bipartite dense graph。
     return DecompositionResult(
-        core_concepts=[
-            f"{topic} 的核心术语、常见输入输出和适用场景",
-            f"{topic} 的主流程和关键操作步骤",
-            f"{topic} 学习目标中需要交付的作品或结果",
-        ],
+        core_concepts=core,
         prerequisite_concepts=prerequisites,
-        learning_sequence=[
-            "先补齐前置知识并确认学习环境可用",
-            f"再学习 {topic} 的核心概念和最小可运行示例",
-            "随后按阶段完成应用案例、复盘问题并迭代产出",
-            f"最后完成一个贴近目标的 {topic} 综合任务",
-        ],
+        learning_sequence=prerequisites + core + applications,
         difficulty_points=[
             "容易只阅读资料但缺少可提交产出",
             "容易把学习范围扩得过大，导致每日任务超时",
@@ -112,9 +116,7 @@ def _fallback_decomposition(
                 order=3,
             ),
         ],
-        application_directions=[
-            f"围绕 {topic} 制作一份概念卡片和错误清单",
-            f"完成一个能体现学习目标的 {topic} 小案例",
+        application_directions=applications + [
             "每天保留一条可检查产出，例如笔记、代码、截图或讲解录音",
         ],
     )

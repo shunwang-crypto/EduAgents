@@ -73,20 +73,24 @@ def _fallback_decomposition(
     exc: Exception,
 ) -> DecompositionResult:
     topic = analysis.topic or student_input.topic
+    prerequisites = analysis.prerequisites or [f"{topic} 的前置知识", "可运行的学习环境"]
+    core = [
+        f"{topic} 的核心概念和术语",
+        f"{topic} 的基本操作流程",
+        f"{topic} 学习目标对应的交付产出",
+    ]
+    applications = [
+        f"完成一个和 {topic} 直接相关的小案例",
+        "每天保留笔记、代码、截图或讲解记录作为检查证据",
+    ]
+    # Compatibility fallback derives a conservative sparse prerequisite chain
+    # from legacy learning_sequence when explicit ConceptSpec relations are
+    # unavailable. learning_sequence 由真实概念标题组成（前置→核心→应用），
+    # 以便构建稀疏依赖链（A→B→C→D），而非 complete-bipartite dense graph。
     return DecompositionResult(
-        core_concepts=[
-            f"{topic} 的核心概念和术语",
-            f"{topic} 的基本操作流程",
-            f"{topic} 学习目标对应的交付产出",
-        ],
-        prerequisite_concepts=analysis.prerequisites
-        or [f"{topic} 的前置知识", "可运行的学习环境"],
-        learning_sequence=[
-            "补齐前置知识并确认工具环境",
-            f"学习 {topic} 的核心概念和最小示例",
-            "完成阶段应用案例并复盘问题",
-            "完成最终综合任务并整理验收记录",
-        ],
+        core_concepts=core,
+        prerequisite_concepts=prerequisites,
+        learning_sequence=prerequisites + core + applications,
         difficulty_points=[
             f"{topic} 范围可能过宽，需要聚焦当前周期主线",
             "每日任务需要有明确产出，否则难以检查进度",
@@ -105,11 +109,7 @@ def _fallback_decomposition(
                 objective="完成作品、验收和复盘", order=3,
             ),
         ],
-        application_directions=[
-            f"完成一个和 {topic} 直接相关的小案例",
-            "每天保留笔记、代码、截图或讲解记录作为检查证据",
-            "内容拆解步骤使用降级模板生成",
-        ],
+        application_directions=applications + ["内容拆解步骤使用降级模板生成"],
     )
 
 
