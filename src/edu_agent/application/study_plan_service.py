@@ -186,6 +186,7 @@ def generate_plan(
         graph_version = 1
 
     nodes: List[dict] = []
+    id_map: Dict[str, str] = {}
     dyn_course = None
     graph_fallback = False
     if km is not None and getattr(km, "nodes", None):
@@ -216,6 +217,35 @@ def generate_plan(
             remapped = dict(rn)
             remapped["id"] = id_map.get(rn.get("id"), rn.get("id"))
             nodes.append(remapped)
+
+    # §15：真正 target KCs 显式来源 = ConceptSpec.is_target / target_refs。
+    # temp_id → canonical id 映射后持久化到 active goal，供 Learning Map 使用。
+    target_kcs: List[str] = []
+    decomposition = result.get("decomposition")
+    if decomposition is not None:
+        target_temp_ids = set()
+        for c in getattr(decomposition, "concepts", []) or []:
+            if c.is_target:
+                target_temp_ids.add(c.temp_id)
+        for ref in getattr(decomposition, "target_refs", []) or []:
+            target_temp_ids.add(ref)
+        # 通过 id_map 的 source_id（temp_id）→ canonical 值 反查：
+        # target_temp_ids 里的 temp_id → 对应 canonical kc_id。
+        reverse: Dict[str, List[str]] = {}
+        for src, cid in id_map.items():
+            reverse.setdefault(src, []).append(cid)
+        for tid in target_temp_ids:
+            for cid in reverse.get(tid, []):
+                if cid not in target_kcs:
+                    target_kcs.append(cid)
+    # §15 fallback：无显式 target 时用 graph 末端叶子（无后继）节点。
+    if not target_kcs and dyn_course is not None:
+        target_kcs = [
+            c.kc_id for c in dyn_course.components
+            if not dyn_course.dependents(c.kc_id)
+        ][:8]
+    if not target_kcs:
+        target_kcs = [n.get("id") for n in nodes if n.get("id")][:8]
     summary = _plan_summary(plan_context, nodes)
 
     # Finalize 单事务（用户要求：LLM workflow 在事务外，返回后写入必须一个事务）：
@@ -274,7 +304,7 @@ def generate_plan(
             if goal_row is None or not expected_goal_updated_at or not learner.repo.update_goal_if_unchanged(
                 user_id, goal_id, expected_goal_updated_at,
                 {"name": fresh_name, "target": goal_text,
-                 "target_kcs_json": json.dumps([n.get("id") for n in nodes if n.get("id")][:8], ensure_ascii=False),
+                 "target_kcs_json": json.dumps(target_kcs, ensure_ascii=False),
                  "status": "active", "progress": 0.0, "updated_at": _now_iso()},
             ):
                 raise ValueError("课程目标已变更，请重新生成学习计划")
@@ -303,8 +333,10 @@ def generate_plan(
     try:
         from edu_agent.application.plan_brief_service import PlanBriefService
 
+        decomposition = result.get("decomposition")
+        brief_hotspots = list(getattr(decomposition, "difficulty_points", None) or [])[:5]
         brief = PlanBriefService(learner).build(
-            user_id, course_id, plan_context=plan_context
+            user_id, course_id, plan_context=plan_context, force_hotspots=brief_hotspots or None
         )
         learner.repo.update_plan_brief(plan_id, brief.model_dump_json())
     except Exception:  # noqa: BLE001 - PlanBrief 失败不阻断主流程
@@ -644,18 +676,16 @@ def _build_lesson_context(
 
 
 def _generate_lesson_markdown(step: dict, context_text: str) -> str:
-    """调用 LLM 生成讲解 Markdown（结构与长度遵循需求）。"""
+    """Legacy endpoint 的兼容生成器：同样采用自适应长文策略。"""
     from edu_agent.core.agent_runner import model_to_text
     from edu_agent.core.llm import get_kb_llm
     from langchain_core.prompts import ChatPromptTemplate
 
-    minutes = int(step.get("minutes") or 30)
-    length_note = "约 500–1200 中文字" if minutes <= 30 else "可更详细并带示例"
     template = (
-        "{system}\n\n{context}\n\n知识点信息如上。请按以下结构输出 Markdown 讲解"
-        f"（{length_note}）：\n"
-        "## 本节要学什么\n## 核心讲解\n## 关键点\n## 示例\n## 常见误区\n"
-        "## 实际应用\n## 本节总结"
+        "{system}\n\n{context}\n\n知识点信息如上。请写一篇可直接阅读的 Adaptive Rich Explanation Markdown。"
+        "不要固定字数或固定 section 数量；根据复杂度自行决定长度和结构。可以包含长解释、标题分节、列表、"
+        "流程图/架构图说明、图片链接、代码与逐行解释、worked example、对比表、公式、常见误区、实际应用和总结。"
+        "简单知识点保持简洁，复杂知识点充分展开；不要为了凑结构重复内容。"
     )
     prompt = ChatPromptTemplate.from_template(template)
     response = (prompt | get_kb_llm(temperature=0.4)).invoke(

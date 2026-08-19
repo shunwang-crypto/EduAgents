@@ -54,7 +54,13 @@ class PlanBriefService:
         self.learner = learner
         self.graph_service = CourseGraphService(learner._repo)
 
-    def build(self, user_id: str, course_id: str, plan_context: Optional[dict] = None) -> PlanBrief:
+    def build(
+        self,
+        user_id: str,
+        course_id: str,
+        plan_context: Optional[dict] = None,
+        force_hotspots: Optional[List[str]] = None,
+    ) -> PlanBrief:
         plan = self.learner.repo.get_plan(user_id, course_id)
         if plan is None:
             raise KeyError("no plan for course")
@@ -136,7 +142,7 @@ class PlanBriefService:
             why_this_plan=why,
             stage_overview=stage_overview,
             critical_path=critical_path,
-            difficulty_hotspots=self._difficulty_hotspots(steps),
+            difficulty_hotspots=force_hotspots if force_hotspots else self._difficulty_hotspots(steps),
             known_skills=known_skills,
             skill_gaps=skill_gaps,
             unassessed_skills=unassessed_skills,
@@ -203,5 +209,13 @@ class PlanBriefService:
 
     @staticmethod
     def _difficulty_hotspots(steps: List[dict]) -> List[str]:
-        hard = [s.get("title", "") for s in steps if (s.get("difficulty") or "").lower() in ("hard", "difficult", "困难")]
+        """§30：退化为按 difficulty 标记的硬/进阶步骤。
+
+        结构化 difficulty_points 由 plan generation 时持久化到 PlanBrief
+        （build 传入 difficulty_hotspots override），见 build(force_hotspots=...)。
+        """
+        hard = [
+            s.get("title", "") for s in steps
+            if (s.get("difficulty") or "").lower() in ("hard", "difficult", "困难", "advanced", "进阶")
+        ]
         return hard[:5]

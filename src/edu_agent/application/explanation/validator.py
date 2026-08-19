@@ -1,6 +1,7 @@
-"""Structured Explanation Validator。
+"""Adaptive Rich Explanation Validator。
 
-校验：block type 合法、数量合理、无 exercise/判题内容、非空、无重复。
+校验 block type、标题和练习/判题禁用语。这里不按固定 section 数量或
+字数裁剪内容；结构由知识点复杂度和教学目标决定。
 生产代码禁止出现 exercise/grading 语义（见 tests/test_no_exercise.py）。
 """
 
@@ -32,9 +33,6 @@ class ValidationIssue:
 
 
 class ExplanationValidator:
-    MIN_BLOCKS = 3
-    MAX_BLOCKS = 12
-
     def validate(self, explanation: StepExplanation) -> List[ValidationIssue]:
         issues: List[ValidationIssue] = []
         if not explanation.title.strip():
@@ -42,12 +40,6 @@ class ExplanationValidator:
         if not explanation.blocks:
             issues.append(ValidationIssue("blocks is empty"))
             return issues
-        if not (self.MIN_BLOCKS <= len(explanation.blocks) <= self.MAX_BLOCKS):
-            issues.append(
-                ValidationIssue(
-                    f"block count {len(explanation.blocks)} outside [{self.MIN_BLOCKS},{self.MAX_BLOCKS}]"
-                )
-            )
         seen_titles: set = set()
         for b in explanation.blocks:
             self._validate_block(b, issues, seen_titles)
@@ -74,17 +66,16 @@ class ExplanationValidator:
     @staticmethod
     def _flatten(block: ExplanationBlock) -> str:
         parts = [block.content or ""]
-        for key in ("items", "points", "steps"):
-            items = (block.data or {}).get(key)
-            if isinstance(items, list):
-                parts.extend(str(i) for i in items)
-        code = (block.data or {}).get("code")
-        if code:
-            parts.append(str(code))
-        anns = (block.data or {}).get("annotations")
-        if isinstance(anns, list):
-            for a in anns:
-                if isinstance(a, dict):
-                    parts.append(str(a.get("explanation", "")))
-                    parts.append(str(a.get("label", "")))
+
+        def visit(value) -> None:
+            if isinstance(value, dict):
+                for nested in value.values():
+                    visit(nested)
+            elif isinstance(value, list):
+                for nested in value:
+                    visit(nested)
+            elif value is not None:
+                parts.append(str(value))
+
+        visit(block.data or {})
         return "\n".join(parts)

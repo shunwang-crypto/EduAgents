@@ -57,6 +57,12 @@ class LearningMapResponse(BaseModel):
     goal: str
     nodes: List[LearningMapNode] = Field(default_factory=list)
     edges: List[LearningMapEdge] = Field(default_factory=list)
+    # 新字段（§19）：真正的目标 / 当前学习子图 / 主学习线
+    target_kcs: List[str] = Field(default_factory=list)
+    active_subgraph_nodes: List[str] = Field(default_factory=list)
+    active_subgraph_edges: List[LearningMapEdge] = Field(default_factory=list)
+    primary_route: List[str] = Field(default_factory=list)
+    # 兼容旧字段：deprecated，不再作为真实路径语义
     recommended_path: List[str] = Field(default_factory=list)
     current_recommended_kc: Optional[str] = None
     recommended_candidates: List[str] = Field(default_factory=list)
@@ -152,9 +158,16 @@ class LearningMapService:
             for k, v in recent_evidence_map.items()
         }
 
-        # §28：goal KC 优先来自显式 target；缺省 = 无后继的末端叶子 KC（不能是所有组件）。
-        goal_kcs = self._terminal_kcs(course)
-        policy = HeuristicAdaptivePolicy(course, goal_kcs=list(goal_kcs), target_kcs=list(goal_kcs))
+        # §15/§28：target_kcs 优先来自显式 target（goal 保存的 target_kcs_json）；
+        # 缺省 = 无后继的末端叶子 KC（不能是所有组件）。
+        goal_kcs = self._target_kcs(user_id, course_id, course)
+        plan_seq = self._plan_seq(user_id, course_id)
+        policy = HeuristicAdaptivePolicy(
+            course,
+            goal_kcs=list(goal_kcs),
+            target_kcs=list(goal_kcs),
+            plan_order=plan_seq,
+        )
 
         # 推荐语义拆分（§23-27）：
         # - current_recommended_kc：最多一个（现在最建议学）
@@ -166,6 +179,11 @@ class LearningMapService:
             mastery_map, misconception_map, _recent_error_map, max_candidates=3
         )
         active_path = policy.active_path(
+            mastery_map, misconception_map, _recent_error_map, start_kc=current_kc
+        )
+        # §19-25：active_subgraph（goal prerequisite closure）+ primary_route（真实 DAG 路径）
+        sub_nodes, sub_edges = policy.active_subgraph()
+        primary_route = policy.primary_route(
             mastery_map, misconception_map, _recent_error_map, start_kc=current_kc
         )
 
@@ -200,11 +218,19 @@ class LearningMapService:
                 edges.append(LearningMapEdge(source=r.from_kc, target=r.to_kc,
                                              relation=r.relation, weight=r.weight))
 
+        sub_edge_models = [
+            LearningMapEdge(source=s, target=t)
+            for (s, t) in sorted(sub_edges)
+        ]
         return LearningMapResponse(
             course_id=course.course_id,
             goal=goal,
             nodes=nodes,
             edges=edges,
+            target_kcs=list(goal_kcs),
+            active_subgraph_nodes=sorted(sub_nodes),
+            active_subgraph_edges=sub_edge_models,
+            primary_route=primary_route,
             recommended_path=recommended_path,
             current_recommended_kc=current_kc,
             recommended_candidates=candidates,
@@ -220,3 +246,20 @@ class LearningMapService:
             c.kc_id for c in course.components
             if not course.dependents(c.kc_id)
         ] or [c.kc_id for c in course.components]
+
+    def _target_kcs(self, user_id: str, course_id: str, course: Course) -> List[str]:
+        """§15：target_kcs 显式优先（goal.target_kcs_json）；缺省 = 末端叶子。"""
+        bundle = self.learner_model.build_bundle(user_id, course_id)
+        if bundle.active_goal is not None and bundle.active_goal.target_kcs:
+            valid = [k for k in bundle.active_goal.target_kcs if course.kc_by_id(k) is not None]
+            if valid:
+                return valid
+        return self._terminal_kcs(course)
+
+    def _plan_seq(self, user_id: str, course_id: str) -> Dict[str, int]:
+        """StudyPlan.seq 映射：kc_id → seq（用于推荐 tie-break）。"""
+        plan = self.learner_model.repo.get_plan(user_id, course_id)
+        if plan is None:
+            return {}
+        steps = self.learner_model.repo.list_plan_steps(plan["plan_id"])
+        return {s.get("kc_id"): int(s.get("seq", 0)) for s in steps if s.get("kc_id")}

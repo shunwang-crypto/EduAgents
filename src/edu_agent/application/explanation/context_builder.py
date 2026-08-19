@@ -69,6 +69,10 @@ class ExplanationContext:
             lines.append(f"偏好风格：{self.preferred_style}")
         if self.misconceptions:
             lines.append("学习者已有误区：" + "、".join(self.misconceptions[:4]))
+        lines.append(f"内容类别：{self.kc_category or 'core'}")
+        lines.append(f"难度：{self.kc_difficulty or 'medium'}")
+        if self.source_refs:
+            lines.append("可引用资料：" + "；".join(self.source_refs[:6]))
         return "\n".join(lines)
 
 
@@ -169,8 +173,6 @@ class ExplanationContextBuilder:
         ctx.dependent_titles = [
             (course.kc_by_id(i).title if course.kc_by_id(i) else i) for i in dep_ids
         ]
-        ctx.context_hash = self.compute_hash(ctx)
-        return ctx
         ctx.context_hash = self.compute_hash(ctx)
         return ctx
 

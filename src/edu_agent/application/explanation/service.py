@@ -65,11 +65,11 @@ class ExplanationService:
         ctx = self.context_builder.build(user_id, course_id, course, plan_id, step)
         existing = self.learner.repo.get_step_explanation(user_id, course_id, step_id)
         if existing is not None:
-            if existing.get("context_hash") == ctx.context_hash:
+            if existing.get("context_hash") == ctx.context_hash and int(existing.get("schema_version") or 1) >= 2:
                 return self._hydrate(existing, step, kc_id)
-            # hash 变化 → 重新生成
+            # context 或 schema 变化 → 重新生成，避免继续返回旧的短卡片内容。
             logger.info(
-                "explanation cache stale (hash changed); regenerate step=%s", step_id
+                "explanation cache stale (context/schema changed); regenerate step=%s", step_id
             )
 
         explanation = generate_explanation(
@@ -134,6 +134,7 @@ class ExplanationService:
             "title": explanation.title,
             "objective": explanation.objective,
             "estimated_minutes": explanation.estimated_minutes,
+            "schema_version": explanation.schema_version,
             "blocks": [b.model_dump(mode="json") for b in explanation.blocks],
             "context_hash": explanation.context_hash,
             "generated_at": explanation.generated_at,

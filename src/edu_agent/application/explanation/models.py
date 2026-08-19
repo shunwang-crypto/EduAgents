@@ -1,7 +1,8 @@
-"""Structured Explanation 领域模型（替换旧 lesson_markdown 长文）。
+"""Adaptive Rich Explanation 领域模型。
 
-Explanation 由有限的 ``ExplanationBlock`` 组成，每个 block 只聚焦一个教学目的。
-这不是 Markdown article，也不是 chat messages，而是可导航的结构化教学步骤。
+Explanation 由前端可渲染的 blocks 组成，但 blocks 不是篇幅或段落数量的
+约束。一个简单知识点可以只有几个短 block，复杂知识点可以包含很长的
+Markdown、代码、图示、表格和公式。
 
 Exercise / grading 严格不属于本模块（见 tests/test_no_exercise.py 契约）。
 """
@@ -25,25 +26,39 @@ class BlockType(str, Enum):
     APPLICATION = "application"
     RECAP = "recap"
     HANDOFF = "handoff"
+    DIAGRAM = "diagram"
+    IMAGE = "image"
+    TABLE = "table"
+    FORMULA = "formula"
 
 
-# 合法 block 顺序模板（编程课程 / 理论课程，Planner 可据此裁剪）
-CODE_BLOCK_ORDER = [
+# 候选 section 池（不是固定模板）。
+#
+# 这两个列表只回答「这类内容通常会用到哪些 section」，不规定必须全用、
+# 不规定顺序、也不规定数量。生成器把它们作为候选交给 LLM，LLM 按知识点
+# 复杂度自行取舍：简单知识点可以只用两三个，复杂知识点可以增加 diagram /
+# table / formula / image / contrast，并重新排序。
+CODE_BLOCK_CANDIDATES = [
     "orientation",
     "big_picture",
     "concept",
+    "diagram",
     "code_walkthrough",
     "worked_example",
+    "table",
     "misconception",
     "application",
     "recap",
     "handoff",
 ]
-THEORY_BLOCK_ORDER = [
+THEORY_BLOCK_CANDIDATES = [
     "orientation",
     "big_picture",
     "concept",
+    "diagram",
+    "formula",
     "contrast",
+    "table",
     "worked_example",
     "misconception",
     "application",
@@ -53,7 +68,7 @@ THEORY_BLOCK_ORDER = [
 
 
 class ExplanationBlock(BaseModel):
-    """一个结构化的教学步骤。
+    """一个结构化的教学区段。
 
     ``data`` 为每个 block 专属结构：
     - big_picture: {"items": [str]} 或 {"nodes":[str],"edges":[str,"str"]}
@@ -62,6 +77,15 @@ class ExplanationBlock(BaseModel):
     - recap: {"points": [str]}
     - handoff: {"objective": str, "difficulty": str}
     - orientation/contrast: {"content": str}
+    - diagram: {"nodes": [{"id": str, "label": str}], "edges": [{"source": str, "target": str}]}
+    - image: {"url": str, "alt": str, "caption": str}
+    - table: {"headers": [str], "rows": [[str]]}
+    - formula: {"latex": str, "explanation": str}
+
+    ``content`` intentionally remains an unrestricted Markdown string. The
+    schema describes rendering, not the amount of teaching material: a single
+    block may legitimately hold several thousand characters of Markdown with
+    headings, lists, fenced code and LaTeX.
     """
 
     type: BlockType
@@ -86,7 +110,7 @@ class StepExplanation(BaseModel):
     plan_id: str
     step_id: str
     kc_id: str
-    schema_version: int = 1
+    schema_version: int = 2
 
     title: str
     objective: str = ""
