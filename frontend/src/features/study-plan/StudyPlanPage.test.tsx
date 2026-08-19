@@ -6,8 +6,15 @@ import {
   Routes,
   createMemoryRouter,
   RouterProvider,
+  useParams,
 } from "react-router-dom";
 import { StudyPlanPage } from "./StudyPlanPage";
+
+/** 独立讲解页桩：只暴露 courseId/stepId，用于断言「地图 / 计划列表都跳到讲解页」。 */
+function LearnRouteStub() {
+  const { courseId, stepId } = useParams();
+  return <div data-testid="learn-route">{`learn:${courseId}:${stepId}`}</div>;
+}
 
 // 避免在 jsdom 中真正挂载 React Flow（依赖大量浏览器测量 API，测试脆弱）。
 // 我们测的是 StudyPlanPage 的编排（loading/empty/error/generate 联动），
@@ -226,6 +233,7 @@ function renderPage(initialPath = "/courses/PY/plan") {
     <MemoryRouter initialEntries={[initialPath]}>
       <Routes>
         <Route path="/courses/:courseId/plan" element={<StudyPlanPage />} />
+        <Route path="/courses/:courseId/learn/:stepId" element={<LearnRouteStub />} />
       </Routes>
     </MemoryRouter>
   );
@@ -244,6 +252,7 @@ function renderMapPage(initialPath = "/courses/PY/plan") {
     <MemoryRouter initialEntries={[initialPath]}>
       <Routes>
         <Route path="/courses/:courseId/plan" element={<StudyPlanPage />} />
+        <Route path="/courses/:courseId/learn/:stepId" element={<LearnRouteStub />} />
       </Routes>
     </MemoryRouter>
   );
@@ -252,7 +261,10 @@ function renderMapPage(initialPath = "/courses/PY/plan") {
 // 可导航 router（用于跨课程切换的 stale-async 回归测试）
 function renderNavigablePlan(initialPath: string) {
   const router = createMemoryRouter(
-    [{ path: "/courses/:courseId/plan", element: <StudyPlanPage /> }],
+    [
+      { path: "/courses/:courseId/plan", element: <StudyPlanPage /> },
+      { path: "/courses/:courseId/learn/:stepId", element: <LearnRouteStub /> },
+    ],
     { initialEntries: [initialPath] }
   );
   render(<RouterProvider router={router} />);
@@ -358,7 +370,7 @@ describe("StudyPlanPage · Learning Map", () => {
   // §54：生产 UI 不泄露内部工程概念
   it("no internal terminology leaks in visible UI", async () => {
     renderPage();
-    await waitFor(() => expect(screen.getAllByText("开始学习").length).toBe(3));
+    await waitFor(() => expect(screen.getAllByText("开始讲解").length).toBe(3));
     const body = document.body.textContent ?? "";
     for (const leaked of [
       "KC:",
@@ -380,13 +392,13 @@ describe("StudyPlanPage · Learning Map", () => {
   // §62：Plan List / Detail / PlanBrief 不显示 raw id
   it("no raw kc_ ids in plan list and detail", async () => {
     renderPage();
-    await waitFor(() => expect(screen.getAllByText("开始学习").length).toBe(3));
+    await waitFor(() => expect(screen.getAllByText("开始讲解").length).toBe(3));
     const body = document.body.textContent ?? "";
     expect(body.match(/kc_[a-z0-9]+/)).toBeNull();
   });
 
-  // §35/§61：选择 Map 节点出现「开始讲解」CTA，点击进入 Explanation Workspace
-  it("selecting map node shows 开始讲解 CTA and opens workspace", async () => {
+  // §35/§61：选择 Map 节点出现「开始讲解」CTA，点击进入独立讲解页（不在地图下方展开讲解）
+  it("selecting map node shows 开始讲解 CTA and navigates to learn page", async () => {
     // 用与 plan step 匹配的 kc_id（knowledge-1），保证 findPlanStepForKc 命中（Once 避免污染后续用例）
     (mockApi.getLearningMap as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       course_id: "PY", goal: "g",
@@ -411,8 +423,12 @@ describe("StudyPlanPage · Learning Map", () => {
     // 右侧出现讲解 CTA（该 KC 对应 step 未开始 → 开始讲解）
     await waitFor(() => expect(screen.getByText("开始讲解")).toBeTruthy());
     fireEvent.click(screen.getByText("开始讲解"));
-    // 进入 Explanation Workspace
-    await waitFor(() => expect(screen.getByText("第 1 / 3 部分")).toBeTruthy());
+    // 进入独立讲解页 /courses/PY/learn/S1
+    await waitFor(() =>
+      expect(screen.getByTestId("learn-route").textContent).toBe("learn:PY:S1")
+    );
+    // 讲解不再挂在地图页：地图页不再拉取讲解内容
+    expect(mockApi.getExplanation as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
   });
 
   // §43/§56：PlanBrief 显示「尚待评估」（UNKNOWN 不进能力缺口）
@@ -476,32 +492,31 @@ describe("StudyPlanPage · Learning Map", () => {
     await waitFor(() => expect(screen.getAllByText("就此提问").length).toBe(3));
   });
 
-  it("three-state step buttons: not_started shows 开始学习", async () => {
+  it("three-state step buttons: not_started shows 开始讲解", async () => {
     renderPage();
-    await waitFor(() => expect(screen.getAllByText("开始学习").length).toBe(3));
+    await waitFor(() => expect(screen.getAllByText("开始讲解").length).toBe(3));
   });
 
-  it("clicking 开始学习 calls updateStep with in_progress", async () => {
+  // 产品形态：计划列表点「开始讲解」= 跳转独立讲解页，本页不再写 PlanStep 状态
+  it("clicking 开始讲解 navigates to the standalone learn page", async () => {
     renderPage();
-    await waitFor(() => expect(screen.getAllByText("开始学习").length).toBe(3));
-    const btn = screen.getAllByText("开始学习")[0];
-    fireEvent.click(btn);
+    await waitFor(() => expect(screen.getAllByText("开始讲解").length).toBe(3));
+    fireEvent.click(screen.getAllByText("开始讲解")[0]);
     await waitFor(() =>
-      expect((mockApi.updateStep as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith(
-        "PY", "S1", "in_progress"
-      )
+      expect(screen.getByTestId("learn-route").textContent).toBe("learn:PY:S1")
     );
+    // not_started → in_progress 由讲解页负责（直接访问 URL / 刷新同样生效）
+    expect(mockApi.updateStep as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
   });
 
-  it("expands full markdown plan via 查看完整说明", async () => {
+  it("§48：主 UI 不再展示 plan_markdown 长文入口（查看完整说明）", async () => {
     renderPage();
-    await waitFor(() => expect(screen.getByText("查看完整说明")).toBeTruthy());
-    fireEvent.click(screen.getByText("查看完整说明"));
-    // RichMarkdown 渲染 markdown 的 h2「完整计划」
-    await waitFor(() =>
-      expect(screen.getByRole("heading", { name: "完整计划" })).toBeTruthy()
-    );
-    expect(screen.getByText("收起完整说明")).toBeTruthy();
+    await waitFor(() => expect(screen.queryAllByText("NumPy 数组基础").length).toBeGreaterThan(0));
+    // 主 UI 不应提供 plan_markdown 的长文入口
+    expect(screen.queryByText("查看完整说明")).toBeNull();
+    expect(screen.queryByText("收起完整说明")).toBeNull();
+    // 也不应直接渲染计划长文
+    expect(screen.queryByRole("heading", { name: "完整计划" })).toBeNull();
   });
 
   it("shows empty state when no plan", async () => {
@@ -510,29 +525,40 @@ describe("StudyPlanPage · Learning Map", () => {
     await waitFor(() => expect(screen.getByText("还没有学习计划")).toBeTruthy());
   });
 
-  // 重构后：Plan List 不再展开长文 Lesson（§16），而是打开结构化讲解 Workspace。
-  it("clicking 开始学习 opens Explanation Workspace (not lesson article)", async () => {
+  // 学习地图 / 计划列表 = 「我应该怎么学」；讲解内容一律在独立讲解页（不展开长文、不内嵌讲解）
+  it("plan list never renders explanation inline (leaves the page instead)", async () => {
     renderPage();
-    await waitFor(() => expect(screen.getAllByText("开始学习").length).toBe(3));
-    fireEvent.click(screen.getAllByText("开始学习")[0]);
-    // 打开结构化讲解：出现分块导航 + 首个 block 标题，而非 Markdown 长文
-    await waitFor(() => expect(screen.getByText("第 1 / 3 部分")).toBeTruthy());
-    expect(screen.getAllByText("为什么现在学它？").length).toBeGreaterThan(0);
-    // 不出现聊天式输入框（TutorPanel 已移除）
-    expect(screen.queryByPlaceholderText(/请输入你的回答/)).toBeNull();
-    // 不直接在列表内展开整篇 lesson markdown（无「本节要学什么」标题）
+    await waitFor(() => expect(screen.getAllByText("开始讲解").length).toBe(3));
+    fireEvent.click(screen.getAllByText("开始讲解")[0]);
+    await waitFor(() =>
+      expect(screen.getByTestId("learn-route").textContent).toBe("learn:PY:S1")
+    );
+    // 既不出现卡片翻页，也不出现内嵌讲解正文 / lesson 长文
+    expect(screen.queryByText("下一部分")).toBeNull();
+    expect(screen.queryByText(/第 1 \/ \d+ 部分/)).toBeNull();
+    expect(screen.queryByText("为什么现在学它？")).toBeNull();
     expect(screen.queryByRole("heading", { name: "本节要学什么" })).toBeNull();
+    // 也不出现聊天式输入框（TutorPanel 已移除）
+    expect(screen.queryByPlaceholderText(/请输入你的回答/)).toBeNull();
   });
 
-  // 点击「下一部分」可以逐块浏览（不是一篇文章 / 不是 chat 时间轴）
-  it("explanation navigates block by block", async () => {
+  // 职责边界：讲解相关的 API（讲解内容 / 完成状态）不属于本页
+  it("study plan page owns no explanation or completion api calls", async () => {
     renderPage();
-    await waitFor(() => expect(screen.getAllByText("开始学习").length).toBe(3));
-    fireEvent.click(screen.getAllByText("开始学习")[0]);
-    await waitFor(() => expect(screen.getByText("第 1 / 3 部分")).toBeTruthy());
-    fireEvent.click(screen.getByText("下一部分"));
-    await waitFor(() => expect(screen.getByText("第 2 / 3 部分")).toBeTruthy());
-    expect(screen.getAllByText("先看整体").length).toBeGreaterThan(0);
+    await waitFor(() => expect(screen.getAllByText("开始讲解").length).toBe(3));
+    expect(mockApi.getExplanation as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+    expect(mockApi.updateStep as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+    // 「完成本节讲解 / 进入相关实践」只属于独立讲解页底部
+    expect(screen.queryByText("完成本节讲解")).toBeNull();
+    expect(screen.queryByText("进入相关实践")).toBeNull();
+  });
+
+  // §88：Plan List 每个 step 只有一个主要讲解 CTA（不出现「查看讲解 + 开始学习」重复）
+  it("plan list shows single primary CTA per step", async () => {
+    renderPage();
+    await waitFor(() => expect(screen.getAllByText("开始讲解").length).toBe(3));
+    // 不存在「查看讲解」这类与「开始讲解」重复的按钮
+    expect(screen.queryAllByText("查看讲解").length).toBe(0);
   });
 
   it("shows plan settings inputs initialized from course and applies them on regenerate", async () => {
@@ -626,37 +652,26 @@ describe("StudyPlanPage · Learning Map", () => {
     );
   });
 
-  it("cross-course: pending updateStep(A) then switch B does not mutate B (A)", async () => {
-    const upDefer = deferred<typeof mockPlan>();
-    (mockApi.updateStep as ReturnType<typeof vi.fn>).mockReturnValue(upDefer.promise);
+  // 讲解入口跨课程：在 A 点「开始讲解」离开本页后再切到 B，B 不被 A 的计划污染
+  it("cross-course: leaving to learn page then switching B keeps B clean (A)", async () => {
     const router = renderNavigablePlan("/courses/PY/plan");
-    try {
-      await waitFor(() => expect(screen.getAllByText("开始学习").length).toBe(3));
-      // 在 A 上点「开始学习」→ toggleStep(A) 发出（pending）
-      fireEvent.click(screen.getAllByText("开始学习")[0]);
-      await waitFor(() =>
-        expect((mockApi.updateStep as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith(
-          "PY", "S1", "in_progress"
-        )
-      );
-      // 切换到 B（JAVA）
-      await act(async () => { router.navigate("/courses/JAVA/plan"); });
-      await waitFor(() =>
-        expect((mockApi.getPlan as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith("JAVA")
-      );
-      // 解析迟到的 A 响应：应被 scope 守卫丢弃
-      await act(async () => { upDefer.resolve(mockPlan); });
-      // B 页面不应显示 A 的计划标题
-      await waitFor(() =>
-        expect(screen.queryByText("Python 数据分析 学习计划")).toBeNull()
-      );
-      // 旧 toggleStep(A) 过期 → 返回 false → 不会触发 openExplanation(A)
-      expect(
-        (mockApi.getExplanation as ReturnType<typeof vi.fn>).mock.calls.some((c) => c[0] === "PY")
-      ).toBe(false);
-    } finally {
-      (mockApi.updateStep as ReturnType<typeof vi.fn>).mockResolvedValue(mockPlan);
-    }
+    await waitFor(() => expect(screen.getAllByText("开始讲解").length).toBe(3));
+    fireEvent.click(screen.getAllByText("开始讲解")[0]);
+    await waitFor(() =>
+      expect(screen.getByTestId("learn-route").textContent).toBe("learn:PY:S1")
+    );
+    // 切换到 B（JAVA）的计划页
+    await act(async () => {
+      router.navigate("/courses/JAVA/plan");
+    });
+    await waitFor(() =>
+      expect((mockApi.getPlan as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith("JAVA")
+    );
+    await waitFor(() => expect(screen.getByText("Java OOP 学习计划")).toBeTruthy());
+    expect(screen.queryByText("Python 数据分析 学习计划")).toBeNull();
+    // 本页从不发起讲解 / 状态写入，因此不存在跨课程的 stale 讲解污染面
+    expect(mockApi.getExplanation as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+    expect(mockApi.updateStep as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
   });
 
   it("cross-course: pending generatePlan(A) then switch B does not mutate B (B)", async () => {
@@ -703,47 +718,5 @@ describe("StudyPlanPage · Learning Map", () => {
     }
   });
 
-  it("cross-course: pending openExplanation(A) then switch B does not show A explanation (C)", async () => {
-    const expDefer = deferred<{
-      step_id: string; plan_id: string; kc_id: string; title: string;
-      objective: string; estimated_minutes: number;
-      blocks: Array<{ type: string; title: string; content: string; data: unknown; source_refs: string[] }>;
-      context_hash: string; generated_at: string;
-    }>();
-    (mockApi.getExplanation as ReturnType<typeof vi.fn>).mockReturnValue(expDefer.promise);
-    const router = renderNavigablePlan("/courses/PY/plan");
-    try {
-      await waitFor(() => expect(screen.getAllByText("开始学习").length).toBe(3));
-      // 点「开始学习」：toggleStep 默认 resolve → 触发 openExplanation(PY)（pending）
-      fireEvent.click(screen.getAllByText("开始学习")[0]);
-      await waitFor(() =>
-        expect((mockApi.getExplanation as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith(
-          "PY", "PLAN-1", "S1"
-        )
-      );
-      // 切换到 B（JAVA）
-      await act(async () => { router.navigate("/courses/JAVA/plan"); });
-      await waitFor(() =>
-        expect((mockApi.getPlan as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith("JAVA")
-      );
-      // 解析迟到的 A explanation
-      await act(async () => {
-        expDefer.resolve({
-          step_id: "S1", plan_id: "P-1", kc_id: "knowledge-1",
-          title: "NumPy 数组基础", objective: "能创建数组", estimated_minutes: 30,
-          blocks: [{ type: "concept", title: "PY专属概念", content: "A课程讲解", data: {}, source_refs: [] }],
-          context_hash: "hash", generated_at: "2026-08-11T00:00:00Z",
-        });
-      });
-      // B 页面不应出现 A 的讲解内容（stale 保护仍有效）
-      await waitFor(() => expect(screen.queryByText("PY专属概念")).toBeNull());
-    } finally {
-      (mockApi.getExplanation as ReturnType<typeof vi.fn>).mockResolvedValue({
-        step_id: "S1", plan_id: "P-1", kc_id: "knowledge-1",
-        title: "NumPy 数组基础", objective: "能创建数组", estimated_minutes: 30,
-        blocks: [{ type: "concept", title: "核心概念", content: "ndarray", data: {}, source_refs: [] }],
-        context_hash: "hash-1", generated_at: "2026-08-11T00:00:00Z",
-      });
-    }
-  });
+  // 注：讲解内容的跨课程 stale 保护已随讲解迁移到独立讲解页（见 learn/LearnPage.test.tsx）。
 });

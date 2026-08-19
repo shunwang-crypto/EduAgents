@@ -47,3 +47,9 @@ export function coursePlanPath(pathname: string, courseId: string): string {
   const base = learningAppBase(pathname);
   return joinPath(base, `/courses/${courseId}/plan`);
 }
+
+/** 独立讲解页路径（学习地图与计划列表都进入这里）。 */
+export function courseLearnPath(pathname: string, courseId: string, stepId: string): string {
+  const base = learningAppBase(pathname);
+  return joinPath(base, `/courses/${courseId}/learn/${stepId}`);
+}

@@ -2,6 +2,7 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import { AppShell } from "../layout/AppShell";
 import { ChatPage } from "../features/chat/ChatPage";
 import { StudyPlanPage } from "../features/study-plan/StudyPlanPage";
+import { LearnPage } from "../features/study-plan/learn/LearnPage";
 import { ApiProvider } from "../api/ApiProvider";
 
 export interface LearningAppProps {
@@ -22,6 +23,8 @@ export function LearningApp({ userId }: LearningAppProps) {
           <Route path="" element={<ChatPage />} />
           <Route path="courses/:courseId/chat" element={<ChatPage />} />
           <Route path="courses/:courseId/plan" element={<StudyPlanPage />} />
+          {/* 独立讲解页：学习地图与计划列表都进入这里；讲解内容不再挂在地图下方 */}
+          <Route path="courses/:courseId/learn/:stepId" element={<LearnPage />} />
           <Route path="*" element={<Navigate to="" replace />} />
         </Route>
       </Routes>

@@ -36,7 +36,7 @@ export default function PlanBriefPanel({ brief }: { brief: PlanBrief | null }) {
       {/* §41/§45：关键路径显示人类名称，id 只做 key */}
       {b.critical_path.length > 0 && (
         <div className="plan-brief-section">
-          <h4>关键路径</h4>
+          <h4>关键知识链</h4>
           <div className="plan-brief-critical-path">
             {b.critical_path.map((kc, i, arr) => (
               <span key={kc.kc_id} className="plan-brief-cp-item">

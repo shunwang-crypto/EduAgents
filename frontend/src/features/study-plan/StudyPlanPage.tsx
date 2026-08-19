@@ -3,8 +3,6 @@ import { useOutletContext, useParams } from "react-router-dom";
 import {
   BookOpen,
   CheckCircle2,
-  ChevronDown,
-  ChevronUp,
   Circle,
   CircleDot,
   LoaderCircle,
@@ -18,15 +16,12 @@ import type {
   LearningMapNode,
   LearningMapResponse,
   PlanStep,
-  StepExplanation,
   StudyPlan,
 } from "../../api/types";
-import RichMarkdown from "../../components/content/RichMarkdown";
 import { CourseHeader } from "../../layout/CourseHeader";
 import { useLearningNav } from "../../app/useLearningNav";
 import LearningMapView from "./LearningMap/LearningMapView";
 import KnowledgeDetailPanel from "./LearningMap/KnowledgeDetailPanel";
-import ExplanationWorkspace from "./explanation/ExplanationWorkspace";
 import PlanBriefPanel from "./plan-brief/PlanBriefPanel";
 import "./study-plan.css";
 
@@ -114,7 +109,12 @@ function PlanGeneratingStatus({ elapsedSeconds }: { elapsedSeconds: number }) {
   );
 }
 
-/** StudyPlanPage：ChatGPT 文档式三阶段计划（无 Dashboard）。 */
+/** StudyPlanPage：学习计划页。
+ *
+ * 只负责「我应该怎么学」：PlanBrief、学习地图、计划列表、知识点状态、推荐原因，
+ * 以及进入独立讲解页（/courses/{courseId}/learn/{stepId}）的入口。
+ * 完整讲解内容不在本页渲染。
+ */
 export function StudyPlanPage() {
   const api = useApi();
   const nav = useLearningNav();
@@ -129,7 +129,6 @@ export function StudyPlanPage() {
   const [generating, setGenerating] = useState(false);
   const [generationElapsed, setGenerationElapsed] = useState(0);
   const [error, setError] = useState("");
-  const [showMarkdown, setShowMarkdown] = useState(false);
   const [confirmRegenerate, setConfirmRegenerate] = useState(false);
   // 课程目标（Active Goal 文本；后端 Course.current_goal 是唯一 Source of Truth）
   const [editingGoal, setEditingGoal] = useState(false);
@@ -147,14 +146,6 @@ export function StudyPlanPage() {
     daily_minutes: 60,
     background: "",
   });
-
-  // 当前打开的 Structured Explanation（结构化讲解，非 lesson_markdown 长文）
-  const [explanationStep, setExplanationStep] = useState<{
-    stepId: string;
-    kcId: string;
-  } | null>(null);
-  // Practice Handoff 待接入提示（feature flag；不实现练习）
-  const [showHandoffNotice, setShowHandoffNotice] = useState(false);
 
   //  stale-async 保护：courseId 快速切换时，旧请求的响应不许覆盖新页面
   const loadSeq = useRef(0);
@@ -242,9 +233,6 @@ export function StudyPlanPage() {
     // 切换课程时清空旧 course：getCourse(B) 与 getPlan(B) 并行，B 加载完成前若仍保留 A 的
     // course（含 A 的 30/90 设置），一次抢先的「生成」会用 A 的设置去生成 B 的计划。
     setCourse(null);
-    // 切换课程时清空 Explanation 打开态，避免串课
-    setExplanationStep(null);
-    setShowHandoffNotice(false);
     api
       .getCourse(courseId)
       .then((c) => {
@@ -356,7 +344,6 @@ export function StudyPlanPage() {
         if (reqScope !== scopeSeq.current) return;
         setPlan(p);
         setPlanStatus("ready");
-        setShowMarkdown(false);
         setConfirmRegenerate(false);
         // P0-2：生成计划成功后必须立即刷新 Learning Map（后端已生成 KCGraph），
         //  不能要求用户刷新页面。Map 请求有独立生命周期，不受本请求影响。
@@ -382,29 +369,6 @@ export function StudyPlanPage() {
     [courseId, api, settings, course, refreshLearningMap]
   );
 
-  const toggleStep = useCallback(
-    async (stepId: string, status: string): Promise<boolean> => {
-      if (!courseId) return false;
-      const reqScope = scopeSeq.current;
-      try {
-        const p = await api.updateStep(courseId, stepId, status);
-        // 串课保护：更新期间切到别的课程，旧响应必须返回 false，
-        // 否则外层 handleStart 会误以为成功而继续展开旧课程的 Lesson
-        if (reqScope !== scopeSeq.current) return false;
-        setPlan(p);
-        return true;
-      } catch (e) {
-        if (reqScope !== scopeSeq.current) return false;
-        setError(e instanceof Error ? e.message : "更新失败");
-        return false;
-      }
-    },
-    [courseId, api]
-  );
-
-  // Explanation Workspace 滚动锚点（§33：state 更新后再 scrollIntoView）
-  const explanationRef = useRef<HTMLDivElement | null>(null);
-
   // §36：KC → PlanStep（优先 in_progress，then not_started，then completed，then lowest seq）
   const findPlanStepForKc = useCallback(
     (kcId: string): PlanStep | null => {
@@ -419,30 +383,17 @@ export function StudyPlanPage() {
     [plan]
   );
 
-  // 打开 Structured Explanation Workspace（§16/§32：选中 KC + 切到 map + 立即进入 Workspace）
-  const openExplanationStep = useCallback(
+  // 讲解一律在独立学习页进行：本页只负责跳转，不再把讲解接在地图 / 计划列表下面。
+  // PlanStep 的 not_started → in_progress 由讲解页负责（直接访问 URL / 刷新同样生效）。
+  const openLearnPage = useCallback(
     (step: PlanStep) => {
-      setShowHandoffNotice(false);
-      setExplanationStep({ stepId: step.step_id, kcId: step.kc_id });
-      if (learningMap) {
-        const node = learningMap.nodes.find((n) => n.id === step.kc_id) ?? null;
-        if (node) setSelectedKc(node);
-      }
-      setTab("map");
+      if (!courseId) return;
+      nav.openCourseLearn(courseId, step.step_id);
     },
-    [learningMap]
+    // nav 每次 render 都是新对象，仅依赖 courseId 即可保持稳定
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [courseId]
   );
-
-  // §32：设置 explanationStep 后，在 rAF 中 scrollIntoView
-  useEffect(() => {
-    if (!explanationStep) return;
-    const raf = requestAnimationFrame(() => {
-      explanationRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-    });
-    return () => cancelAnimationFrame(raf);
-  }, [explanationStep]);
-
-  const openExplanation = openExplanationStep;
 
   // §35：根据 KC 讲解状态计算 CTA 文案
   const explanationCtaForKc = useCallback(
@@ -460,38 +411,10 @@ export function StudyPlanPage() {
   const startExplanationForKc = useCallback(
     (kcId: string) => {
       const step = findPlanStepForKc(kcId);
-      if (step) openExplanationStep(step);
+      if (step) openLearnPage(step);
     },
-    [findPlanStepForKc, openExplanationStep]
+    [findPlanStepForKc, openLearnPage]
   );
-
-  // 请求一个 step 的 Structured Explanation（GET-OR-GENERATE，后端按 context_hash 缓存）
-  const requestExplanation = useCallback(
-    async (stepId: string): Promise<StepExplanation> => {
-      if (!courseId || !plan) throw new Error("no plan loaded");
-      return api.getExplanation(courseId, plan.plan_id, stepId);
-    },
-    [courseId, api, plan]
-  );
-
-  const handleStart = useCallback(
-    async (step: PlanStep) => {
-      if (step.status === "not_started") {
-        const ok = await toggleStep(step.step_id, "in_progress");
-        // status 更新失败 → 不继续打开讲解，避免 not_started + 已打开讲解状态冲突
-        if (!ok) return;
-      }
-      openExplanation(step);
-    },
-    [toggleStep, openExplanation]
-  );
-  const handleContinue = useCallback((step: PlanStep) => void openExplanation(step), [openExplanation]);
-  const handleViewAgain = useCallback((step: PlanStep) => void openExplanation(step), [openExplanation]);
-
-  // Practice Handoff（§36/§92）：只定义入口；外部模块未接入 → placeholder 提示
-  const handlePracticeHandoff = useCallback(() => {
-    setShowHandoffNotice(true);
-  }, []);
 
   const stages = plan?.stages?.length ? plan.stages : [];
   // progress 单一来源：Backend plan.progress（completed steps / total steps 已由后端算好）
@@ -623,6 +546,23 @@ export function StudyPlanPage() {
             </section>
           )}
 
+          {/* 永远在 Tabs 之前显示 Plan Hero + PlanBrief（§14）：plan 存在即显示 */}
+          {plan && (
+            <div className="plan-hero-wrap" data-testid="plan-hero">
+              <div className="plan-hero">
+                <h1>{plan.title || `${course?.display_name ?? ""}学习计划`}</h1>
+                <div className="plan-hero-meta">{plan.summary}</div>
+                <div className="plan-progress">
+                  <div className="plan-progress-bar">
+                    <div className="plan-progress-fill" style={{ width: `${progressPct}%` }} />
+                  </div>
+                  <div className="plan-progress-label">{progressPct}% 完成</div>
+                </div>
+              </div>
+              <PlanBriefPanel brief={plan.plan_brief ?? null} />
+            </div>
+          )}
+
           {/* Adaptive Learning Map / 计划列表 双标签 */}
           <div className="plan-tabs" role="tablist" aria-label="学习计划视图">
             <button
@@ -702,22 +642,9 @@ export function StudyPlanPage() {
             </div>
           )}
 
-          {!courseError && planStatus === "ready" && plan && (
+          {plan && (
             <>
-              {/* Hero */}
-              <div className="plan-hero">
-                <h1>{plan.title || `${course?.display_name ?? ""}学习计划`}</h1>
-                <div className="plan-hero-meta">{plan.summary}</div>
-                <div className="plan-progress">
-                  <div className="plan-progress-bar">
-                    <div className="plan-progress-fill" style={{ width: `${progressPct}%` }} />
-                  </div>
-                  <div className="plan-progress-label">{progressPct}% 完成</div>
-                </div>
-              </div>
-
-              {/* PlanBrief（§60：先知道“为什么这么学”，再看怎么走） */}
-              <PlanBriefPanel brief={plan.plan_brief ?? null} />
+              {/* Hero + PlanBrief 已移到 Tabs 之前无条件渲染（§14：plan 存在即显示） */}
 
               {/* 三阶段 */}
               {stages.map((stage) => (
@@ -727,12 +654,8 @@ export function StudyPlanPage() {
                     <h2 className="plan-stage-title">{stage.stage_title}</h2>
                   </div>
                   {stage.steps.map((step) => {
-                    const isExplanationOpen = explanationStep?.stepId === step.step_id;
                     return (
-                      <div
-                        key={step.step_id}
-                        className={`plan-step ${isExplanationOpen ? "expanded" : ""}`}
-                      >
+                      <div key={step.step_id} className="plan-step">
                         <div className="plan-step-index">{String(step.seq).padStart(2, "0")}</div>
                         <div className="plan-step-body">
                           <div className="plan-step-title">{step.title}</div>
@@ -766,14 +689,6 @@ export function StudyPlanPage() {
                             >
                               <MessageCircleQuestion size={14} aria-hidden /> 就此提问
                             </button>
-                            {/* §16：不再在列表内展开长文，而是打开结构化讲解 Workspace */}
-                            <button
-                              type="button"
-                              className="step-ask-btn"
-                              onClick={() => void handleStart(step)}
-                            >
-                              <BookOpen size={14} aria-hidden /> 查看讲解
-                            </button>
                           </div>
                         </div>
                         <div className="plan-step-status">
@@ -781,18 +696,18 @@ export function StudyPlanPage() {
                             <button
                               type="button"
                               className="step-status-control status-not-started"
-                              onClick={() => handleStart(step)}
+                              onClick={() => openLearnPage(step)}
                             >
-                              <Circle size={15} aria-hidden /> 开始学习
+                              <Circle size={15} aria-hidden /> 开始讲解
                             </button>
                           )}
                           {step.status === "in_progress" && (
                             <button
                               type="button"
                               className="step-status-control status-in-progress"
-                              onClick={() => handleContinue(step)}
+                              onClick={() => openLearnPage(step)}
                             >
-                              <CircleDot size={15} aria-hidden /> 继续学习
+                              <CircleDot size={15} aria-hidden /> 继续讲解
                             </button>
                           )}
                           {step.status === "completed" && (
@@ -803,7 +718,7 @@ export function StudyPlanPage() {
                               <button
                                 type="button"
                                 className="step-status-control status-completed"
-                                onClick={() => handleViewAgain(step)}
+                                onClick={() => openLearnPage(step)}
                               >
                                 再次查看
                               </button>
@@ -828,20 +743,8 @@ export function StudyPlanPage() {
                 <span className="plan-settings-hint">重新生成时应用此设置</span>
               </div>
 
-              {/* Footer actions */}
+              {/* Footer actions（§48：主 UI 不再提供 plan_markdown 长文入口） */}
               <div className="plan-actions">
-                <button
-                  type="button"
-                  className="ea-button"
-                  onClick={() => setShowMarkdown((v) => !v)}
-                >
-                  {showMarkdown ? (
-                    <ChevronUp size={15} aria-hidden />
-                  ) : (
-                    <ChevronDown size={15} aria-hidden />
-                  )}
-                  {showMarkdown ? "收起完整说明" : "查看完整说明"}
-                </button>
                 {confirmRegenerate ? (
                   <span className="plan-regen-confirm">
                     <span className="plan-regen-text">重新生成会替换当前计划，是否继续？</span>
@@ -881,12 +784,6 @@ export function StudyPlanPage() {
               </div>
 
               {generating && <PlanGeneratingStatus elapsedSeconds={generationElapsed} />}
-
-              {showMarkdown && plan.plan_markdown && (
-                <div className="plan-markdown-full">
-                  <RichMarkdown content={plan.plan_markdown} />
-                </div>
-              )}
             </>
           )}
 
@@ -927,9 +824,10 @@ export function StudyPlanPage() {
                     <button
                       type="button"
                       className="ea-button primary"
-                      onClick={() => setTab("plan")}
+                      onClick={() => void generate()}
+                      disabled={generating || !hasGoal}
                     >
-                      生成学习计划
+                      {generating ? "正在生成…" : "生成学习计划"}
                     </button>
                   </div>
                 )}
@@ -946,7 +844,7 @@ export function StudyPlanPage() {
                   <KnowledgeDetailPanel
                     node={selectedKc}
                     allNodes={learningMap?.nodes ?? []}
-                    // §35：点击节点即可进入讲解（根据该 KC 对应 step 状态变化文案）
+                    // §35：点击节点即可进入独立讲解页（文案随该 KC 对应 step 状态变化）
                     explanationCta={selectedKc ? explanationCtaForKc(selectedKc.id) : null}
                     onStartExplanation={() =>
                       selectedKc && startExplanationForKc(selectedKc.id)
@@ -955,41 +853,6 @@ export function StudyPlanPage() {
                 </aside>
               )}
             </div>
-          )}
-
-          {/* §34：只有选中某个知识点时才渲染 Explanation Workspace（不再空渲染） */}
-          {explanationStep && (
-            <section ref={explanationRef} className="explanation-section">
-              <ExplanationWorkspace
-                stepId={explanationStep?.stepId ?? ""}
-                kcId={explanationStep?.kcId ?? ""}
-                onRequestExplanation={requestExplanation}
-                onBackToMap={() => {
-                  setTab("map");
-                  if (explanationStep?.kcId && learningMap) {
-                    const node = learningMap.nodes.find((n) => n.id === explanationStep.kcId) ?? null;
-                    if (node) setSelectedKc(node);
-                  }
-                }}
-                onPracticeHandoff={handlePracticeHandoff}
-              />
-              {showHandoffNotice && (
-                <div className="handoff-notice" role="status">
-                  <p>
-                    相关实践功能暂未开放。
-                    <br />
-                    <small>后续完成基础实践后，系统会根据学习记录更新你的知识掌握度。</small>
-                  </p>
-                  <button
-                    type="button"
-                    className="ea-button"
-                    onClick={() => setShowHandoffNotice(false)}
-                  >
-                    关闭
-                  </button>
-                </div>
-              )}
-            </section>
           )}
         </div>
       </div>

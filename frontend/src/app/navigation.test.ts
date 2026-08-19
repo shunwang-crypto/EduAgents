@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   courseChatPath,
+  courseLearnPath,
   coursePlanPath,
   generalChatPath,
   learningAppBase,
@@ -37,5 +38,19 @@ describe("navigation helpers (host-relative)", () => {
       "/host/learning/courses/PY/plan"
     );
     expect(coursePlanPath("/courses/PY/chat", "PY")).toBe("/courses/PY/plan");
+  });
+
+  it("courseLearnPath points at the standalone learn page, host-relative", () => {
+    expect(courseLearnPath("/courses/PY/plan", "PY", "S1")).toBe("/courses/PY/learn/S1");
+    expect(courseLearnPath("/host/learning/courses/PY/plan", "PY", "S1")).toBe(
+      "/host/learning/courses/PY/learn/S1"
+    );
+    expect(courseLearnPath("/adaptive-learning/courses/PY/learn/S1", "PY", "S2")).toBe(
+      "/adaptive-learning/courses/PY/learn/S2"
+    );
+    // 从 General Chat 根进入也不越出前缀
+    expect(courseLearnPath("/adaptive-learning", "PY", "S1")).toBe(
+      "/adaptive-learning/courses/PY/learn/S1"
+    );
   });
 });

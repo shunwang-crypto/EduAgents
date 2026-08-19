@@ -116,7 +116,11 @@ export type ExplanationBlockType =
   | "misconception"
   | "application"
   | "recap"
-  | "handoff";
+  | "handoff"
+  | "diagram"
+  | "image"
+  | "table"
+  | "formula";
 
 export interface ExplanationBlock {
   type: ExplanationBlockType;
@@ -133,6 +137,7 @@ export interface StepExplanation {
   title: string;
   objective: string;
   estimated_minutes: number;
+  schema_version?: number;
   blocks: ExplanationBlock[];
   context_hash: string;
   generated_at: string;
@@ -263,9 +268,15 @@ export interface LearningMapResponse {
   recommended_candidates: string[];
   /** 当前学习路径（真实 DAG 路径，相邻节点必有 prerequisite edge）。 */
   active_path: string[];
+  /** §19：真正目标知识点 id 列表。 */
+  target_kcs: string[];
+  /** §20：当前学习子图节点（goal prerequisite closure；含未来 locked 节点）。 */
+  active_subgraph_nodes: string[];
+  /** §20：当前学习子图边。 */
+  active_subgraph_edges: LearningMapEdge[];
+  /** §24：主要学习线（从当前推荐到主目标的真实 DAG 路径）。 */
+  primary_route: string[];
   /** 图来源：generated（动态生成）/ builtin（内置）/ legacy；调试用。 */
   graph_source?: string | null;
   graph_version?: number | null;
 }
-
-

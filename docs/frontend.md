@@ -9,7 +9,8 @@ frontend/
 ├── src/
 │   ├── app/          App.tsx / router.tsx
 │   ├── layout/       AppShell.tsx / Sidebar.tsx / MainLayout.tsx
-│   ├── features/     courses/（CreateCourseModal）chat/（ChatPage、Composer、EmptyState）study-plan/（StudyPlanPage）
+│   ├── features/     courses/（CreateCourseModal）chat/（ChatPage、Composer、EmptyState）
+│   │                 study-plan/（StudyPlanPage、LearningMapView、learn/LearnPage、explanation/ExplanationDocument）
 │   ├── api/          client.ts / types.ts
 │   ├── styles/       tokens.css / globals.css
 │   └── main.tsx
@@ -22,9 +23,10 @@ frontend/
 |---|---|
 | `/` | 无课程状态：Empty State + 自然语言创建课程 |
 | `/courses/:courseId/chat` | 课程对话 |
-| `/courses/:courseId/plan` | 课程学习计划 |
+| `/courses/:courseId/plan` | 课程学习计划（学习地图 + 计划列表） |
+| `/courses/:courseId/learn/:stepId` | 独立讲解页（Rich Learning Document） |
 
-无 profile / today / path / qa / tutor / dashboard 路由。
+无 profile / today / path / qa / tutor / dashboard 路由。路径一律用 `app/navigation.ts` 的 helper（`coursePlanPath` / `courseLearnPath` / `courseChatPath`）生成，保持宿主前缀。
 
 ## Sidebar
 
@@ -43,7 +45,20 @@ frontend/
 
 ## 学习计划页
 
-文档式布局（非 Dashboard）：目标 + 周期行 → 阶段分组 → 步骤列表（序号 / 标题 / 说明 / 预计时间 / ○未开始 ◐进行中 ✓已完成）。顶部可显示一句个性化说明。不显示 mastery / confidence / reason code。
+只回答「我应该怎么学、现在在哪、为什么推荐 / 学习顺序与进度」，**不内嵌讲解正文**：
+
+- 学习地图：PlanBrief + 知识点状态 + 推荐原因 + 每个节点的 `开始讲解` 入口。默认只取景「当前知识点 + 前后 2~3 个相关节点」，不把整条长路线 fit 成一条细线；`完整知识图` 模式才 fit 全图，`回到当前` 一键复位。
+- 计划列表：文档式布局（非 Dashboard），阶段分组 → 步骤列表（序号 / 标题 / 说明 / 预计时间 / ○未开始 ◐进行中 ✓已完成）+ `开始讲解` / `就此提问`。顶部可显示一句个性化说明。
+- 不显示 mastery / confidence / reason code；步骤不展开 Markdown。
+
+## 独立讲解页
+
+`/courses/:courseId/learn/:stepId`（`study-plan/learn/LearnPage`）：真正学习知识内容的地方，地图节点与计划列表进入的是**同一个**页面。
+
+- 长文档 + 目录导航 + 自然滚动：左侧目录（移动端顶部横向目录）点击滚动到对应小节，`IntersectionObserver` 高亮当前节；**没有**「第 N/M 部分 → 下一部分」卡片翻页。
+- 篇幅随知识点复杂度变化，结构不固定；支持 Markdown 标题/列表/代码/表格/LaTeX、结构化 `diagram`（按依赖分层渲染成流程图）与真实图片 `image`。
+- 顶部常驻 `返回学习地图`；进入即把 `not_started` 的步骤置为 `in_progress`。
+- 底部两个**独立**动作：`完成本节讲解`（只更新 PlanStep 进度，**不修改 mastery**）与 `进入相关实践`。
 
 ## 视觉
 

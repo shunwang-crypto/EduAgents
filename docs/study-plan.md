@@ -37,11 +37,26 @@
 
 ## 计划结构（固定三阶段）
 
-- `study_plans`：goal / duration_days / daily_minutes / progress / plan_markdown / personalization_note
-- `plan_steps`：step_id（`PLANSTEP-{uuid}`）/ seq / **stage_id / stage_title / stage_order** / **kc_id**（= KnowledgeNode.id）/ 标题 / 说明 / **learning_objective / prerequisites / difficulty** / 预计时间 / 状态
-- **一级结构固定 3 个阶段**：基础准备（order=1）/ 核心学习（order=2）/ 综合应用（order=3），标题可按主题自定义（如 Transformer：数学与注意力基础 / 核心机制 / 应用与整合）；每个阶段至少 1 个步骤，不允许空阶段。
+- `study_plans`：goal / duration_days / daily_minutes / progress / plan_markdown（仅 legacy/export，**不参与** Learning Map / Recommendation / PlanBrief / Explanation / Plan List）/ personalization_note
+- `plan_steps`：step_id（`PLANSTEP-{uuid}`）/ seq / **stage_id / stage_title / stage_order** / **kc_id**（= KnowledgeNode.id = canonical KC id）/ 标题 / 说明 / **learning_objective / prerequisites / difficulty** / 预计时间 / 状态
+- **一级结构固定 3 个阶段**：基础准备（order=1）/ 核心学习（order=2）/ 综合应用（order=3），标题可按主题自定义；每个阶段至少 1 个步骤，不允许空阶段。
 - **时间预算是硬约束**：UI 步骤的预计分钟总和不得超过 `学习周期 × 每日时长`。当 LLM 拆出的知识点过多时，确定性裁剪步骤并按原难度权重缩放分钟数；三个阶段仍各保留至少 1 步。
 - `get_plan` DTO 返回 `stages: [{stage_id, stage_title, order, steps[]}]`，前端按阶段渲染，不从字符串猜阶段。
+
+## 结构化拆解（ConceptSpec / prerequisite DAG）
+
+Decomposer 输出 `DecompositionResult.concepts: List[ConceptSpec]`（不再是散乱字符串数组）：
+
+- 每个 `ConceptSpec` 提供：`temp_id / title / summary / learning_objective / category(prerequisite|core|target|application) / content_type(theory|code|mixed) / difficulty / stage_order / prerequisite_refs / is_target / estimated_minutes`
+- **graph edge 只来自 `prerequisite_refs`（显式声明）**；Stage 只用于 Plan List 分组 / 调度 / 展示，**绝不自动创造依赖**（禁止"所有前置 → 所有核心"的稠密错误图）。
+- canonicalization：`ConceptSpec.temp_id → canonical kc_id`，保证 StudyPlan step / KCGraph / LearningMap / LearnerModel 使用同一 canonical id。
+- `target_refs` / `is_target` 显式给出真正目标 KC（缺省回退到 graph 末端叶子节点）。
+- Graph validator 校验 duplicate / dangling / self loop / cycle / duplicate edge / empty / missing target；失败走有限 repair + deterministic fallback。
+- 旧字段 `core_concepts / prerequisite_concepts / learning_sequence` 仅 compatibility，不再作为 Graph source of truth。
+- **Compatibility fallback**（当 `concepts` 为空，如 OFFLINE/legacy）从 `learning_sequence` 派生保守的稀疏依赖链：
+  `A → B → C → D`（每个节点最多依赖前一个序列节点），不产生 complete-bipartite dense graph。
+  （代码注释原文：`Compatibility fallback derives a conservative sparse prerequisite chain from legacy learning_sequence when explicit ConceptSpec relations are unavailable.`）
+- target fallback：优先 `target_refs` / `is_target`，缺省 sequence 末节点 / terminal node。
 
 ## 就此提问（Plan Step Context）
 
@@ -84,30 +99,53 @@ StudyPlanService.generate_plan(user_id, course_id, goal, ...)
 - goal / target_outcome
 - `known_skills`（mastery ≥ 0.7）、`skill_gaps`（mastery < 0.7）、`unassessed_skills`（mastery=None；**UNKNOWN 绝不进能力缺口**）
 - `critical_path`：真实 DAG 最长路径（DP on topological order），DTO 为 `PathItem{kc_id, name}`，前端只显示 name
-- `adaptation_rules` / `difficulty_hotspots` / `stage_overview`
+- `difficulty_hotspots`：优先来自 `DecompositionResult.difficulty_points`（plan generation 时持久化）；缺省回退 difficulty 标记的进阶/困难步骤
+- `adaptation_rules` / `stage_overview`
+- 缺失（legacy plan）时 `get_plan` 懒 backfill 并持久化（确定性构建）
 
 ## Learning Map 推荐语义
 
 `LearningMapService`（application/learning_map_service.py）：
-- **goal KC**：优先显式 target；缺省取**末端叶子 KC**（无后继），**不等于全部组件**
+- **target_kcs**：真正目标 KC（优先显式 target；缺省取**末端叶子 KC**，无后继，**不等于全部组件**）
 - **current_recommended_kc**：最多一个（现在最建议学）
 - **recommended_candidates**：其它 1~3 个可学候选（不显示推荐 badge）
-- **active_path**：真实 DAG 路径（相邻节点必有 prerequisite edge）
-- 兼容旧 `recommended_path` 字段（新前端不再当真实路径使用）
-- 旧课程（Plan 存在、graph 缺失）：`CourseGraphService.try_recover_from_plan` 从 plan_steps 自动恢复并 migrate
+- **active_subgraph_nodes / active_subgraph_edges**：goal prerequisite closure（targets + 传递前置）；含未来 locked 节点与支撑前置，作为"当前学习路线"模式的数据
+- **primary_route**：从当前推荐到某主目标的一条**真实 DAG 路径**（相邻节点必有 prerequisite edge）；未来 locked 节点允许存在
+- **active_path**：兼容旧字段（真实 DAG 路径）；`recommended_path` 仅 legacy
+- **推荐 tie-break**：优先 StudyPlan.seq，其次拓扑深度，最后 kc_id（绝不由 hash 类 canonical id 决定顺序）
+- **PREREQUISITE_FOR_GOAL** 方向：某 KC 是 target 的传递前置（kc ∈ transitive_prerequisites(target)），target 自身不算
+- 旧课程（Plan 存在、graph 缺失）：`CourseGraphService.try_recover_from_plan` 从 plan_steps 自动恢复并 migrate；不可恢复时 UI 显示"升级学习地图"，不显示"生成学习计划"
 
-## Structured Explanation（结构化讲解）
+## 页面职责划分（产品形态）
 
-`ExplanationService`（application/explanation/）替换旧 lesson_markdown 长文：
+三个界面各管一件事，互不混装：
+
+| 界面 | 路由 | 只负责 |
+| --- | --- | --- |
+| 学习地图 | `/courses/:courseId/plan`（地图标签） | 我应该怎么学、现在在哪、为什么推荐：PlanBrief、地图、知识点状态、推荐原因、`开始讲解` 入口 |
+| 计划列表 | `/courses/:courseId/plan`（计划列表标签） | 学习顺序、时间、进度 |
+| 独立讲解页 | `/courses/:courseId/learn/:stepId` | 真正学习知识内容（Rich Learning Document） |
+
+- 讲解**不再**挂在地图或计划列表下方；地图节点 CTA 与计划列表按钮进入**同一个** `learn` 页。
+- `learn` 页顶部常驻 `返回学习地图`；进入即把 `not_started` 的 PlanStep 置为 `in_progress`（直接访问 URL / 刷新同样生效，由 `LearnPage` 单点负责）。
+- 地图默认只取景「当前知识点 + 前后 2~3 个相关节点」，不把整条长路线 fitView 成一条细线；`完整知识图` 模式才 fit 全图，另有 `回到当前` 一键复位。
+
+## Adaptive Rich Explanation（自适应丰富讲解）
+
+`ExplanationService`（application/explanation/）生成可自然滚动阅读的富讲解文档：
 - `ExplanationContextBuilder`：learner profile + course goal + KC（titles）+ plan context + RAG sources
-- `ExplanationGenerator`：LLM schema 输出结构化 blocks（orientation/big_picture/concept/worked_example/code_walkthrough/contrast/misconception/application/recap/handoff）；离线用确定性 fallback（只使用知识点名称，不含 kc_id）
-- `ExplanationValidator`：block type 合法 / 非空 / 无 exercise / 无重复
-- 缓存：`step_explanations` 表，按 `context_hash` 复用；`invalidate_explanation` 在重建计划 / 删课程时清理
+- `ExplanationGenerator`：LLM 根据知识点复杂度、学习目标、学习者背景、内容类别和资料来源动态选择 blocks；**不设固定字数、固定 section 数量或固定模板**（`CODE_BLOCK_CANDIDATES` / `THEORY_BLOCK_CANDIDATES` 只是候选池，可增删改序）。复杂知识点写几千字是正常的，禁止把每节写成一两句提纲。支持 orientation/big_picture/concept/worked_example/code_walkthrough/contrast/misconception/application/recap/handoff/diagram/image/table/formula
+- `ExplanationValidator`：block type 合法 / 非空 / 无 exercise / 无重复，不按篇幅和 section 数量裁剪
+- 图示：优先结构化 `diagram`（`data.nodes` + `data.edges`，前端按依赖分层渲染成流程图，分支同层并排）；`image` 只在存在真实图片资料时使用，**不强制每个知识点都出图**
+- 前端：长文档 + 左侧目录（移动端顶部横向目录）+ 自然滚动，**没有**「第 N/M 部分 → 下一部分」卡片翻页；Markdown 支持标题、列表、代码、表格、图片与 LaTeX
+- 离线降级（`EDU_OFFLINE=1` 或 LLM 失败）：只用 context 中真实存在的信息（KC 描述、目标、前置/后继、资料来源）+ 通用学习方法确定性组装，含结构化 diagram 与关系表，绝不编造该知识点的具体事实或代码
+- 缓存：`step_explanations` 表，按 `context_hash + schema_version` 复用；v2 会自动淘汰旧短卡片缓存
 - **不生成练习 / 判题**（见 test_no_exercise）
+- 文档末尾提供两个**不同**动作：`完成本节讲解`（把 PlanStep.status → completed，只更新进度，**绝不修改 mastery**）与 `进入相关实践`（Practice Handoff）
 
 ## Practice Handoff
 
-只定义接口契约（`PracticeHandoff` DTO：course_id/plan_id/step_id/kc_id/objective/difficulty/source=study_plan/return_url），本模块**不实现练习**。
+只定义接口契约（`PracticeHandoff` DTO：course_id/plan_id/step_id/kc_id/objective/difficulty/source=study_plan/return_url），本模块**不实现练习**。外部模块未接通时 UI 显示"相关实践功能暂未开放"。
 
 ## 用户界面去工程化
 

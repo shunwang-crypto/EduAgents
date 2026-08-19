@@ -9,9 +9,10 @@ import {
   type Node,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
+import { Crosshair } from "lucide-react";
 import type { LearningMapNode, LearningMapResponse } from "../../../api/types";
 import KnowledgeNode, { type KCNodeData } from "./KnowledgeNode";
-import { layoutDagElk, isOnActivePath, type PositionedNode } from "./layout";
+import { layoutDagElk, type PositionedNode } from "./layout";
 
 const nodeTypes = { kc: KnowledgeNode };
 
@@ -26,7 +27,13 @@ function topologySignature(data: LearningMapResponse | null): string {
   if (!data) return "";
   const nodeIds = data.nodes.map((n) => n.id).sort().join(",");
   const edges = data.edges.map((e) => `${e.source}>${e.target}`).sort().join(",");
-  return `${nodeIds}|${edges}`;
+  const subNodes = (data.active_subgraph_nodes ?? []).slice().sort().join(",");
+  const subEdges = (data.active_subgraph_edges ?? [])
+    .map((e) => `${e.source}>${e.target}`)
+    .sort()
+    .join(",");
+  const route = (data.primary_route ?? []).join("->");
+  return `${nodeIds}|${edges}|sub:${subNodes}|${subEdges}|rt:${route}`;
 }
 
 const LEGEND: { icon: string; label: string }[] = [
@@ -42,7 +49,7 @@ type MapMode = "active" | "full";
 
 function Flow({ data, selectedKcId, onSelect }: Props) {
   const { fitView } = useReactFlow();
-  const prevTopology = useRef<string>("");
+  const prevViewSignature = useRef<string>("");
   const [positions, setPositions] = useState<PositionedNode[]>([]);
   const [mode, setMode] = useState<MapMode>("active");
   const layoutSeq = useRef(0);
@@ -71,7 +78,24 @@ function Flow({ data, selectedKcId, onSelect }: Props) {
     };
   }, [topology]); // 仅 topology；mastery/confidence 变化不重新 layout
 
-  const activePath = data?.active_path ?? [];
+  // §24/§19：主学习线（primary_route）+ 当前学习子图（active_subgraph）。
+  const primaryRoute = data?.primary_route?.length ? data.primary_route : (data?.active_path ?? []);
+  const activeNodeList = data?.active_subgraph_nodes?.length
+    ? data.active_subgraph_nodes
+    : primaryRoute.length
+    ? primaryRoute
+    : (data?.nodes.map((node) => node.id) ?? []);
+  const subNodeIds = useMemo(() => new Set(activeNodeList), [activeNodeList]);
+  const isActiveMode = mode === "active";
+
+  // §38/§84：只高亮真实相邻 route pair（禁止 A→C shortcut 被误高亮）。
+  const routePairs = useMemo(() => {
+    const pairs = new Set<string>();
+    for (let i = 0; i < primaryRoute.length - 1; i++) {
+      pairs.add(`${primaryRoute[i]}->${primaryRoute[i + 1]}`);
+    }
+    return pairs;
+  }, [primaryRoute]);
 
   const posMap = useMemo(() => new Map(positions.map((p) => [p.id, p])), [positions]);
 
@@ -79,53 +103,114 @@ function Flow({ data, selectedKcId, onSelect }: Props) {
     if (!data) return [];
     return data.nodes.map((n) => {
       const p = posMap.get(n.id) ?? { x: 0, y: 0 };
-      const inActivePath =
-        mode === "active" ? isOnActivePath(n.id, activePath, data.edges) : true;
+      const inActive = isActiveMode ? subNodeIds.has(n.id) : true;
+      const onRoute = primaryRoute.includes(n.id);
       return {
         id: n.id,
         type: "kc",
         position: { x: p.x, y: p.y },
         data: { node: n },
         selected: selectedKcId === n.id,
-        // §30：当前学习路径模式隐藏非相关节点（半透明），完整图模式全部显示
-        hidden: mode === "active" && !inActivePath,
+        // §37：当前学习路线模式只显示 active_subgraph（含未来 locked 节点与支撑前置）；
+        // 完整知识图模式显示全部。
+        hidden: isActiveMode && !inActive,
         style: {
           opacity:
-            mode === "active" && !activePath.includes(n.id) && activePath.length > 0
-              ? 0.55
+            isActiveMode && onRoute && primaryRoute.length > 0
+              ? 1
+              : isActiveMode
+              ? 0.7
               : 1,
         },
       } as Node<KCNodeData>;
     });
-  }, [data, posMap, mode, activePath, selectedKcId]);
+  }, [data, posMap, mode, subNodeIds, primaryRoute, isActiveMode, selectedKcId]);
 
   const edges: Edge[] = useMemo(() => {
     if (!data) return [];
-    return data.edges.map((e) => {
-      const onActive = activePath.includes(e.source) && activePath.includes(e.target);
+    const base = isActiveMode
+      ? (data.active_subgraph_edges && data.active_subgraph_edges.length
+          ? data.active_subgraph_edges
+          : data.edges.filter((e) => subNodeIds.has(e.source) && subNodeIds.has(e.target)))
+      : data.edges;
+    return base.map((e) => {
+      const onRoute = routePairs.has(`${e.source}->${e.target}`);
+      const inSub = subNodeIds.has(e.source) && subNodeIds.has(e.target);
+      // §38/§84：主学习线边在两种模式下都高亮，且只高亮真实相邻 pair。
+      const onActive = onRoute;
       return {
         id: `${e.source}->${e.target}`,
         source: e.source,
         target: e.target,
         type: "smoothstep",
-        // §22：active path 边高亮；普通 prerequisite 中性
+        // §22/§84：仅真实相邻 route pair 高亮；其余中性
         animated: onActive,
         style: onActive
           ? { stroke: "#6366f1", strokeWidth: 2.6 }
-          : { stroke: "#94a3b8", strokeWidth: 1.5 },
-        markerEnd: { type: "arrowclosed", color: onActive ? "#6366f1" : "#94a3b8" },
+          : isActiveMode && inSub
+          ? { stroke: "#94a3b8", strokeWidth: 1.5 }
+          : { stroke: "#94a3b8", strokeWidth: 1.2, strokeDasharray: "4 3", opacity: 0.5 },
+        markerEnd: {
+          type: "arrowclosed",
+          color: onActive ? "#6366f1" : "#94a3b8",
+        },
       };
     });
-  }, [data, activePath]);
+  }, [data, routePairs, subNodeIds, isActiveMode]);
 
-  // §21：首次 topology 布局完成后 fitView（padding 0.15~0.20）；mastery 更新不 fitView。
-  useEffect(() => {
-    if (!data) return;
-    if (topology && topology !== prevTopology.current && positions.length > 0) {
-      prevTopology.current = topology;
-      requestAnimationFrame(() => fitView({ padding: 0.18, duration: 300 }));
+  // 当前应聚焦的知识点：用户选中 > 系统推荐 > 主线起点
+  const focusId = selectedKcId ?? data?.current_recommended_kc ?? primaryRoute[0] ?? null;
+
+  /** 默认视野 = 当前知识点 + 前后 2~3 个相关节点。
+   *
+   * 主线上取「前 2 + 当前 + 后 3」的窗口；不在主线上时退化为「当前 + 直接前置 + 直接后继」。
+   * 绝不把整条长路线一次 fitView，否则节点会被缩成一条看不清的细线；
+   * 需要俯视全局时切到「完整知识图」，那里才 fit 全图。
+   */
+  const focusIds = useMemo((): string[] => {
+    if (!data) return [];
+    if (!isActiveMode) return data.nodes.map((node) => node.id);
+    if (!focusId) return activeNodeList.slice(0, 5);
+    const routeIndex = primaryRoute.indexOf(focusId);
+    if (routeIndex >= 0) {
+      return primaryRoute.slice(Math.max(0, routeIndex - 2), routeIndex + 4);
     }
-  }, [topology, positions.length, fitView, data]);
+    // 不在主线上（例如用户点了旁支节点）：聚焦它与直接相邻的前置 / 后继
+    const node = data.nodes.find((n) => n.id === focusId);
+    const prereqs = (node?.prerequisites ?? []).slice(0, 2);
+    const dependents = data.edges
+      .filter((e) => e.source === focusId)
+      .map((e) => e.target)
+      .slice(0, 3);
+    return [focusId, ...prereqs, ...dependents];
+  }, [data, isActiveMode, focusId, primaryRoute, activeNodeList]);
+
+  const focusOnIds = useCallback(
+    (ids: string[]) => {
+      const targets = nodes.filter((node) => ids.includes(node.id) && !node.hidden);
+      if (!targets.length) return;
+      requestAnimationFrame(() =>
+        fitView({
+          nodes: targets,
+          padding: isActiveMode ? 0.26 : 0.16,
+          duration: 320,
+          // 只聚焦少量节点时不要过度放大，保持可读且稳定的比例
+          maxZoom: isActiveMode ? 1.1 : 1,
+        })
+      );
+    },
+    [nodes, fitView, isActiveMode]
+  );
+
+  // 只在图拓扑 / 模式 / 推荐点变化时重新取景：
+  // 用户手动点节点或平移之后，视口不再被抢走。
+  useEffect(() => {
+    if (!data || positions.length === 0) return;
+    const viewSignature = `${topology}|mode:${mode}|rec:${data.current_recommended_kc ?? ""}`;
+    if (!topology || viewSignature === prevViewSignature.current) return;
+    prevViewSignature.current = viewSignature;
+    focusOnIds(focusIds);
+  }, [topology, mode, positions.length, data, focusIds, focusOnIds]);
 
   const handleNodeClick = useCallback(
     (_: unknown, node: Node<KCNodeData>) => onSelect((node.data as KCNodeData).node),
@@ -153,6 +238,16 @@ function Flow({ data, selectedKcId, onSelect }: Props) {
           onClick={() => setMode("full")}
         >
           完整知识图
+        </button>
+        {/* 平移 / 缩放之后可一键回到当前知识点附近 */}
+        <button
+          type="button"
+          className="learning-map-mode-btn learning-map-recenter"
+          onClick={() => focusOnIds(focusIds)}
+          disabled={focusIds.length === 0}
+          title="回到当前知识点"
+        >
+          <Crosshair size={13} aria-hidden /> 回到当前
         </button>
       </div>
       <ReactFlow

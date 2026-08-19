@@ -1,7 +1,7 @@
 /** 统一导航 hook：基于当前 pathname 推导 LearningApp 根，提供 host-relative 跳转。
  * 所有页面（AppShell / Sidebar / CourseHeader / StudyPlanPage）共用，禁止各自拼绝对路径。 */
 import { useLocation, useNavigate } from "react-router-dom";
-import { courseChatPath, coursePlanPath, generalChatPath } from "./navigation";
+import { courseChatPath, courseLearnPath, coursePlanPath, generalChatPath } from "./navigation";
 
 export function useLearningNav() {
   const navigate = useNavigate();
@@ -17,5 +17,8 @@ export function useLearningNav() {
     ) => navigate(courseChatPath(pathname, courseId, opts)),
     /** 进入某课程的 Plan。 */
     openCoursePlan: (courseId: string) => navigate(coursePlanPath(pathname, courseId)),
+    /** 进入独立讲解页（地图页与计划列表共用同一入口）。 */
+    openCourseLearn: (courseId: string, stepId: string) =>
+      navigate(courseLearnPath(pathname, courseId, stepId)),
   };
 }
