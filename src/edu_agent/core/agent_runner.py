@@ -37,6 +37,7 @@ def normalize_markdown_output(value: Any) -> str:
     """Unwrap common model/provider wrappers and return clean Markdown text."""
 
     text = model_to_text(value).strip()
+    text = _strip_model_thought(text)
 
     if text.startswith("```"):
         lines = text.splitlines()
@@ -65,6 +66,17 @@ def normalize_markdown_output(value: Any) -> str:
             break
 
     return text.replace("\\n", "\n").strip()
+
+
+def _strip_model_thought(text: str) -> str:
+    """Remove provider reasoning wrappers before parsing user-facing output."""
+    import re
+
+    cleaned = re.sub(r"<thought>.*?</thought>\s*", "", text, flags=re.IGNORECASE | re.DOTALL)
+    # Some Gemini-compatible responses use an unclosed reasoning tag.
+    if "<thought>" in cleaned.lower():
+        cleaned = re.sub(r"<thought>.*", "", cleaned, flags=re.IGNORECASE | re.DOTALL)
+    return cleaned.strip()
 
 
 def invoke_structured_output(
@@ -101,4 +113,4 @@ JSON 必须符合下面的结构说明：
             "format_instructions": parser.get_format_instructions(),
         }
     )
-    return parser.parse(model_to_text(response))
+    return parser.parse(_strip_model_thought(model_to_text(response)))

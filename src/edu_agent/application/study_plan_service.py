@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import uuid
 from typing import Any, Dict, List, Optional
@@ -131,11 +132,22 @@ def generate_plan(
         logger.warning("[plan] build knowledge_context failed", exc_info=True)
         knowledge_context = "无"
 
-    result = run_study_plan_workflow(
-        student_input,
-        plan_context=plan_context,
-        knowledge_context=knowledge_context,
-    )
+    # EDU_OFFLINE is an explicit deterministic test mode. Real API processes
+    # never persist compatibility fallbacks: any model/provider/parser failure
+    # aborts generation before the finalize transaction.
+    offline_test_mode = os.environ.get("EDU_OFFLINE", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+    workflow_kwargs = {
+        "plan_context": plan_context,
+        "knowledge_context": knowledge_context,
+    }
+    if offline_test_mode:
+        # Preserve the historical callable signature for deterministic tests
+        # that wrap/spy on the workflow.
+        result = run_study_plan_workflow(student_input, **workflow_kwargs)
+    else:
+        result = run_study_plan_workflow(student_input, strict=True, **workflow_kwargs)
     final_plan = result.get("final_plan", "")
     # 并发安全：LLM workflow 很慢，执行期间课程可能被删除（复活）或被改名（旧名覆盖新名）。
     # finalize 前必须重读 fresh 快照；所有 finalize 一律用 fresh，不得再用上方陈旧的

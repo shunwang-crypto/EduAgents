@@ -219,11 +219,8 @@ class CourseGraphService:
                 if seq_of.get(p, 0) >= seq_of.get(kc, 0):
                     continue  # 跳过会成环的回边
                 edges.append([p, kc, "prerequisite"])
-        # 若完全没有 prerequisite 边，用 seq 顺序串成链，保证 DAG 连通
-        if not edges and len(nodes) > 1:
-            ordered = sorted(nodes, key=lambda n: seq_of.get(n[0], 0))
-            for i in range(len(ordered) - 1):
-                edges.append([ordered[i][0], ordered[i + 1][0], "prerequisite"])
+        # 没有显式 prerequisite 数据时保持无边图。StudyPlan.seq 只表示
+        # 展示顺序，不能被推断为知识依赖，否则会把旧计划伪造成线性 DAG。
 
         try:
             course = _rows_to_course(course_id, display_name or course_id, goal, nodes, edges)

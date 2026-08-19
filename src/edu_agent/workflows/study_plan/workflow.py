@@ -26,7 +26,8 @@ from edu_agent.workflows.study_plan.schemas import (
 from edu_agent.workflows.study_plan.validator import validate_study_plan
 
 
-def _run_step(step_name: str, func: Callable[..., Any], fallback: Callable[[Exception], Any], *args):
+def _run_step(step_name: str, func: Callable[..., Any], fallback: Callable[[Exception], Any], *args,
+              strict: bool = False):
     """执行流水线一步，并在控制台打印开始/完成/失败日志（用于诊断卡在哪一步）。"""
     start = time.time()
     print(f"[study_plan] ▶ 开始步骤: {step_name}", flush=True)
@@ -38,10 +39,13 @@ def _run_step(step_name: str, func: Callable[..., Any], fallback: Callable[[Exce
         )
         return result
     except Exception as exc:  # noqa: BLE001 - workflow should return displayable errors
+        action = "中止生成" if strict else "走降级"
         print(
-            f"[study_plan] ✗ {step_name} 失败（{time.time() - start:.1f}s）: {exc} → 走降级",
+            f"[study_plan] ✗ {step_name} 失败（{time.time() - start:.1f}s）: {exc} → {action}",
             flush=True,
         )
+        if strict:
+            raise
         return fallback(exc)
 
 
@@ -83,10 +87,8 @@ def _fallback_decomposition(
         f"完成一个和 {topic} 直接相关的小案例",
         "每天保留笔记、代码、截图或讲解记录作为检查证据",
     ]
-    # Compatibility fallback derives a conservative sparse prerequisite chain
-    # from legacy learning_sequence when explicit ConceptSpec relations are
-    # unavailable. learning_sequence 由真实概念标题组成（前置→核心→应用），
-    # 以便构建稀疏依赖链（A→B→C→D），而非 complete-bipartite dense graph。
+    # learning_sequence is retained for plan ordering only. Compatibility
+    # normalization must not reinterpret it as prerequisite evidence.
     return DecompositionResult(
         core_concepts=core,
         prerequisite_concepts=prerequisites,
@@ -278,6 +280,8 @@ def run_study_plan_workflow(
     student_input: StudentInput,
     knowledge_context: str = "无",
     plan_context: Optional[dict] = None,
+    *,
+    strict: bool = False,
 ) -> dict:
     """学习规划主工作流。
 
@@ -301,23 +305,33 @@ def run_study_plan_workflow(
         lambda exc: _fallback_analysis(student_input, exc),
         student_input,
         learner_context,
+        strict=strict,
     )
+    decomposition_agent_fn = decomposer_agent
+    if strict:
+        decomposition_agent_fn = lambda si, analysis_result, context: decomposer_agent(  # noqa: E731
+            si, analysis_result, context, allow_fallback=False
+        )
     decomposition = _run_step(
         "decomposition",
-        decomposer_agent,
+        decomposition_agent_fn,
         lambda exc: _fallback_decomposition(student_input, analysis, exc),
         student_input,
         analysis,
         learner_context,
+        strict=strict,
     )
     knowledge_map: KnowledgeMap = build_knowledge_map(student_input, decomposition)
-    research = _run_step("research", researcher_agent, _fallback_research, analysis)
+    research = _run_step(
+        "research", researcher_agent, _fallback_research, analysis, strict=strict
+    )
     evaluated_research = _run_step(
         "evaluated_research",
         resource_evaluator_agent,
         lambda exc: _fallback_evaluated_research(research, exc),
         research,
         decomposition,
+        strict=strict,
     )
     draft_plan = _run_step(
         "draft_plan",
@@ -338,6 +352,7 @@ def run_study_plan_workflow(
         knowledge_context,
         learner_context,
         adaptive_instructions,
+        strict=strict,
     )
     validation = _run_step(
         "validation",
@@ -346,6 +361,7 @@ def run_study_plan_workflow(
         student_input,
         draft_plan,
         evaluated_research,
+        strict=strict,
     )
     review = _run_step(
         "review",
@@ -353,6 +369,7 @@ def run_study_plan_workflow(
         lambda exc: _fallback_review(draft_plan, exc),
         draft_plan,
         validation,
+        strict=strict,
     )
 
     print(

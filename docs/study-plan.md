@@ -53,9 +53,8 @@ Decomposer 输出 `DecompositionResult.concepts: List[ConceptSpec]`（不再是�
 - `target_refs` / `is_target` 显式给出真正目标 KC（缺省回退到 graph 末端叶子节点）。
 - Graph validator 校验 duplicate / dangling / self loop / cycle / duplicate edge / empty / missing target；失败走有限 repair + deterministic fallback。
 - 旧字段 `core_concepts / prerequisite_concepts / learning_sequence` 仅 compatibility，不再作为 Graph source of truth。
-- **Compatibility fallback**（当 `concepts` 为空，如 OFFLINE/legacy）从 `learning_sequence` 派生保守的稀疏依赖链：
-  `A → B → C → D`（每个节点最多依赖前一个序列节点），不产生 complete-bipartite dense graph。
-  （代码注释原文：`Compatibility fallback derives a conservative sparse prerequisite chain from legacy learning_sequence when explicit ConceptSpec relations are unavailable.`）
+- **Compatibility fallback**（当 `concepts` 为空，如 OFFLINE/legacy）只从旧字段恢复节点与展示顺序；
+  `learning_sequence` / Stage / PlanStep.seq 都不能被解释为 prerequisite，不会为了连通性自动补边。
 - target fallback：优先 `target_refs` / `is_target`，缺省 sequence 末节点 / terminal node。
 
 ## 就此提问（Plan Step Context）
@@ -133,13 +132,13 @@ StudyPlanService.generate_plan(user_id, course_id, goal, ...)
 ## Adaptive Rich Explanation（自适应丰富讲解）
 
 `ExplanationService`（application/explanation/）生成可自然滚动阅读的富讲解文档：
-- `ExplanationContextBuilder`：learner profile + course goal + KC（titles）+ plan context + RAG sources
-- `ExplanationGenerator`：LLM 根据知识点复杂度、学习目标、学习者背景、内容类别和资料来源动态选择 blocks；**不设固定字数、固定 section 数量或固定模板**（`CODE_BLOCK_CANDIDATES` / `THEORY_BLOCK_CANDIDATES` 只是候选池，可增删改序）。复杂知识点写几千字是正常的，禁止把每节写成一两句提纲。支持 orientation/big_picture/concept/worked_example/code_walkthrough/contrast/misconception/application/recap/handoff/diagram/image/table/formula
+- `ExplanationContextBuilder`：KC 描述 + PlanStep 学习目标 + learner profile + RAG sources（不把 prerequisite graph 注入正文提示）
+- `ExplanationGenerator`：LLM 根据知识点标题/描述、学习目标、学习者背景、内容类别与可用资料动态选择教学能力；**不设固定字数、固定 section 数量或固定模板**。候选池只是可选能力，不强制代码、公式、表格、图片或图示。复杂知识点写几千字是正常的，禁止把每节写成一两句提纲。正文从当前知识开始，不生成学习路线规划说明。
 - `ExplanationValidator`：block type 合法 / 非空 / 无 exercise / 无重复，不按篇幅和 section 数量裁剪
 - 图示：优先结构化 `diagram`（`data.nodes` + `data.edges`，前端按依赖分层渲染成流程图，分支同层并排）；`image` 只在存在真实图片资料时使用，**不强制每个知识点都出图**
 - 前端：长文档 + 左侧目录（移动端顶部横向目录）+ 自然滚动，**没有**「第 N/M 部分 → 下一部分」卡片翻页；Markdown 支持标题、列表、代码、表格、图片与 LaTeX
-- 离线降级（`EDU_OFFLINE=1` 或 LLM 失败）：只用 context 中真实存在的信息（KC 描述、目标、前置/后继、资料来源）+ 通用学习方法确定性组装，含结构化 diagram 与关系表，绝不编造该知识点的具体事实或代码
-- 缓存：`step_explanations` 表，按 `context_hash + schema_version` 复用；v2 会自动淘汰旧短卡片缓存
+- 离线降级（`EDU_OFFLINE=1` 或 LLM 失败）：只展示 context 中真实存在的 KC 描述与学习目标；没有足够依据时明确提示无法生成，不用通用学习方法冒充讲解，也不编造代码、公式、图或关系表
+- 缓存：`step_explanations` 表按带生成器版本的 `context_hash` 复用；教学契约变更会自动淘汰旧规划式内容
 - **不生成练习 / 判题**（见 test_no_exercise）
 - 文档末尾提供两个**不同**动作：`完成本节讲解`（把 PlanStep.status → completed，只更新进度，**绝不修改 mastery**）与 `进入相关实践`（Practice Handoff）
 

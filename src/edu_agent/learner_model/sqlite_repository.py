@@ -587,7 +587,10 @@ class SQLiteLearnerRepository(LearnerRepository):
 
     # ---- Structured Explanation（step_explanations）-------------------------
     def upsert_step_explanation(self, row: Dict[str, Any]) -> None:
-        self._insert_or_update("step_explanations", row, ["explanation_id"])
+        # step_id is the actual uniqueness key. Explanation IDs are generated
+        # per request, so upserting by explanation_id races when the page makes
+        # concurrent GET requests for the same step.
+        self._insert_or_update("step_explanations", row, ["step_id"])
 
     def get_step_explanation(self, user_id: str, course_id: str, step_id: str) -> Optional[dict]:
         return self._fetchone(

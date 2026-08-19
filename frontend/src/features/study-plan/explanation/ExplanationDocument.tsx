@@ -1,7 +1,75 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CheckCircle2, LoaderCircle } from "lucide-react";
-import type { StepExplanation } from "../../../api/types";
+import type { PracticeHandoff, StepExplanation } from "../../../api/types";
 import ExplanationBlockView from "./ExplanationBlockView";
+
+export interface ExplanationTocItem {
+  title: string;
+  blockIndex: number;
+}
+
+function titleKey(title: string): string {
+  return title
+    .toLocaleLowerCase()
+    .replace(/[\s\u3000()（）[\]【】{}「」:：,，.!！？?、\-—_·]+/g, "")
+    .replace(/^(章节|第[一二三四五六七八九十百0-9]+节)/, "");
+}
+
+/**
+ * Long explanations contain many teaching blocks, but the left rail should
+ * expose themes rather than every paragraph-sized block. The first block of
+ * each theme remains the scroll target; all blocks still render in the body.
+ */
+export function buildExplanationToc(blocks: StepExplanation["blocks"]): ExplanationTocItem[] {
+  if (blocks.length <= 12) {
+    const seen = new Set<string>();
+    return blocks.flatMap((block, blockIndex) => {
+      const key = titleKey(block.title);
+      if (!key || seen.has(key)) return [];
+      seen.add(key);
+      return [{ title: block.title, blockIndex }];
+    });
+  }
+
+  const candidates: ExplanationTocItem[] = [];
+  const seen = new Set<string>();
+  let lastAnchor = -1;
+  blocks.forEach((block, blockIndex) => {
+    const key = titleKey(block.title);
+    if (!key || seen.has(key)) return;
+    const nonConcept = block.type !== "concept";
+    const startsTheme = blockIndex === 0 || blockIndex - lastAnchor >= 3 || nonConcept;
+    if (!startsTheme) return;
+    seen.add(key);
+    candidates.push({ title: block.title, blockIndex });
+    lastAnchor = blockIndex;
+  });
+
+  if (candidates.length < 6) {
+    const used = new Set(candidates.map((item) => item.blockIndex));
+    for (let i = 0; i < 6; i += 1) {
+      const blockIndex = Math.round((i * (blocks.length - 1)) / 5);
+      if (!used.has(blockIndex)) {
+        candidates.push({ title: blocks[blockIndex].title, blockIndex });
+        used.add(blockIndex);
+      }
+    }
+    candidates.sort((a, b) => a.blockIndex - b.blockIndex);
+  }
+  if (candidates.length <= 12) return candidates;
+  const targetCount = Math.min(12, Math.max(6, Math.ceil(blocks.length / 3)));
+  const selected: ExplanationTocItem[] = [];
+  const used = new Set<number>();
+  for (let i = 0; i < targetCount; i += 1) {
+    const sourceIndex = Math.round((i * (candidates.length - 1)) / (targetCount - 1));
+    const item = candidates[sourceIndex];
+    if (item && !used.has(item.blockIndex)) {
+      selected.push(item);
+      used.add(item.blockIndex);
+    }
+  }
+  return selected.sort((a, b) => a.blockIndex - b.blockIndex);
+}
 
 interface Props {
   stepId: string;
@@ -11,6 +79,11 @@ interface Props {
   onRequestExplanation: (stepId: string, kcId: string) => Promise<StepExplanation>;
   /** 完成本节讲解 → 只更新 PlanStep completion（不修改 mastery）。 */
   onCompleteStep?: (stepId: string) => Promise<boolean>;
+  /** 完成本节后的下一步导航；没有后续 step 时由调用方回到学习地图。 */
+  onContinueNext?: () => void;
+  continueLabel?: string;
+  /** 仅请求外部实践模块的 handoff 契约，不在讲解页生成练习。 */
+  onRequestPractice?: () => Promise<PracticeHandoff | null>;
   /** 该 step 是否已经完成过（再次查看时按钮直接显示已完成）。 */
   alreadyCompleted?: boolean;
 }
@@ -37,6 +110,9 @@ export default function ExplanationDocument({
   stageTitle,
   onRequestExplanation,
   onCompleteStep,
+  onContinueNext,
+  continueLabel = "继续下一知识点",
+  onRequestPractice,
   alreadyCompleted = false,
 }: Props) {
   const [explanation, setExplanation] = useState<StepExplanation | null>(null);
@@ -46,6 +122,9 @@ export default function ExplanationDocument({
   const [completing, setCompleting] = useState(false);
   const [completed, setCompleted] = useState(alreadyCompleted);
   const [showHandoffNotice, setShowHandoffNotice] = useState(false);
+  const [handoff, setHandoff] = useState<PracticeHandoff | null>(null);
+  const [practiceLoading, setPracticeLoading] = useState(false);
+  const [practiceError, setPracticeError] = useState<string | null>(null);
   const sectionRefs = useRef<Array<HTMLElement | null>>([]);
 
   useEffect(() => setCompleted(alreadyCompleted), [alreadyCompleted]);
@@ -55,6 +134,8 @@ export default function ExplanationDocument({
     setActiveIndex(0);
     setError(null);
     setShowHandoffNotice(false);
+    setHandoff(null);
+    setPracticeError(null);
     if (!stepId) return;
     let cancelled = false;
     setLoading(true);
@@ -75,12 +156,12 @@ export default function ExplanationDocument({
   }, [stepId, kcId]);
 
   const blocks = explanation?.blocks ?? [];
+  const tocItems = useMemo(() => buildExplanationToc(blocks), [blocks]);
 
   // 目录点击 → 滚动到对应 section（自然滚动，不切页）
   const scrollToSection = useCallback(
     (index: number) => {
       const bounded = Math.max(0, Math.min(blocks.length - 1, index));
-      setActiveIndex(bounded);
       sectionRefs.current[bounded]?.scrollIntoView?.({ behavior: "smooth", block: "start" });
     },
     [blocks.length]
@@ -96,13 +177,19 @@ export default function ExplanationDocument({
           .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0];
         if (!visible) return;
         const next = Number((visible.target as HTMLElement).dataset.sectionIndex);
-        if (Number.isFinite(next)) setActiveIndex(next);
+        if (Number.isFinite(next)) {
+          const tocIndex = tocItems.findIndex((item, index) => {
+            const nextItem = tocItems[index + 1];
+            return item.blockIndex <= next && (!nextItem || nextItem.blockIndex > next);
+          });
+          if (tocIndex >= 0) setActiveIndex(tocIndex);
+        }
       },
       { rootMargin: "-12% 0px -70% 0px", threshold: 0.01 }
     );
     sectionRefs.current.forEach((node) => node && observer.observe(node));
     return () => observer.disconnect();
-  }, [blocks.length]);
+  }, [blocks.length, tocItems]);
 
   const handleComplete = useCallback(async () => {
     if (!onCompleteStep || completing || completed) return;
@@ -116,6 +203,22 @@ export default function ExplanationDocument({
   }, [onCompleteStep, stepId, completing, completed]);
 
   const minutes = useMemo(() => readingMinutes(explanation), [explanation]);
+
+  const handlePractice = useCallback(async () => {
+    if (practiceLoading) return;
+    setPracticeLoading(true);
+    setPracticeError(null);
+    try {
+      const result = onRequestPractice ? await onRequestPractice() : null;
+      setHandoff(result);
+      setShowHandoffNotice(true);
+    } catch (e) {
+      setPracticeError(e instanceof Error ? e.message : "实践入口暂时不可用");
+      setShowHandoffNotice(true);
+    } finally {
+      setPracticeLoading(false);
+    }
+  }, [onRequestPractice, practiceLoading]);
 
   if (!stepId) {
     return (
@@ -134,7 +237,7 @@ export default function ExplanationDocument({
           )}
           {explanation && blocks.length > 0 && (
             <div className="explanation-reading-meta">
-              共 {blocks.length} 节 · 预计阅读 {minutes} 分钟 · 篇幅按知识点复杂度自适应
+            共 {tocItems.length} 节 · 预计阅读 {minutes} 分钟
             </div>
           )}
         </div>
@@ -161,16 +264,19 @@ export default function ExplanationDocument({
         <div className="explanation-reading-layout">
           <nav className="explanation-toc" aria-label="讲解目录">
             <div className="explanation-toc-title">目录</div>
-            {blocks.map((b, i) => (
+            {tocItems.map((item, i) => (
               <button
-                key={`${b.type}-${i}`}
+                key={`${item.blockIndex}-${i}`}
                 type="button"
                 className={`explanation-toc-item ${i === activeIndex ? "active" : ""}`}
-                onClick={() => scrollToSection(i)}
+                onClick={() => {
+                  setActiveIndex(i);
+                  scrollToSection(item.blockIndex);
+                }}
                 aria-current={i === activeIndex ? "location" : undefined}
               >
                 <span>{String(i + 1).padStart(2, "0")}</span>
-                {b.title}
+                {item.title}
               </button>
             ))}
           </nav>
@@ -198,7 +304,7 @@ export default function ExplanationDocument({
               </section>
             ))}
 
-            {/* 底部两个独立动作：完成讲解 与 进入实践互不替代 */}
+            {/* 底部动作互不替代：完成只改 PlanStep，下一节按 StudyPlan 导航，实践走 handoff。 */}
             <footer className="explanation-footer-actions">
               {onCompleteStep && (
                 <button
@@ -210,12 +316,22 @@ export default function ExplanationDocument({
                   {completed ? "本节讲解已完成" : completing ? "正在完成…" : "完成本节讲解"}
                 </button>
               )}
+              {onContinueNext && (
+                <button
+                  type="button"
+                  className="ea-button secondary"
+                  onClick={onContinueNext}
+                >
+                  {continueLabel}
+                </button>
+              )}
               <button
                 type="button"
                 className="ea-button secondary"
-                onClick={() => setShowHandoffNotice(true)}
+                onClick={() => void handlePractice()}
+                disabled={practiceLoading}
               >
-                进入相关实践
+                {practiceLoading ? "正在准备实践…" : "进入相关实践"}
               </button>
             </footer>
             <p className="explanation-footer-hint">
@@ -224,11 +340,21 @@ export default function ExplanationDocument({
 
             {showHandoffNotice && (
               <div className="handoff-notice" role="status">
-                <p>
-                  相关实践功能暂未开放。
-                  <br />
-                  <small>后续完成基础实践后，系统会根据学习记录更新你的知识掌握度。</small>
-                </p>
+                {practiceError ? (
+                  <p>{practiceError}</p>
+                ) : handoff ? (
+                  <p>
+                    已准备好实践入口（难度：{handoff.recommended_difficulty || "自适应"}）。
+                    <br />
+                    <small>实践模块会独立记录学习证据；本次操作不会修改掌握度。</small>
+                  </p>
+                ) : (
+                  <p>
+                    相关实践功能暂未开放。
+                    <br />
+                    <small>后续完成基础实践后，系统会根据学习记录更新你的知识掌握度。</small>
+                  </p>
+                )}
                 <button
                   type="button"
                   className="ea-button"

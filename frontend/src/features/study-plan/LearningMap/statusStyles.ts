@@ -12,7 +12,7 @@ export interface StatusStyle {
 
 export const STATUS_STYLES: Record<KCStatus, StatusStyle> = {
   unknown: {
-    label: "未评估",
+    label: "尚待评估",
     color: "#64748b",
     bg: "#f1f5f9",
     border: "#cbd5e1",

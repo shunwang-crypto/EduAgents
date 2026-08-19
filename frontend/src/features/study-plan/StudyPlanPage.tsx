@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useOutletContext, useParams } from "react-router-dom";
 import {
   BookOpen,
@@ -6,7 +6,7 @@ import {
   Circle,
   CircleDot,
   LoaderCircle,
-  Map,
+  Map as MapIcon,
   MessageCircleQuestion,
 } from "lucide-react";
 import { useApi, ApiError } from "../../api/ApiProvider";
@@ -21,7 +21,6 @@ import type {
 import { CourseHeader } from "../../layout/CourseHeader";
 import { useLearningNav } from "../../app/useLearningNav";
 import LearningMapView from "./LearningMap/LearningMapView";
-import KnowledgeDetailPanel from "./LearningMap/KnowledgeDetailPanel";
 import PlanBriefPanel from "./plan-brief/PlanBriefPanel";
 import "./study-plan.css";
 
@@ -395,28 +394,21 @@ export function StudyPlanPage() {
     [courseId]
   );
 
-  // §35：根据 KC 讲解状态计算 CTA 文案
-  const explanationCtaForKc = useCallback(
-    (kcId: string): string | null => {
-      if (!kcId) return null;
-      const step = findPlanStepForKc(kcId);
-      if (!step) return null;
-      if (step.status === "completed") return "再次查看讲解";
-      if (step.status === "in_progress") return "继续讲解";
-      return "开始讲解";
-    },
-    [findPlanStepForKc]
-  );
-
-  const startExplanationForKc = useCallback(
-    (kcId: string) => {
-      const step = findPlanStepForKc(kcId);
-      if (step) openLearnPage(step);
-    },
-    [findPlanStepForKc, openLearnPage]
-  );
-
   const stages = plan?.stages?.length ? plan.stages : [];
+  const planStepStatusByKc = useMemo(() => {
+    const status = new Map<string, PlanStep["status"]>();
+    const rank: Record<PlanStep["status"], number> = {
+      not_started: 0,
+      in_progress: 1,
+      completed: 2,
+    };
+    const steps = plan?.stages?.length ? plan.stages.flatMap((stage) => stage.steps) : plan?.steps ?? [];
+    for (const step of steps) {
+      const current = status.get(step.kc_id);
+      if (!current || rank[step.status] > rank[current]) status.set(step.kc_id, step.status);
+    }
+    return status;
+  }, [plan]);
   // progress 单一来源：Backend plan.progress（completed steps / total steps 已由后端算好）
   const rawProgress = typeof plan?.progress === "number" ? plan.progress : 0;
   const progressPct = Math.round(Math.max(0, Math.min(1, rawProgress)) * 100);
@@ -814,7 +806,7 @@ export function StudyPlanPage() {
                 {mapEmpty && !mapLoading && !mapError && (
                   <div className="learning-map-empty">
                     <div className="learning-map-empty-icon">
-                      <Map size={28} aria-hidden />
+                      <MapIcon size={28} aria-hidden />
                     </div>
                     <h3>学习地图将在生成学习计划后创建</h3>
                     <p>
@@ -835,23 +827,16 @@ export function StudyPlanPage() {
                   <LearningMapView
                     data={learningMap}
                     selectedKcId={selectedKc?.id ?? null}
-                    onSelect={(kc) => setSelectedKc(kc)}
+                    planStepStatusByKc={planStepStatusByKc}
+                    onSelect={(kc) => {
+                      setSelectedKc(kc);
+                      // 节点是学习入口：详情不再占用地图右侧空间，点击后直接进入独立讲解页。
+                      const step = findPlanStepForKc(kc.id);
+                      if (step) openLearnPage(step);
+                    }}
                   />
                 )}
               </div>
-              {!mapEmpty && (
-                <aside className="learning-map-side">
-                  <KnowledgeDetailPanel
-                    node={selectedKc}
-                    allNodes={learningMap?.nodes ?? []}
-                    // §35：点击节点即可进入独立讲解页（文案随该 KC 对应 step 状态变化）
-                    explanationCta={selectedKc ? explanationCtaForKc(selectedKc.id) : null}
-                    onStartExplanation={() =>
-                      selectedKc && startExplanationForKc(selectedKc.id)
-                    }
-                  />
-                </aside>
-              )}
             </div>
           )}
         </div>

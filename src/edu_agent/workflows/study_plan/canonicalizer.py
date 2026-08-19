@@ -346,9 +346,9 @@ class KnowledgeMapCanonicalizer:
                 )
             )
 
-        # 3) 安全链式关系：把原始 prerequisites 映射为 canonical id。
+        # 3) 只映射原始 prerequisites：顺序和节点列表本身不是依赖证据。
         #    关键：保证 DAG——只允许“排序在前的知识点”作为“排序在后的知识点”的前置。
-        #    若原始草稿带环，环上后出现的边会被丢弃，剩余边 + 顺序链仍构成无环图。
+        #    若原始草稿带环，环上后出现的边会被丢弃；不再用顺序补边。
         order = [c.kc_id for c in components]
         pos = {cid: i for i, cid in enumerate(order)}
         relations: List[KCRelation] = []
@@ -372,14 +372,6 @@ class KnowledgeMapCanonicalizer:
                     continue
                 seen_edges.add(edge)
                 relations.append(KCRelation(from_kc=pre_cid, to_kc=cid, relation="prerequisite"))
-
-        # 4) 顺序链兜底：把 components 按稳定顺序串成一条链，保证 DAG、连通与可达。
-        #    已存在的 prerequisite 边不去重链（链只在缺少前驱时补充）。
-        for i in range(len(order) - 1):
-            pre, cur = order[i], order[i + 1]
-            if (pre, cur) not in seen_edges:
-                seen_edges.add((pre, cur))
-                relations.append(KCRelation(from_kc=pre, to_kc=cur, relation="prerequisite"))
 
         logger.warning("using safe fallback DAG for course %s", self.course_id)
         course = Course.from_dag(

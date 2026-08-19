@@ -49,8 +49,9 @@ def analyzer_agent(
     """
 
     payload = student_input.model_dump()
-    if plan_context_text:
-        payload["plan_context"] = plan_context_text
+    # Prompt always contains {plan_context}; pass an explicit empty value when
+    # no learner-model context exists so ChatPromptTemplate can render it.
+    payload["plan_context"] = plan_context_text or ""
     return invoke_structured_output(
         ANALYZER_PROMPT,
         AnalysisResult,
@@ -83,10 +84,8 @@ def _fallback_decomposition(
         f"围绕 {topic} 制作一份概念卡片和错误清单",
         f"完成一个能体现学习目标的 {topic} 小案例",
     ]
-    # Compatibility fallback derives a conservative sparse prerequisite chain
-    # from legacy learning_sequence when explicit ConceptSpec relations are
-    # unavailable. learning_sequence 由真实概念标题组成（前置→核心→应用），
-    # 以便构建稀疏依赖链（A→B→C→D），而非 complete-bipartite dense graph。
+    # learning_sequence is retained for plan ordering only. Compatibility
+    # normalization must not reinterpret it as prerequisite evidence.
     return DecompositionResult(
         core_concepts=core,
         prerequisite_concepts=prerequisites,
@@ -126,6 +125,8 @@ def decomposer_agent(
     student_input: StudentInput,
     analysis: AnalysisResult,
     plan_context_text: str = "",
+    *,
+    allow_fallback: bool = True,
 ) -> DecompositionResult:
     """
     内容拆解 Agent：
@@ -139,9 +140,10 @@ def decomposer_agent(
         payload = {
             **student_input.model_dump(),
             "analysis": model_to_text(analysis),
+            # DECOMPOSER_PROMPT requires this variable even for a first-time
+            # learner with no stored context.
+            "plan_context": plan_context_text or "",
         }
-        if plan_context_text:
-            payload["plan_context"] = plan_context_text
         result = invoke_structured_output(
             DECOMPOSER_PROMPT,
             DecompositionResult,
@@ -152,7 +154,9 @@ def decomposer_agent(
         if len(result.stages) != 3:
             result.stages = _normalize_stage_suggestions(result.stages)
         return result
-    except Exception as exc:  # noqa: BLE001 - agent should keep workflow usable
+    except Exception as exc:  # noqa: BLE001 - compatibility mode only
+        if not allow_fallback:
+            raise
         return _fallback_decomposition(student_input, analysis, exc)
 
 

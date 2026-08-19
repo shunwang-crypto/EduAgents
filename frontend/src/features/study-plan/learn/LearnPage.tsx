@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useOutletContext, useParams } from "react-router-dom";
 import { ArrowLeft, LoaderCircle, MessageCircleQuestion } from "lucide-react";
 import { useApi } from "../../../api/ApiProvider";
-import type { Course, PlanStep, StepExplanation, StudyPlan } from "../../../api/types";
+import type { Course, PlanStep, PracticeHandoff, StepExplanation, StudyPlan } from "../../../api/types";
 import { CourseHeader } from "../../../layout/CourseHeader";
 import { useLearningNav } from "../../../app/useLearningNav";
 import ExplanationDocument from "../explanation/ExplanationDocument";
@@ -18,6 +18,19 @@ function findStep(plan: StudyPlan | null, stepId: string): PlanStep | null {
     ? plan.stages.flatMap((stage) => stage.steps)
     : (plan.steps ?? []);
   return steps.find((s) => s.step_id === stepId) ?? null;
+}
+
+function orderedSteps(plan: StudyPlan | null): PlanStep[] {
+  if (!plan) return [];
+  return plan.stages?.length ? plan.stages.flatMap((stage) => stage.steps) : (plan.steps ?? []);
+}
+
+/** StudyPlan 顺序中的下一个未完成 step；完成状态仍由 PlanStep 单独维护。 */
+function findNextLearnableStep(plan: StudyPlan | null, stepId: string): PlanStep | null {
+  const steps = orderedSteps(plan);
+  const index = steps.findIndex((candidate) => candidate.step_id === stepId);
+  if (index < 0) return null;
+  return steps.slice(index + 1).find((candidate) => candidate.status !== "completed") ?? null;
 }
 
 /** LearnPage：独立学习页（/courses/{courseId}/learn/{stepId}）。
@@ -81,6 +94,7 @@ export function LearnPage() {
   }, [courseId, api]);
 
   const step = findStep(plan, stepId ?? "");
+  const nextStep = findNextLearnableStep(plan, stepId ?? "");
 
   // 进入讲解页即开始本节（not_started → in_progress）
   useEffect(() => {
@@ -131,6 +145,22 @@ export function LearnPage() {
   const backToMap = useCallback(() => {
     if (courseId) nav.openCoursePlan(courseId);
   }, [courseId, nav]);
+
+  const continueToNext = useCallback(() => {
+    if (!courseId) return;
+    if (nextStep) {
+      nav.openCourseLearn(courseId, nextStep.step_id);
+    } else {
+      nav.openCoursePlan(courseId);
+    }
+  }, [courseId, nav, nextStep]);
+
+  const requestPractice = useCallback(async (): Promise<PracticeHandoff | null> => {
+    if (!courseId || !plan || !stepId) return null;
+    // Practice 模块由外部拥有；这里仅请求并展示 handoff 契约，不创建题目或修改掌握度。
+    if (typeof api.getPracticeHandoff !== "function") return null;
+    return api.getPracticeHandoff(courseId, plan.plan_id, stepId);
+  }, [api, courseId, plan, stepId]);
 
   if (!courseId || !stepId) {
     return (
@@ -198,6 +228,9 @@ export function LearnPage() {
               stageTitle={step.stage_title}
               onRequestExplanation={requestExplanation}
               onCompleteStep={completeStep}
+              onContinueNext={continueToNext}
+              continueLabel={nextStep ? "继续下一知识点" : "返回学习地图"}
+              onRequestPractice={requestPractice}
               alreadyCompleted={step.status === "completed"}
             />
           )}

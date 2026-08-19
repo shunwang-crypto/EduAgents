@@ -91,3 +91,18 @@ def test_legacy_plan_unrecoverable_reports_upgrade_needed(learner, monkeypatch, 
         row["kc_id"] = ""
         learner.repo.upsert_plan_step(row)
     assert gs.try_recover_from_plan(uid, cid, display_name="Legacy主题2") is None
+
+
+def test_legacy_plan_without_prerequisites_does_not_invent_edges(learner, monkeypatch, km):
+    """seq is presentation order only; missing prerequisite data stays edge-free."""
+    uid = "legacy-no-edges"
+    cid = create_course(uid, "Legacy无边", goal="掌握", learner=learner)["course_id"]
+    _stub_plan(monkeypatch, km)
+    generate_plan(uid, cid, goal="掌握", learner=learner)
+    learner.repo.delete_course_kc_graph(uid, cid)
+
+    graph = CourseGraphService(learner._repo).try_recover_from_plan(
+        uid, cid, display_name="Legacy无边"
+    )
+    assert graph is not None
+    assert graph.course.relations == []

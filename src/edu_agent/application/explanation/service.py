@@ -16,7 +16,11 @@ import uuid
 from typing import Optional
 
 from edu_agent.application.explanation.context_builder import ExplanationContextBuilder
-from edu_agent.application.explanation.generator import generate_explanation
+from edu_agent.application.explanation.generator import (
+    generate_explanation,
+    _deduplicate_blocks,
+    _normalize_block,
+)
 from edu_agent.application.explanation.models import PracticeHandoff, StepExplanation
 from edu_agent.application.explanation.validator import ExplanationValidator
 from edu_agent.application.course_graph_service import CourseGraphService
@@ -123,6 +127,12 @@ class ExplanationService:
         except json.JSONDecodeError:
             content = {}
         explanation = StepExplanation(**content)
+        # Normalization rules may improve independently of the generated
+        # facts. Repair cached Markdown/LaTeX on read instead of spending a
+        # second full model generation for a presentation-only correction.
+        explanation.blocks = _deduplicate_blocks(
+            [_normalize_block(block) for block in explanation.blocks]
+        )
         explanation.step_id = step.get("step_id", "")
         return self._to_dict(explanation, step)
 

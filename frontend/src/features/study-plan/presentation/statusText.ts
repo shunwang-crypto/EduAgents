@@ -3,7 +3,7 @@
 import type { KCStatus } from "../../../api/types";
 
 export const STATUS_LABELS: Record<KCStatus, string> = {
-  unknown: "未评估",
+  unknown: "尚待评估",
   weak: "薄弱",
   learning: "学习中",
   mastered: "已掌握",

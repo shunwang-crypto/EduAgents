@@ -41,7 +41,7 @@ class FallbackChatOpenAI(Runnable):
         api_key: str,
         base_url,
         temperature: float,
-        timeout: float = 60.0,
+        timeout: float = 600.0,
         **kwargs,
     ):
         models = [model for model in models if model]
@@ -58,14 +58,8 @@ class FallbackChatOpenAI(Runnable):
         self._extra_kwargs = dict(kwargs)
 
     def _client_for(self, model):
-        """每次现构造 ChatOpenAI（构造开销极小，避免缓存私有属性被 pydantic 序列化丢失）。
-
-        对 OpenCode Zen（opencode.ai）额外带 x-opencode-client: desktop 头，
-        否则会被 Cloudflare 拦截（error 1010）。
-        """
+        """每次现构造 ChatOpenAI（构造开销极小，避免缓存私有属性被 pydantic 序列化丢失）。"""
         headers = dict(self._extra_kwargs.get("default_headers", {}) or {})
-        if "opencode.ai" in (self._base_url or ""):
-            headers.setdefault("x-opencode-client", "desktop")
         return _ChatOpenAI(
             api_key=self._api_key,
             base_url=self._base_url,
@@ -100,13 +94,23 @@ class FallbackChatOpenAI(Runnable):
 def _resolve_main_settings():
     """
     主模型配置解析：
-    1. OPENAI_* 优先；
-    2. 未配置 OPENAI 时回落星辰平台（XINGCHEN_* / OPENCODE_ZEN_* 别名）；
-    3. key 可为空（OpenCode Zen 免费模型不需要 key，配 base_url 即可，
-       此时 api_key 传空字符串，请求只带空 Bearer 头）；
-    4. base_url 与 key 都未配置才报错。
+    1. 启用路由且配置 GOOGLE_OPENAI_* 时使用 Google OpenAI-compatible endpoint；
+    2. 否则 OPENAI_*；
+    3. 再否则回落原有 XINGCHEN_*；
+    4. 所有 provider 都未配置才报错。
     """
     settings = get_settings()
+    if (
+        settings.model_routing_enabled
+        and (settings.google_openai_api_key or settings.google_openai_base_url)
+    ):
+        if not settings.google_text_model:
+            raise LLMConfigurationError("已启用 Google 模型路由，但未配置 GOOGLE_TEXT_MODEL。")
+        return (
+            settings.google_openai_api_key or "",
+            settings.google_openai_base_url,
+            settings.google_text_model,
+        )
     if settings.openai_api_key or settings.openai_base_url:
         return settings.openai_api_key or "", settings.openai_base_url, settings.openai_model
     if settings.xingchen_api_key or settings.xingchen_base_url:
@@ -116,19 +120,20 @@ def _resolve_main_settings():
             settings.xingchen_model or settings.openai_model,
         )
     raise LLMConfigurationError(
-        "未配置任何模型：请设置 OPENAI_API_KEY / OPENAI_BASE_URL，或星辰平台 "
-        "XINGCHEN_API_KEY / XINGCHEN_BASE_URL（含 OPENCODE_ZEN_* 别名，见 .env.example）。"
+        "未配置任何模型：请设置 GOOGLE_OPENAI_*、OPENAI_* 或 XINGCHEN_*。"
     )
 
 
 def get_llm(temperature: float = 0.3, **kwargs):
-    """创建带多模型 fallback 的 ChatOpenAI：OPENAI_* 优先，未配置时回落星辰平台。"""
+    """Create the configured OpenAI-compatible text model client."""
 
     # OFFLINE 测试模式：跳过真实 LLM，立即触发调用方 fallback，避免无 API 环境等待超时。
     import os as _os
     if _os.environ.get("EDU_OFFLINE", "").strip() in ("1", "true", "True"):
         raise RuntimeError("EDU_OFFLINE: skipping LLM")
 
+    settings = get_settings()
+    kwargs.setdefault("timeout", settings.llm_request_timeout_seconds)
     api_key, base_url, model_str = _resolve_main_settings()
     return FallbackChatOpenAI(
         models=_parse_model_list(model_str),
@@ -141,12 +146,27 @@ def get_llm(temperature: float = 0.3, **kwargs):
 
 def get_kb_llm(temperature: float = 0.3, **kwargs):
     """
-    对话问答工作流专用实例：优先使用星辰平台（XINGCHEN_* / OPENCODE_ZEN_*）；
-    星辰 key 可留空（OpenCode Zen 免费模型无需 key）；未配置星辰时回落 OPENAI_*。
+    对话问答工作流专用实例：优先使用启用的 Google 路由，
+    否则使用原有 XINGCHEN_*，最后回落主模型配置。
     kwargs 可透传 request_timeout 等参数。
     """
 
     settings = get_settings()
+    kwargs.setdefault("timeout", settings.llm_request_timeout_seconds)
+    if (
+        settings.model_routing_enabled
+        and (settings.google_openai_api_key or settings.google_openai_base_url)
+    ):
+        model_str = settings.google_text_model
+        if not model_str:
+            raise LLMConfigurationError("已启用 Google 模型路由，但未配置 GOOGLE_TEXT_MODEL。")
+        return FallbackChatOpenAI(
+            models=_parse_model_list(model_str),
+            api_key=settings.google_openai_api_key or "",
+            base_url=settings.google_openai_base_url,
+            temperature=temperature,
+            **kwargs,
+        )
     if settings.xingchen_api_key or settings.xingchen_base_url:
         model_str = settings.xingchen_model or settings.openai_model
         base_url = settings.xingchen_base_url or settings.openai_base_url

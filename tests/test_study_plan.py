@@ -95,6 +95,32 @@ def test_input_parser_agent_uses_structured_llm(monkeypatch):
     assert parsed.missing_fields == []
 
 
+def test_analyzer_passes_empty_plan_context_to_required_prompt(monkeypatch):
+    from edu_agent.workflows.study_plan import agents
+    from edu_agent.workflows.study_plan.schemas import AnalysisResult
+
+    captured = {}
+
+    monkeypatch.setattr(agents, "get_llm", lambda temperature: object())
+
+    def fake_invoke(prompt_text, schema, values, llm):
+        captured.update(values)
+        return AnalysisResult(
+            topic="PyTorch",
+            level_summary="基础",
+            goal_summary="目标",
+            prerequisites=[],
+            need_web_search=False,
+            search_queries=[],
+        )
+
+    monkeypatch.setattr(agents, "invoke_structured_output", fake_invoke)
+    agents.analyzer_agent(
+        StudentInput(topic="PyTorch", days=7, daily_time="60分钟", goal="掌握 Tensor")
+    )
+    assert captured["plan_context"] == ""
+
+
 def test_workflow_returns_displayable_fallback_without_api_key(monkeypatch):
     # 清掉所有模型配置（含 .env 里的 OpenCode Zen base_url），确保走降级模板而非真实网络
     for name in (

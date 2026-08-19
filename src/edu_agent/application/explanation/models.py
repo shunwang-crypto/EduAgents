@@ -32,39 +32,26 @@ class BlockType(str, Enum):
     FORMULA = "formula"
 
 
-# 候选 section 池（不是固定模板）。
-#
-# 这两个列表只回答「这类内容通常会用到哪些 section」，不规定必须全用、
-# 不规定顺序、也不规定数量。生成器把它们作为候选交给 LLM，LLM 按知识点
-# 复杂度自行取舍：简单知识点可以只用两三个，复杂知识点可以增加 diagram /
-# table / formula / image / contrast，并重新排序。
-CODE_BLOCK_CANDIDATES = [
-    "orientation",
-    "big_picture",
+# 可选教学能力池，不是模板，也不表示任何 block 必须出现。
+# orientation / handoff 不放入正文候选：前者容易退化为规划话术，后者由页面底部
+# PracticeHandoff 负责。保留 BlockType 以兼容已缓存的历史 Explanation。
+EXPLANATION_BLOCK_CANDIDATES = [
     "concept",
-    "diagram",
-    "code_walkthrough",
+    "big_picture",
     "worked_example",
-    "table",
-    "misconception",
-    "application",
-    "recap",
-    "handoff",
-]
-THEORY_BLOCK_CANDIDATES = [
-    "orientation",
-    "big_picture",
-    "concept",
+    "code_walkthrough",
     "diagram",
     "formula",
     "contrast",
     "table",
-    "worked_example",
     "misconception",
     "application",
     "recap",
-    "handoff",
+    "image",
 ]
+
+# Bump when the teaching contract changes so persisted explanations regenerate.
+EXPLANATION_GENERATOR_VERSION = "kc-teaching-v8"
 
 
 class ExplanationBlock(BaseModel):

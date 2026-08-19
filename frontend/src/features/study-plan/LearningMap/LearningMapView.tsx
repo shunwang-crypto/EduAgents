@@ -10,15 +10,21 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { Crosshair } from "lucide-react";
-import type { LearningMapNode, LearningMapResponse } from "../../../api/types";
+import type { LearningMapNode, LearningMapResponse, PlanStep } from "../../../api/types";
 import KnowledgeNode, { type KCNodeData } from "./KnowledgeNode";
-import { layoutDagElk, type PositionedNode } from "./layout";
+import {
+  layoutDagElk,
+  layoutDagFallback,
+  selectLayoutGraph,
+  type PositionedNode,
+} from "./layout";
 
 const nodeTypes = { kc: KnowledgeNode };
 
 interface Props {
   data: LearningMapResponse | null;
   selectedKcId: string | null;
+  planStepStatusByKc?: ReadonlyMap<string, PlanStep["status"]>;
   onSelect: (kc: LearningMapNode) => void;
 }
 
@@ -37,17 +43,18 @@ function topologySignature(data: LearningMapResponse | null): string {
 }
 
 const LEGEND: { icon: string; label: string }[] = [
-  { icon: "✓", label: "已掌握" },
+  { icon: "✓", label: "已完成" },
+  { icon: "●", label: "已掌握" },
   { icon: "◐", label: "学习中" },
   { icon: "△", label: "薄弱" },
-  { icon: "?", label: "未评估" },
+  { icon: "?", label: "尚待评估" },
   { icon: "★", label: "当前推荐" },
   { icon: "🔒", label: "前置未满足" },
 ];
 
 type MapMode = "active" | "full";
 
-function Flow({ data, selectedKcId, onSelect }: Props) {
+function Flow({ data, selectedKcId, planStepStatusByKc, onSelect }: Props) {
   const { fitView } = useReactFlow();
   const prevViewSignature = useRef<string>("");
   const [positions, setPositions] = useState<PositionedNode[]>([]);
@@ -56,29 +63,8 @@ function Flow({ data, selectedKcId, onSelect }: Props) {
 
   const topology = data ? topologySignature(data) : "";
 
-  // §20：ELK 布局 async 安全。只在 topology 变化时重新布局；用 request seq 丢弃旧结果。
-  useEffect(() => {
-    if (!data) return;
-    const seq = ++layoutSeq.current;
-    let cancelled = false;
-    layoutDagElk(data.nodes, data.edges)
-      .then((pos) => {
-        if (cancelled || seq !== layoutSeq.current) return;
-        setPositions(pos);
-      })
-      .catch(() => {
-        if (cancelled || seq !== layoutSeq.current) return;
-        // ELK 失败兜底：按层级简单排布
-        setPositions(
-          data.nodes.map((n, i) => ({ id: n.id, x: (i % 3) * 240, y: Math.floor(i / 3) * 140 }))
-        );
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [topology]); // 仅 topology；mastery/confidence 变化不重新 layout
-
-  // §24/§19：主学习线（primary_route）+ 当前学习子图（active_subgraph）。
+  // Active mode lays out only the goal prerequisite closure; full mode lays
+  // out the complete graph. Both use only edges supplied by the backend.
   const primaryRoute = data?.primary_route?.length ? data.primary_route : (data?.active_path ?? []);
   const activeNodeList = data?.active_subgraph_nodes?.length
     ? data.active_subgraph_nodes
@@ -87,6 +73,32 @@ function Flow({ data, selectedKcId, onSelect }: Props) {
     : (data?.nodes.map((node) => node.id) ?? []);
   const subNodeIds = useMemo(() => new Set(activeNodeList), [activeNodeList]);
   const isActiveMode = mode === "active";
+  const layoutGraph = useMemo(
+    () => (data ? selectLayoutGraph(data, mode) : { nodes: [], edges: [] }),
+    // Status/mastery updates do not alter the topology captured by this key.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [topology, mode],
+  );
+
+  // §20：ELK 布局 async 安全。只在 topology 变化时重新布局；用 request seq 丢弃旧结果。
+  useEffect(() => {
+    if (!data) return;
+    const seq = ++layoutSeq.current;
+    let cancelled = false;
+    setPositions([]);
+    layoutDagElk(layoutGraph.nodes, layoutGraph.edges)
+      .then((pos) => {
+        if (cancelled || seq !== layoutSeq.current) return;
+        setPositions(pos);
+      })
+      .catch(() => {
+        if (cancelled || seq !== layoutSeq.current) return;
+        setPositions(layoutDagFallback(layoutGraph.nodes, layoutGraph.edges));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [topology, mode, layoutGraph]);
 
   // §38/§84：只高亮真实相邻 route pair（禁止 A→C shortcut 被误高亮）。
   const routePairs = useMemo(() => {
@@ -109,7 +121,7 @@ function Flow({ data, selectedKcId, onSelect }: Props) {
         id: n.id,
         type: "kc",
         position: { x: p.x, y: p.y },
-        data: { node: n },
+        data: { node: n, planStatus: planStepStatusByKc?.get(n.id) },
         selected: selectedKcId === n.id,
         // §37：当前学习路线模式只显示 active_subgraph（含未来 locked 节点与支撑前置）；
         // 完整知识图模式显示全部。
@@ -124,15 +136,23 @@ function Flow({ data, selectedKcId, onSelect }: Props) {
         },
       } as Node<KCNodeData>;
     });
-  }, [data, posMap, mode, subNodeIds, primaryRoute, isActiveMode, selectedKcId]);
+  }, [
+    data,
+    posMap,
+    mode,
+    subNodeIds,
+    primaryRoute,
+    isActiveMode,
+    selectedKcId,
+    planStepStatusByKc,
+  ]);
 
   const edges: Edge[] = useMemo(() => {
     if (!data) return [];
-    const base = isActiveMode
-      ? (data.active_subgraph_edges && data.active_subgraph_edges.length
-          ? data.active_subgraph_edges
-          : data.edges.filter((e) => subNodeIds.has(e.source) && subNodeIds.has(e.target)))
-      : data.edges;
+    // Reuse the exact graph selected for layout. This prevents a malformed or
+    // stale active_subgraph edge from rendering against a hidden node, and
+    // guarantees that every displayed edge is supplied by the backend.
+    const base = isActiveMode ? layoutGraph.edges : data.edges;
     return base.map((e) => {
       const onRoute = routePairs.has(`${e.source}->${e.target}`);
       const inSub = subNodeIds.has(e.source) && subNodeIds.has(e.target);
@@ -146,17 +166,17 @@ function Flow({ data, selectedKcId, onSelect }: Props) {
         // §22/§84：仅真实相邻 route pair 高亮；其余中性
         animated: onActive,
         style: onActive
-          ? { stroke: "#6366f1", strokeWidth: 2.6 }
+          ? { stroke: "#176b55", strokeWidth: 2.6 }
           : isActiveMode && inSub
           ? { stroke: "#94a3b8", strokeWidth: 1.5 }
           : { stroke: "#94a3b8", strokeWidth: 1.2, strokeDasharray: "4 3", opacity: 0.5 },
         markerEnd: {
           type: "arrowclosed",
-          color: onActive ? "#6366f1" : "#94a3b8",
+          color: onActive ? "#176b55" : "#94a3b8",
         },
       };
     });
-  }, [data, routePairs, subNodeIds, isActiveMode]);
+  }, [data, routePairs, subNodeIds, isActiveMode, layoutGraph]);
 
   // 当前应聚焦的知识点：用户选中 > 系统推荐 > 主线起点
   const focusId = selectedKcId ?? data?.current_recommended_kc ?? primaryRoute[0] ?? null;
@@ -173,7 +193,14 @@ function Flow({ data, selectedKcId, onSelect }: Props) {
     if (!focusId) return activeNodeList.slice(0, 5);
     const routeIndex = primaryRoute.indexOf(focusId);
     if (routeIndex >= 0) {
-      return primaryRoute.slice(Math.max(0, routeIndex - 2), routeIndex + 4);
+      const window = primaryRoute.slice(Math.max(0, routeIndex - 2), routeIndex + 4);
+      // A primary route is intentionally only one valid path. Include all
+      // direct prerequisites of the focused node so converging DAG branches
+      // remain readable in the default viewport as well.
+      const directPrereqs = layoutGraph.edges
+        .filter((edge) => edge.target === focusId)
+        .map((edge) => edge.source);
+      return [...new Set([...window, ...directPrereqs])];
     }
     // 不在主线上（例如用户点了旁支节点）：聚焦它与直接相邻的前置 / 后继
     const node = data.nodes.find((n) => n.id === focusId);
@@ -230,7 +257,7 @@ function Flow({ data, selectedKcId, onSelect }: Props) {
           className={`learning-map-mode-btn ${mode === "active" ? "active" : ""}`}
           onClick={() => setMode("active")}
         >
-          当前学习路径
+          当前学习路线
         </button>
         <button
           type="button"

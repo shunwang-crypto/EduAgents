@@ -1,23 +1,23 @@
-"""ExplanationGenerator：生成 Adaptive Rich Explanation（Rich Learning Document）。
+"""Generate an adaptive explanation for one Knowledge Component.
 
-LLM 输出可渲染的 blocks，但 block 数量、正文长度和 section 选择都由
-知识点复杂度、学习目标、学习者背景、内容类别和资料来源决定：简单知识点
-可以只有几个短 section，复杂知识点写几千字、十几个 section 也是合法的。
-schema 描述渲染方式，不限制正文长度，也不规定固定模板。
-LLM 不可用时走 deterministic 降级（保证离线可用）。
+The learning map owns sequencing and prerequisite reasoning. This module only
+decides how to teach the selected KC. Block types are capabilities offered to
+the model, never a fixed lesson template.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import re
 import uuid
-from typing import List, Optional
+import json
+from dataclasses import dataclass
+from typing import List, Optional, Sequence
 
 from edu_agent.application.explanation.context_builder import ExplanationContext
 from edu_agent.application.explanation.models import (
-    CODE_BLOCK_CANDIDATES,
-    THEORY_BLOCK_CANDIDATES,
+    EXPLANATION_BLOCK_CANDIDATES,
     BlockType,
     ExplanationBlock,
     StepExplanation,
@@ -25,40 +25,139 @@ from edu_agent.application.explanation.models import (
 
 logger = logging.getLogger("edu_agent.application.explanation.generator")
 
+
+@dataclass(frozen=True)
+class _LessonSection:
+    """One model-designed chapter in a long-form explanation."""
+
+    title: str
+    purpose: str
+    focus: str
+    suggested_types: tuple[str, ...]
+    target_chars: int
+
+
+_PLANNING_MARKERS = (
+    "为什么现在学",
+    "知识网络中的位置",
+    "学习路线",
+    "当前路线",
+    "前置知识",
+    "它支撑什么",
+    "后续知识",
+    "与相邻知识点的关系",
+)
+
 _SYSTEM = (
-    "你是 EduAgents 的 Adaptive Rich Explanation 教学作者。\n"
-    "请为一个知识点写一篇可直接阅读的完整学习文档（Rich Learning Document），"
-    "读者读完这一篇就能真正学会这个知识点，不需要再去别处补课。\n"
-    "篇幅：没有字数上下限，也没有固定段数。简单知识点可以短；复杂知识点"
-    "（如 Self-Attention、RAG、CNN、反向传播）写几千字完全正常。"
-    "严禁把每个 section 写成一两句话的提纲式摘要——那不是讲解，是目录。"
-    "每个 section 都要写到能自圆其说：给出机制、原因、条件、边界，并在需要时举例子、"
-    "列步骤、画结构、写公式或贴代码。\n"
-    "结构：必须结构化，但不要套固定模板。根据知识点复杂度、学习目标、学习者背景、"
-    "内容类别和资料来源，自主选择、排序、增删 section。先建立 mental model，"
-    "再按需要展开原理、公式、流程/架构图、案例、代码与逐行解释、对比表、常见误区、"
-    "实际应用和总结。不同知识点应该长出不同的结构。\n"
-    "编程知识优先加入可运行代码（code_walkthrough.data.code）与逐行注解；"
-    "理论知识优先加入图示（diagram）、公式（formula）、对比（contrast/table）和 worked_example。\n"
-    "图示：优先用结构化 diagram —— data.nodes 为 [{id,label}]，data.edges 为 "
-    "[{source,target,label}]，前端会自动分层渲染成流程图/结构图。"
-    "只有确实存在真实图片资料时才使用 image block；不要为了装饰给每个知识点硬造图片。\n"
-    "content 是不受限的 Markdown，可用标题、列表、表格、fenced code 和 LaTeX。\n"
-    "不要生成练习题、测试题、测验、判题或要求用户作答。\n"
-    "只输出 JSON：{title, objective, blocks:[{type,title,content,data,source_refs}]}。"
-    "type 可用：orientation,big_picture,concept,worked_example,code_walkthrough,contrast,"
-    "misconception,application,recap,handoff,diagram,image,table,formula。"
+    "你是 EduAgents 的知识讲解作者。你的唯一任务是把当前 Knowledge Component 教清楚。\n"
+    "不要解释系统为什么推荐它，不介绍学习路径，不重复 prerequisite graph，也不要写“前置/后继/"
+    "支撑关系”这类规划说明。正文从当前知识本身开始。\n"
+    "先判断知识点的性质、学习目标、学习者需要理解到的深度，再自主设计最合适的教学结构。"
+    "下面的 block type 只是可选能力池，不是模板，也不是必选项。不要为了富媒体强制生成代码、"
+    "图片、公式、表格或图示。\n"
+    "需要深度解释时，完整讲清概念、机制、条件、边界和例子；复杂知识点可以有几千字，没有固定"
+    "字数和固定 section 数。worked_example 必须是真正完整的例子，而不是“你可以尝试……”的学习建议。"
+    "diagram 必须表达当前知识内部的结构、过程或关系，而不是学习路线图。code 只在代码本身是"
+    "理解知识的重要媒介时使用；formula 只在数学关系确实重要时使用；image 只在真实图片显著"
+    "帮助理解时使用。所有 LaTeX 命令必须放在 $...$ 或 $$...$$ 数学分隔符内，不能把裸反斜杠"
+    "命令直接写进普通段落。\n"
+    "不要生成练习题、测试题、测验、判题或要求用户作答。只输出当前请求明确指定的 JSON，"
+    "不要添加 JSON 之外的说明。"
 )
 
 
-def _candidate_sections(kc_category: str, kc_id: str) -> List[str]:
-    """按内容类别给出候选 section 池（候选，不是固定模板 / 固定顺序）。"""
-    cat = (kc_category or "").lower()
-    coding = any(
-        w in cat or w in kc_id.lower()
-        for w in ("code", "program", "开发", "api", "cli", "编程", "app", "工程")
+def _joined_context(ctx: ExplanationContext) -> str:
+    return " ".join(
+        (
+            ctx.course_title,
+            ctx.goal,
+            ctx.kc_title,
+            ctx.kc_description,
+            ctx.step_objective,
+            ctx.kc_category,
+            ctx.preferred_style,
+            " ".join(ctx.background_facts),
+            " ".join(ctx.known_topics),
+        )
+    ).lower()
+
+
+def _candidate_sections(ctx: ExplanationContext | str, kc_id: str = "") -> List[str]:
+    """Return a context-sensitive optional capability pool.
+
+    The string form is retained for small integrations that used the old
+    private helper; normal generation always passes ``ExplanationContext``.
+    """
+    if isinstance(ctx, str):
+        text = f"{ctx} {kc_id}".lower()
+        category = text
+        objective = ""
+        sources = False
+    else:
+        text = _joined_context(ctx)
+        category = (ctx.kc_category or "").lower()
+        objective = (ctx.step_objective or "").lower()
+        sources = bool(ctx.source_refs)
+
+    def has(*words: str) -> bool:
+        return any(word in text or word in category or word in objective for word in words)
+
+    selected: List[str] = ["concept"]
+    mathematical = has(
+        "数学", "代数", "微积分", "导数", "梯度", "矩阵", "向量", "概率", "统计", "math", "mathematics",
+        "公式", "证明", "推导", "calculus", "derivative", "gradient", "matrix", "probability",
     )
-    return CODE_BLOCK_CANDIDATES if coding else THEORY_BLOCK_CANDIDATES
+    programming_domain = has(
+        "python", "编程", "代码", "程序", "code", "program", "api", "numpy", "pytorch", "sql",
+        "javascript", "软件开发", "软件工程", "数据结构", "接口", "算法实现", "可运行",
+    )
+    implementation_goal = has("实现", "类", "方法", "运行", "调试")
+    computer_context = has(
+        "trie", "树", "字典", "递归", "算法", "模块", "框架", "张量", "数据库", "网络请求",
+    )
+    programming = programming_domain or (implementation_goal and computer_context)
+    algorithm = has(
+        "算法", "复杂度", "排序", "搜索", "图算法", "动态规划", "algorithm", "complexity",
+        "recursion", "递归",
+    )
+    ai_system = has(
+        "神经网络", "深度学习", "transformer", "attention", "cnn", "rnn", "rag", "模型",
+        "架构", "系统", "数据流", "neural", "embedding",
+    )
+    humanities = has(
+        "历史", "人物", "事件", "朝代", "战争", "history", "biography", "哲学", "文学",
+    )
+    operational = has(
+        "安装", "配置", "部署", "命令", "工作流", "操作", "排错", "setup", "deploy", "workflow",
+    )
+
+    def add(*names: str) -> None:
+        for name in names:
+            if name in EXPLANATION_BLOCK_CANDIDATES and name not in selected:
+                selected.append(name)
+
+    if mathematical:
+        add("formula", "worked_example")
+        if has("证明", "推导", "几何", "graph", "图形"):
+            add("diagram")
+    if programming:
+        add("worked_example", "code_walkthrough", "misconception")
+    if algorithm:
+        add("big_picture", "diagram", "worked_example", "table", "misconception")
+    if ai_system:
+        add("big_picture", "diagram", "worked_example")
+        if mathematical:
+            add("formula")
+    if humanities:
+        add("big_picture", "contrast", "table", "worked_example")
+    if operational:
+        add("big_picture", "worked_example", "misconception", "table")
+
+    if not (mathematical or programming or algorithm or ai_system or humanities or operational):
+        if len(text.strip()) > 100 or sources:
+            add("worked_example")
+    add("recap")
+    return selected
 
 
 def generate_explanation(
@@ -66,30 +165,323 @@ def generate_explanation(
     explanation_id: Optional[str] = None,
     plan_id: str = "",
 ) -> StepExplanation:
-    """生成结构化讲解。LLM 可用 → schema 输出；否则 deterministic 降级。"""
+    """Generate a structured explanation, with an evidence-honest fallback."""
     exp_id = explanation_id or f"EXP-{uuid.uuid4().hex[:12]}"
-    candidates = _candidate_sections(ctx.kc_category, ctx.kc_id)
+    candidates = _candidate_sections(ctx)
 
-    # 离线 / 无 LLM 环境：跳过网络调用，直接用确定性讲解（避免挂起）。
     if _llm_disabled():
-        return _assemble(ctx, exp_id, plan_id, _deterministic_blocks(ctx, candidates))
+        return _assemble(ctx, exp_id, plan_id, _deterministic_blocks(ctx))
 
-    try:
+    if _depth_requirements(ctx) != (0, 0):
+        blocks = _generate_layered_blocks(ctx, candidates)
+    else:
         blocks = _llm_blocks(ctx, candidates)
-        if blocks:
-            return _assemble(ctx, exp_id, plan_id, blocks)
-    except Exception as exc:  # noqa: BLE001 - 任何 LLM 失败用确定性降级
-        logger.warning("explanation LLM failed, using deterministic fallback: %s", exc)
-
-    blocks = _deterministic_blocks(ctx, candidates)
+    if not blocks:
+        raise RuntimeError("模型未返回可用的知识讲解内容，请稍后重新生成")
+    blocks = _deduplicate_blocks([_normalize_block(block) for block in blocks])
     return _assemble(ctx, exp_id, plan_id, blocks)
 
 
-def _llm_disabled() -> bool:
-    """离线环境（EDU_OFFLINE）跳过 LLM 网络调用，直接用确定性讲解。
+def _explanation_chars(blocks: List[ExplanationBlock]) -> int:
+    return sum(len(b.content or "") + len(str(b.data or {})) for b in blocks)
 
-    在线生产环境仍走 LLM（若配置失败会由 ``_llm_blocks`` 内部异常降级）。
+
+def _semantic_title_key(title: str) -> str:
+    return re.sub(
+        r"[\s\u3000()（）\[\]【】{}「」:：,，.!！？?、\-—_·]+",
+        "",
+        title.lower(),
+    )
+
+
+def _deduplicate_blocks(blocks: List[ExplanationBlock]) -> List[ExplanationBlock]:
+    """Drop repeated section headings while keeping the first full content."""
+    seen: set[tuple[BlockType, str]] = set()
+    result: List[ExplanationBlock] = []
+    for block in blocks:
+        key = (block.type, _semantic_title_key(block.title))
+        if key[1] and key in seen:
+            continue
+        if key[1]:
+            seen.add(key)
+        result.append(block)
+    return result
+
+
+def _depth_requirements(ctx: ExplanationContext) -> tuple[int, int]:
+    text = _joined_context(ctx)
+    complex_markers = (
+        "数学", "微积分", "梯度", "算法", "复杂度", "神经网络", "深度学习",
+        "transformer", "attention", "pytorch", "系统", "架构",
+    )
+    if any(marker in text for marker in complex_markers):
+        # Chinese long-form lessons need several model calls: a single large
+        # JSON response is easily truncated. This is a content budget, not a
+        # reading-time conversion or a fixed template requirement.
+        return 18_000, 26_000
+    return 0, 0
+
+
+def _generate_layered_blocks(
+    ctx: ExplanationContext, candidates: Sequence[str]
+) -> List[ExplanationBlock]:
+    """Plan once, then generate each chapter once with shared context.
+
+    The model first chooses a KC-specific teaching structure. Chapter calls
+    receive that complete blueprint and compact continuity summaries, so they
+    extend the same document without resending or rewriting the full lesson.
     """
+    minimum_chars, target_chars = _depth_requirements(ctx)
+    sections = _plan_lesson(ctx, candidates, minimum_chars, target_chars)
+    if not sections:
+        raise RuntimeError("模型未返回可用的讲解结构，请稍后重新生成")
+
+    blueprint = "\n".join(
+        f"{index}. {section.title}：{section.purpose}；重点：{section.focus}；"
+        f"建议能力：{'、'.join(section.suggested_types) or '由内容决定'}；"
+        f"目标约 {section.target_chars} 字符"
+        for index, section in enumerate(sections, start=1)
+    )
+    all_blocks: List[ExplanationBlock] = []
+    continuity: List[str] = []
+    for section_index, section in enumerate(sections, start=1):
+        previous = "\n".join(
+            f"- {summary}" for summary in continuity[-8:]
+        )
+        generated, summary = _llm_section(
+            ctx,
+            candidates,
+            section=section,
+            section_index=section_index,
+            section_count=len(sections),
+            blueprint=blueprint,
+            previous_summaries=previous or "（这是第一章）",
+        )
+        if not generated:
+            raise RuntimeError(f"模型未生成讲解章节：{section.title}")
+        for block in generated:
+            if not any(
+                block.title.strip() == existing.title.strip()
+                and block.type == existing.type
+                for existing in all_blocks
+            ):
+                all_blocks.append(block)
+        continuity.append(summary or _summarize_generated_section(section, generated))
+
+    if _explanation_chars(all_blocks) < minimum_chars:
+        logger.warning(
+            "long-form explanation below requested depth: got=%s minimum=%s kc=%s",
+            _explanation_chars(all_blocks),
+            minimum_chars,
+            ctx.kc_id,
+        )
+    return all_blocks
+
+
+def _plan_lesson(
+    ctx: ExplanationContext,
+    candidates: Sequence[str],
+    minimum_chars: int,
+    target_chars: int,
+) -> List[_LessonSection]:
+    """Ask the model for a knowledge-specific blueprint, not a stock outline."""
+    prompt = (
+        f"{_SYSTEM}\n\n"
+        f"当前知识上下文：\n{ctx.to_text()}\n\n"
+        f"可选能力池：{'、'.join(candidates)}\n"
+        "先只设计完整讲解的章节蓝图，不写正文。章节由当前知识的性质决定，不能套固定的"
+        "编程/理论模板。各章必须互不重复，并共同覆盖：它是什么、为什么这样工作、至少一个"
+        "完整具体例子，以及需要时的条件、边界和误区。不要加入学习路线、推荐原因、练习题。\n"
+        f"整篇正文最低约 {minimum_chars} 字符，目标约 {target_chars} 字符。请把预算合理分配"
+        "到适合这个知识点的章节中（通常 3 至 10 章）；不要为了凑章节拆碎内容。复杂机制和"
+        "完整例子的预算应明显高于 recap。\n"
+        "只输出 JSON："
+        '{"sections":[{"title":"...","purpose":"...","focus":"...",'
+        '"suggested_types":["concept"],"target_chars":4000}]}'
+    )
+    parsed = _invoke_json(prompt, temperature=0.2)
+    sections: List[_LessonSection] = []
+    for item in parsed.get("sections") or []:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or "").strip()
+        purpose = str(item.get("purpose") or "").strip()
+        focus = str(item.get("focus") or "").strip()
+        if not title or not purpose or any(marker in title for marker in _PLANNING_MARKERS):
+            continue
+        types = tuple(
+            name for name in item.get("suggested_types") or []
+            if name in candidates
+        )
+        try:
+            budget = int(item.get("target_chars") or 0)
+        except (TypeError, ValueError):
+            budget = 0
+        sections.append(
+            _LessonSection(
+                title=title,
+                purpose=purpose,
+                focus=focus,
+                suggested_types=types,
+                target_chars=max(2200, min(budget or 3500, 9000)),
+            )
+        )
+    if not 3 <= len(sections) <= 10:
+        return []
+
+    assigned = sum(section.target_chars for section in sections)
+    if assigned < target_chars:
+        extra_each = (target_chars - assigned + len(sections) - 1) // len(sections)
+        sections = [
+            _LessonSection(
+                title=section.title,
+                purpose=section.purpose,
+                focus=section.focus,
+                suggested_types=section.suggested_types,
+                target_chars=min(9000, section.target_chars + extra_each),
+            )
+            for section in sections
+        ]
+    return sections
+
+
+def _llm_section(
+    ctx: ExplanationContext,
+    candidates: Sequence[str],
+    *,
+    section: _LessonSection,
+    section_index: int,
+    section_count: int,
+    blueprint: str,
+    previous_summaries: str,
+) -> tuple[List[ExplanationBlock], str]:
+    suggested = "、".join(section.suggested_types) or "由内容决定"
+    prompt = (
+        f"{_SYSTEM}\n\n"
+        f"当前知识上下文（每章共享的事实边界）：\n{ctx.to_text()}\n\n"
+        f"整篇讲解蓝图：\n{blueprint}\n\n"
+        f"已完成章节的连续性摘要：\n{previous_summaries}\n\n"
+        f"现在只生成第 {section_index}/{section_count} 章《{section.title}》。\n"
+        f"本章目的：{section.purpose}\n本章重点：{section.focus}\n"
+        f"建议能力：{suggested}\n本章正文目标约 {section.target_chars} 字符。\n"
+        "必须写成可直接阅读的深入教学正文，充分展开因果、步骤和具体细节，不要写成提纲。"
+        "不要复述其他章节；需要承接时直接使用连续性摘要中的结论。若本章负责例子，必须从"
+        "问题或输入完整走到结果，并展示关键中间过程。block type 仍按实际内容选择。\n"
+        "只输出 JSON："
+        '{"blocks":[{"type":"concept","title":"...","content":"...",'
+        '"data":{},"source_refs":[]}],"continuity_summary":"用 2 至 5 句记录本章已确立的关键结论，供下一章承接"}'
+    )
+    parsed = _invoke_json(prompt, temperature=0.4)
+    return _blocks_from_payload(parsed), str(parsed.get("continuity_summary") or "").strip()
+
+
+def _summarize_generated_section(
+    section: _LessonSection, blocks: Sequence[ExplanationBlock]
+) -> str:
+    titles = "、".join(block.title for block in blocks)
+    return f"《{section.title}》已讲清：{section.focus}。包含：{titles}。"
+
+
+def _invoke_json(prompt: str, *, temperature: float) -> dict:
+    """Invoke one bounded generation step and normalize Gemini JSON output."""
+    from edu_agent.core.agent_runner import _strip_model_thought
+    from edu_agent.core.llm import get_kb_llm
+    from langchain_core.utils.json import parse_json_markdown
+
+    raw = get_kb_llm(temperature=temperature, max_tokens=8192).invoke(prompt)
+    if isinstance(raw, dict):
+        return raw
+    text = raw if isinstance(raw, str) else str(getattr(raw, "content", raw))
+    parsed = _parse(_strip_model_thought(text), parse_json_markdown)
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _blocks_from_payload(parsed: dict) -> List[ExplanationBlock]:
+    blocks: List[ExplanationBlock] = []
+    for item in parsed.get("blocks") or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            et = BlockType(item.get("type"))
+        except (TypeError, ValueError):
+            continue
+        title = str(item.get("title", "") or "").strip()
+        content = str(item.get("content", "") or "")
+        if et in {BlockType.ORIENTATION, BlockType.HANDOFF}:
+            continue
+        if not title or any(marker in title for marker in _PLANNING_MARKERS):
+            continue
+        if any(marker in content for marker in _PLANNING_MARKERS):
+            continue
+        blocks.append(
+            ExplanationBlock(
+                type=et,
+                title=title,
+                content=content,
+                data=item.get("data") or {},
+                source_refs=list(item.get("source_refs") or []),
+            )
+        )
+    return blocks
+
+
+def _normalize_block(block: ExplanationBlock) -> ExplanationBlock:
+    block.content = _normalize_latex_markdown(block.content)
+    if block.type == BlockType.CODE_WALKTHROUGH:
+        _extract_code_walkthrough(block)
+    if block.type == BlockType.FORMULA:
+        formula = block.data.get("formula")
+        if not block.data.get("latex") and isinstance(formula, str):
+            block.data["latex"] = formula
+    if isinstance(block.data.get("explanation"), str):
+        block.data["explanation"] = _normalize_latex_markdown(block.data["explanation"])
+    return block
+
+
+def _extract_code_walkthrough(block: ExplanationBlock) -> None:
+    """Promote fenced code into the structured field used by the frontend.
+
+    Gemini often follows the teaching request and emits a real
+    ``code_walkthrough`` block, but puts the code in Markdown instead of
+    ``data.code``. That is still useful content; normalize it into the
+    dedicated renderer without asking the model to regenerate the lesson.
+    """
+    if isinstance(block.data.get("code"), str) and block.data["code"].strip():
+        return
+    match = re.search(r"```(?:[A-Za-z0-9_+#.-]+)?[ \t]*\n?(.*?)```", block.content, re.DOTALL)
+    if not match:
+        return
+    code = match.group(1)
+    # Provider JSON sometimes preserves Markdown line breaks as visible
+    # ``\\n``. In a code field these are formatting escapes, not Python text.
+    code = re.sub(r"\\n", "\n", code).strip("\n")
+    if code:
+        block.data["code"] = code
+        block.content = (block.content[:match.start()] + block.content[match.end():]).strip()
+
+
+def _normalize_latex_markdown(text: str) -> str:
+    """Put common bare LaTeX runs into remark-math delimiters."""
+    if not text or "\\" not in text:
+        return text
+    # Some OpenAI-compatible models double-escape Markdown newlines as the
+    # two visible characters ``\\n``. Restore those paragraph breaks while
+    # preserving LaTeX commands such as ``\\nabla``.
+    text = re.sub(r"\\n(?![A-Za-z])", "\n", text)
+    commands = r"nabla|frac|partial|begin|end|theta|eta|cdot|sum|infty|rightarrow|left|right"
+    pattern = re.compile(
+        rf"(\\begin\{{[^}}]+\}}.*?\\end\{{[^}}]+\}}|\\(?:{commands})[^。！？\n]*)",
+        re.DOTALL,
+    )
+    # Preserve already delimited inline/display math and only repair prose
+    # segments outside them.
+    parts = re.split(r"(\$\$.*?\$\$|\$[^$\n]*\$)", text, flags=re.DOTALL)
+    for index in range(0, len(parts), 2):
+        parts[index] = pattern.sub(lambda m: f"$${m.group(1).strip()}$$", parts[index])
+    return "".join(parts)
+
+
+def _llm_disabled() -> bool:
     return os.environ.get("EDU_OFFLINE") in ("1", "true", "True")
 
 
@@ -100,10 +492,10 @@ def _assemble(
         explanation_id=exp_id,
         course_id=ctx.course_id,
         plan_id=plan_id,
-        step_id="",  # 由 service 填
+        step_id="",  # service fills the concrete PlanStep id
         kc_id=ctx.kc_id,
         schema_version=2,
-        title=ctx.step_title or ctx.kc_title,
+        title=_safe_title(ctx),
         objective=ctx.step_objective,
         estimated_minutes=ctx.step_minutes,
         blocks=blocks,
@@ -111,253 +503,177 @@ def _assemble(
     )
 
 
-def _llm_blocks(ctx: ExplanationContext, candidates: List[str]) -> List[ExplanationBlock]:
+def _llm_blocks(
+    ctx: ExplanationContext,
+    candidates: Sequence[str],
+    depth_instruction: str = "",
+) -> List[ExplanationBlock]:
     from edu_agent.core.llm import get_kb_llm
     from langchain_core.prompts import ChatPromptTemplate
-    from langchain_core.output_parsers import JsonOutputParser
     from langchain_core.utils.json import parse_json_markdown
 
-    parser = JsonOutputParser()
     template = (
-        "{system}\n\n{context}\n\n"
-        "以下只是与内容类别相关的候选 section，不是固定模板、也不是必须全部使用："
-        "可以省略、合并、增加（diagram / image / table / formula / contrast），"
-        "并按教学逻辑自行排序：\n{candidates}\n"
-        "再次强调：不要写成每段两三句话的提纲，把该讲清楚的机制、条件和例子写足。\n"
+        "{system}\n\n当前知识上下文（不含 prerequisite graph）：\n{context}\n\n"
+        "可选能力池（按需选择、可以全部不用，也可以合并）：{candidates}\n"
+        "不要创建规划说明 section；再次检查内容是否真正解释了当前知识的机制、边界和具体例子。"
+        "\n{depth_instruction}\n"
         "输出 JSON（不要 Markdown 代码块包裹），形如：\n"
-        "{{ \"title\": \"...\", \"objective\": \"...\", "
-        "\"blocks\": [{{\"type\": \"concept\", \"title\": \"...\", \"content\": \"...\", \"data\": {{}}}}] }}"
+        "{{\"title\":\"...\",\"objective\":\"...\","
+        "\"blocks\":[{{\"type\":\"concept\",\"title\":\"...\","
+        "\"content\":\"...\",\"data\":{{}},\"source_refs\":[]}}]}}"
     )
     prompt = ChatPromptTemplate.from_template(template)
-    try:
-        raw = (prompt | get_kb_llm(temperature=0.4)).invoke(
-            {
-                "system": _SYSTEM,
+    raw = (prompt | get_kb_llm(temperature=0.4)).invoke(
+        {
+            "system": _SYSTEM,
                 "context": ctx.to_text(),
                 "candidates": "、".join(candidates),
-            }
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("explanation LLM invoke failed: %s", exc)
-        return []
+                "depth_instruction": depth_instruction,
+        }
+    )
 
     text = raw if isinstance(raw, str) else str(getattr(raw, "content", raw))
     if isinstance(raw, dict):
         text = str(raw)
-    parsed = parse_json_markdown(text) if not isinstance(text, str) or not text.lstrip().startswith("{") else _parse(text)
+    # Gemini's OpenAI-compatible adapter may put reasoning before the JSON.
+    # Remove it before parse_json_markdown; otherwise a valid lesson is
+    # discarded as if the model had returned malformed output.
+    from edu_agent.core.agent_runner import _strip_model_thought
+
+    text = _strip_model_thought(text)
+    parsed = _parse(text, parse_json_markdown)
     if not isinstance(parsed, dict):
         return []
 
-    blocks: List[ExplanationBlock] = []
-    for item in parsed.get("blocks") or []:
-        if not isinstance(item, dict):
-            continue
-        btype = item.get("type")
-        try:
-            et = BlockType(btype)
-        except ValueError:
-            continue
-        blocks.append(
-            ExplanationBlock(
-                type=et,
-                title=str(item.get("title", "") or ""),
-                content=str(item.get("content", "") or ""),
-                data=item.get("data") or {},
-                source_refs=list(item.get("source_refs") or []),
-            )
-        )
-    return blocks
+    return _blocks_from_payload(parsed)
 
 
-def _parse(text: str):
-    import json
+def _parse(text: str, parse_json_markdown=None):
     try:
         return json.loads(text)
     except Exception:  # noqa: BLE001
-        from langchain_core.utils.json import parse_json_markdown
-        return parse_json_markdown(text)
+        repaired = _escape_model_json_backslashes(text)
+        try:
+            return json.loads(repaired)
+        except Exception:  # noqa: BLE001
+            if parse_json_markdown is not None:
+                return parse_json_markdown(repaired)
+        from langchain_core.utils.json import parse_json_markdown as parser
+        return parser(repaired)
 
 
-def _deterministic_blocks(
-    ctx: ExplanationContext, candidates: List[str]
-) -> List[ExplanationBlock]:
-    """离线降级：从 context 确定性构造结构化讲解（无 LLM）。
+def _escape_model_json_backslashes(text: str) -> str:
+    """Escape non-JSON backslashes inside strings without corrupting LaTeX.
 
-    只使用 context 里真实存在的信息（知识点描述、目标、前置/后继、资料来源）与
-    通用学习方法，绝不编造这个知识点的具体事实、数字或代码。
-    §40：可见文本一律使用人类可读 title，绝不出现内部 id。
+    Models commonly put ``\\nabla``, ``\\(``, or ``\\%`` directly in JSON.
+    Some LaTeX commands begin with a character that is technically a JSON
+    escape, so the scanner recognizes complete alphabetic commands rather
+    than silently turning them into control characters.
     """
-    blocks: List[ExplanationBlock] = []
-    coding = "code_walkthrough" in candidates
-    pres = ctx.prerequisite_titles
-    deps = ctx.dependent_titles
-    prereq_str = "、".join(pres) if pres else "无直接前置"
-    depend_str = "、".join(deps) if deps else "后续知识点"
-    goal_str = ctx.goal or "当前学习目标"
-    objective = ctx.step_objective or f"能用自己的话解释「{ctx.kc_title}」并把它用起来"
-    difficulty_note = {
-        "easy": "这个知识点难度不高，重点是把概念用准确的语言说清楚，不要停留在“看懂了”。",
-        "hard": "这个知识点难度较高，建议分两次阅读：第一次抓主干，第二次再补细节和边界条件。",
-    }.get((ctx.kc_difficulty or "").lower(), "这个知识点难度中等，先抓主干，再逐步补上细节和边界条件。")
+    result: List[str] = []
+    in_string = False
+    index = 0
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if char == '"':
+            in_string = not in_string
+            result.append(char)
+            index += 1
+            continue
+        if not in_string or char != "\\":
+            result.append(char)
+            index += 1
+            continue
 
-    blocks.append(
-        ExplanationBlock(
-            type=BlockType.ORIENTATION,
-            title="为什么现在学它？",
-            content=(
-                f"「{ctx.kc_title}」是「{goal_str}」路径上的关键知识点。\n\n"
-                f"- **本节目标**：{objective}\n"
-                f"- **需要的前置**：{prereq_str}\n"
-                f"- **它支撑什么**：{depend_str}\n\n"
-                f"{difficulty_note}\n\n"
-                "读这一节时带着三个问题：它解决什么问题、它靠什么机制解决、"
-                "什么情况下它不适用。这三个问题回答清楚了，后面的知识点才真正有意义。"
-            ),
+        if index + 1 >= length:
+            result.append("\\\\")
+            index += 1
+            continue
+
+        following = text[index + 1]
+        if following == "u":
+            codepoint = text[index + 2:index + 6]
+            if len(codepoint) == 4 and all(
+                char in "0123456789abcdefABCDEF" for char in codepoint
+            ):
+                result.extend(("\\", "u", codepoint))
+                index += 6
+                continue
+        if following in {'"', "\\", "/"}:
+            result.extend(("\\", following))
+            index += 2
+            continue
+        if following in "bfnrt" and (
+            index + 2 >= length or not text[index + 2].isalpha()
+        ):
+            result.extend(("\\", following))
+            index += 2
+            continue
+
+        # Preserve the original textual slash by encoding it as ``\\``.
+        result.extend(("\\", "\\", following))
+        index += 2
+    return "".join(result)
+
+
+def _is_placeholder_description(ctx: ExplanationContext, description: str) -> bool:
+    normalized = " ".join(description.lower().split())
+    title = " ".join(ctx.kc_title.lower().split())
+    return normalized in {
+        f"{title} 描述",
+        f"{title} 简介",
+        f"{title} description",
+        "根据学习主题补充必要基础知识",
+    }
+
+
+def _safe_title(ctx: ExplanationContext) -> str:
+    for candidate in (ctx.step_title, ctx.kc_title):
+        title = (candidate or "").strip()
+        if not title:
+            continue
+        if "根据学习主题补充必要基础知识" in title:
+            continue
+        if any(marker in title for marker in _PLANNING_MARKERS):
+            continue
+        return title
+    return "学习讲解"
+
+
+def _deterministic_blocks(ctx: ExplanationContext) -> List[ExplanationBlock]:
+    """Evidence-honest offline fallback.
+
+    No route, code, formula, example, or domain facts are invented. A real
+    description is shown as a concise concept block; absent evidence produces
+    an explicit degraded state for model retry.
+    """
+    description = (ctx.kc_description or "").strip()
+    objective = (ctx.step_objective or "").strip()
+    if not description or _is_placeholder_description(ctx, description):
+        content = (
+            "当前环境无法生成这项知识的完整讲解，因为没有可用的知识描述或课程资料。"
+            "请在模型和课程资料可用时重新打开本节。"
         )
-    )
-
-    # 结构化图示优先（不强制图片）：把它在知识网络中的位置画成流程图
-    diagram_nodes = [{"id": t, "label": t} for t in [*pres, ctx.kc_title, *deps]]
-    diagram_edges = [{"source": t, "target": ctx.kc_title, "label": "前置"} for t in pres]
-    diagram_edges += [{"source": ctx.kc_title, "target": t, "label": "支撑"} for t in deps]
-    if diagram_edges:
-        blocks.append(
+        if objective:
+            content += f"\n\n本节目标：{objective}"
+        return [
             ExplanationBlock(
-                type=BlockType.DIAGRAM,
-                title="它在知识网络中的位置",
-                content="左侧是必须先具备的基础，右侧是学完之后能继续推进的方向。",
-                data={"nodes": diagram_nodes, "edges": diagram_edges},
+                type=BlockType.CONCEPT,
+                title="讲解暂不可用",
+                content=content,
+                source_refs=list(ctx.source_refs[:3]),
             )
-        )
-    else:
-        blocks.append(
-            ExplanationBlock(
-                type=BlockType.BIG_PICTURE,
-                title="先看整体",
-                content=f"「{ctx.kc_title}」在本课程中相对独立，可以直接开始。",
-                data={"items": [ctx.kc_title, *deps]},
-            )
-        )
+        ]
 
-    blocks.append(
+    content = description
+    if objective:
+        content += f"\n\n**本节目标**：{objective}"
+    return [
         ExplanationBlock(
             type=BlockType.CONCEPT,
-            title="核心概念与 mental model",
-            content=(
-                (ctx.kc_description + "\n\n") if ctx.kc_description else ""
-            )
-            + (
-                f"要建立「{ctx.kc_title}」的 mental model，先把它拆成三段来看：\n\n"
-                "1. **输入**：它接收什么？这些输入必须满足哪些前提（格式、范围、假设）？\n"
-                "2. **关键变换**：中间到底发生了什么？把这一步用一句话讲清楚，"
-                "再展开成可以逐步观察的小步骤——这是理解的核心，也是最容易被跳过的地方。\n"
-                "3. **输出**：得到什么结果？结果怎么验证是对的？\n\n"
-                f"然后再补上**边界条件**：它在什么前提下成立、什么情况下会失效。"
-                f"具备 {prereq_str} 这些基础之后，这里的每一步都应该能自己复述出来；"
-                f"能复述，才说明模型建立起来了，而不是记住了一个名字。\n\n"
-                f"最后把它放回上下文：它向前依赖 {prereq_str}，向后连接 {depend_str}。"
-                "理解这些关系，比背诵定义有用得多。"
-            ),
+            title=_safe_title(ctx),
+            content=content,
             source_refs=list(ctx.source_refs[:3]),
         )
-    )
-
-    # 关系表：只用图谱里真实存在的信息，不编造
-    if pres or deps:
-        rows = [[t, "前置", f"缺了它，「{ctx.kc_title}」的前提假设就不成立"] for t in pres]
-        rows += [[t, "后继", f"它建立在「{ctx.kc_title}」之上，学完可以直接推进"] for t in deps]
-        blocks.append(
-            ExplanationBlock(
-                type=BlockType.TABLE,
-                title="与相邻知识点的关系",
-                content="把相邻知识点的角色分清楚，可以避免把不同层次的问题混在一起。",
-                data={"headers": ["知识点", "角色", "为什么相关"], "rows": rows},
-            )
-        )
-
-    example_steps = (
-        [
-            "准备最小可运行环境，只保留和这个知识点直接相关的部分。",
-            "写出最小示例：输入尽量小，能一眼看出输出对不对。",
-            "逐行读一遍自己写的代码，说明每一行为什么必须存在。",
-            "故意改坏一个地方（改参数、去掉一步），观察结果怎么变——这一步最能暴露理解漏洞。",
-            "恢复正确版本，把它整理成以后可以直接复用的片段。",
-        ]
-        if coding
-        else [
-            "用一句话写下它解决的问题，不要用课程原文的措辞。",
-            "从最简单的情形开始，手推一遍完整过程并记录中间结果。",
-            "换一组不同的输入再推一遍，观察哪些结论变了、哪些没变。",
-            "找一个反例：什么情况下这个方法不成立？为什么？",
-            "把整个过程压缩成三到五句话，能讲给别人听就算过关。",
-        ]
-    )
-    blocks.append(
-        ExplanationBlock(
-            type=BlockType.WORKED_EXAMPLE,
-            title="怎么动手把它学会",
-            content=(
-                f"理解「{ctx.kc_title}」不能只靠读。按下面的顺序走一遍，"
-                "每一步都要有可以看见的中间结果："
-            ),
-            data={"steps": example_steps},
-        )
-    )
-
-    misconception_extra = ""
-    if ctx.misconceptions:
-        misconception_extra = "\n\n结合你之前的学习记录，特别留意：" + "；".join(
-            ctx.misconceptions[:3]
-        )
-    blocks.append(
-        ExplanationBlock(
-            type=BlockType.MISCONCEPTION,
-            title="易混淆点",
-            content=(
-                "常见误区通常不是术语记错，而是忽略适用条件。\n\n"
-                f"- **和相邻概念混为一谈**：先分清「{ctx.kc_title}」解决的问题"
-                f"和 {depend_str} 解决的问题分别是什么，两者的边界在哪里。\n"
-                "- **把相关当成因果**：看到两件事一起出现，就认为一个导致另一个。"
-                "用一个反例检验自己的结论。\n"
-                "- **只记结论不记条件**：结论离开前提就不成立，记住结论的同时一定要记住它成立的范围。"
-                + misconception_extra
-            ),
-        )
-    )
-
-    blocks.append(
-        ExplanationBlock(
-            type=BlockType.APPLICATION,
-            title="实际应用",
-            content=(
-                f"在真实项目里，「{ctx.kc_title}」通常作为「{depend_str}」的基础出现，"
-                f"服务于「{goal_str}」这个更大的目标。\n\n"
-                "落地时建议固定记录四件事：输入是什么、用了哪些关键参数、输出是什么、"
-                "以及失败时的表现。把这四项记下来，结果才可复现，出问题时也才定位得到原因。"
-            ),
-        )
-    )
-
-    blocks.append(
-        ExplanationBlock(
-            type=BlockType.RECAP,
-            title="总结",
-            data={
-                "points": [
-                    f"用输入 → 关键变换 → 输出这条主线解释「{ctx.kc_title}」。",
-                    "说清它成立的前提和失效的边界，而不只是记住结论。",
-                    f"把它与前置 {prereq_str}、后续 {depend_str} 连成一条线。",
-                    "动手走一遍完整例子，并用一个反例检验理解。",
-                ]
-            },
-        )
-    )
-
-    blocks.append(
-        ExplanationBlock(
-            type=BlockType.HANDOFF,
-            title="进入相关实践",
-            content="读完这一节，可以进入相关实践，把刚才建立的模型用到一个小而完整的任务上。",
-        )
-    )
-    return blocks
+    ]

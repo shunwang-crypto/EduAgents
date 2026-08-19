@@ -110,10 +110,9 @@ class DecompositionResult(BaseModel):
         仅当生产流程未提供结构化 concepts 时才从旧字段合成，保证 legacy
         test / 调用方仍可得到可构建的 graph。
 
-        Compatibility fallback derives a conservative sparse prerequisite chain
-        from legacy learning_sequence when explicit ConceptSpec relations are
-        unavailable. 每个节点最多只依赖学习顺序中的前一个节点（A→B→C→D），
-        不产生 complete-bipartite dense graph，也不依赖 Stage 分组。
+        Compatibility fallback preserves legacy concepts when explicit
+        ConceptSpec relations are unavailable, but does not infer prerequisite
+        edges from learning_sequence or Stage order.
         """
         if self.concepts:
             # 确保 target_refs 与 is_target 一致性
@@ -166,17 +165,13 @@ class DecompositionResult(BaseModel):
             return ("core", 2, "intermediate")
 
         synthesized: List[ConceptSpec] = []
-        # 每个节点最多依赖前一个序列节点（sparse conservative chain）。
-        prev_temp: Optional[str] = None
         for title in ordered:
             category, stage, difficulty = _meta(title)
-            refs = [prev_temp] if prev_temp is not None else []
             synthesized.append(ConceptSpec(
                 temp_id=_slugify(title), title=title, summary=title, category=category,
                 content_type="mixed", difficulty=difficulty, stage_order=stage,
-                prerequisite_refs=refs, is_target=False,
+                prerequisite_refs=[], is_target=False,
             ))
-            prev_temp = _slugify(title)
         # 3) target fallback：优先 target_refs/is_target；缺省 sequence 末节点。
         self.concepts = synthesized
         target_refs = _dedup(self.target_refs)

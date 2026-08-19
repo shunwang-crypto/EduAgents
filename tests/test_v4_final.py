@@ -121,8 +121,8 @@ def test_stage_does_not_create_edge():
     assert ("C", "B") not in edges
 
 
-def test_legacy_fallback_sparse_chain():
-    """§8：legacy learning_sequence 生成 sparse 依赖链，不产生 dense graph。"""
+def test_legacy_fallback_does_not_infer_prerequisites_from_sequence():
+    """legacy learning_sequence is ordering context, not prerequisite evidence."""
     dec = DecompositionResult(
         prerequisite_concepts=["Python", "NumPy"],
         core_concepts=["PyTorch", "Neural Network"],
@@ -137,14 +137,7 @@ def test_legacy_fallback_sparse_chain():
     assert {"python", "numpy", "pytorch", "neural_network"} <= set(ids)
     assert len(ids) >= 4
     edges = {(p, n.id) for n in km.nodes for p in n.prerequisites}
-    # 稀疏链：Python→NumPy→PyTorch→Neural Network，每个节点最多依赖前一个
-    assert ("python", "numpy") in edges
-    assert ("numpy", "pytorch") in edges
-    assert ("pytorch", "neural_network") in edges
-    # 非 dense：不存在越级边
-    assert ("python", "pytorch") not in edges
-    assert ("python", "neural_network") not in edges
-    assert ("numpy", "neural_network") not in edges
+    assert edges == set()
 
 
 def test_multi_prerequisite():
@@ -211,8 +204,8 @@ def _setup_plan(learner, monkeypatch, topic, nodes, decomposition):
     return uid, cid
 
 
-def test_offline_integration_graph_not_empty():
-    """§9：OFFLINE/deterministic workflow 生成的图必须有边、有 target、路由≥2。"""
+def test_offline_integration_graph_is_evidence_honest():
+    """Offline fallback keeps concepts but does not invent prerequisite edges."""
     from edu_agent.workflows.study_plan.schemas import AnalysisResult
     from edu_agent.workflows.study_plan.workflow import _fallback_decomposition
 
@@ -231,9 +224,9 @@ def test_offline_integration_graph_not_empty():
         exc=None,
     )
     assert len(dec.concepts) > 3
-    # 非 0 edges：每个概念（除首个）依赖前一个序列节点
+    # learning_sequence is ordering context only; it is not dependency evidence.
     edge_count = sum(1 for c in dec.concepts for _ in c.prerequisite_refs)
-    assert edge_count > 0
+    assert edge_count == 0
     # target 至少一个
     assert len(dec.target_refs) > 0
 
@@ -244,8 +237,8 @@ def test_offline_integration_graph_not_empty():
     )
     assert len(km.nodes) > 3
     edge_count2 = sum(1 for n in km.nodes for _ in n.prerequisites)
-    assert edge_count2 > 0
-    # primary_route ≥ 2：走真实 DAG 边
+    assert edge_count2 == 0
+    # With no evidence-backed edges, the route contains only the start node.
     from edu_agent.domain.learning.course import Course
     from edu_agent.domain.learning.knowledge_component import KnowledgeComponent
     from edu_agent.domain.learning.kc_relation import KCRelation
@@ -260,10 +253,7 @@ def test_offline_integration_graph_not_empty():
     targets = dec.target_refs
     policy = HeuristicAdaptivePolicy(course, target_kcs=targets)
     route = policy.primary_route({}, {}, {}, start_kc=km.nodes[0].id)
-    assert len(route) >= 2
-    # primary_route 相邻节点必须有真实 edge（route[i] 是 route[i+1] 的前置）
-    for i in range(len(route) - 1):
-        assert route[i] in course.prerequisites(route[i + 1])
+    assert len(route) == 1
 
 
 def test_current_and_future_route(learner, monkeypatch):

@@ -23,6 +23,11 @@ def test_normalize_markdown_output_strips_code_fence():
     assert normalize_markdown_output(raw) == "# 标题\n\n内容"
 
 
+def test_normalize_markdown_output_strips_provider_thought_wrapper():
+    raw = "<thought>internal reasoning that must not be shown</thought># 标题\n\n正文"
+    assert normalize_markdown_output(raw) == "# 标题\n\n正文"
+
+
 def test_model_to_text_extracts_ai_message_content():
     from langchain_core.messages import AIMessage
 

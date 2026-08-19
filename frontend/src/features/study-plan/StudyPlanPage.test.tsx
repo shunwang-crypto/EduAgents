@@ -397,8 +397,8 @@ describe("StudyPlanPage · Learning Map", () => {
     expect(body.match(/kc_[a-z0-9]+/)).toBeNull();
   });
 
-  // §35/§61：选择 Map 节点出现「开始讲解」CTA，点击进入独立讲解页（不在地图下方展开讲解）
-  it("selecting map node shows 开始讲解 CTA and navigates to learn page", async () => {
+  // 节点本身就是讲解入口：点击后直接进入独立讲解页（不在地图下方展开讲解）
+  it("clicking a map node navigates directly to the learn page", async () => {
     // 用与 plan step 匹配的 kc_id（knowledge-1），保证 findPlanStepForKc 命中（Once 避免污染后续用例）
     (mockApi.getLearningMap as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       course_id: "PY", goal: "g",
@@ -420,9 +420,6 @@ describe("StudyPlanPage · Learning Map", () => {
       expect(screen.getAllByRole("button", { name: "NumPy 数组基础" }).length).toBeGreaterThan(0)
     );
     fireEvent.click(screen.getAllByRole("button", { name: "NumPy 数组基础" })[0]);
-    // 右侧出现讲解 CTA（该 KC 对应 step 未开始 → 开始讲解）
-    await waitFor(() => expect(screen.getByText("开始讲解")).toBeTruthy());
-    fireEvent.click(screen.getByText("开始讲解"));
     // 进入独立讲解页 /courses/PY/learn/S1
     await waitFor(() =>
       expect(screen.getByTestId("learn-route").textContent).toBe("learn:PY:S1")

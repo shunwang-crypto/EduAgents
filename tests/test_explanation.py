@@ -13,6 +13,14 @@ from edu_agent.learner_model.service import LearnerModelService
 from edu_agent.application.course_service import create_course
 from edu_agent.application.study_plan_service import generate_plan
 from edu_agent.application.explanation.models import BlockType, ExplanationBlock, StepExplanation
+from edu_agent.application.explanation.context_builder import ExplanationContext
+from edu_agent.application.explanation.generator import (
+    _candidate_sections,
+    _depth_requirements,
+    _llm_blocks,
+    _normalize_latex_markdown,
+    _normalize_block,
+)
 from edu_agent.application.explanation.validator import ExplanationValidator
 from edu_agent.application.explanation.service import ExplanationService, build_practice_handoff
 
@@ -75,7 +83,9 @@ def test_explanation_generated_and_valid(learner, made_course):
     assert exp["step_id"] == step_id
     assert exp["kc_id"] == kc_id
     assert exp["schema_version"] == 2
-    assert len(exp["blocks"]) >= 3
+    # Offline fallback is intentionally evidence-honest: a placeholder KC
+    # description produces one explicit degraded block rather than generic prose.
+    assert len(exp["blocks"]) >= 1
     valid_types = {t.value for t in BlockType}
     for b in exp["blocks"]:
         assert b["type"] in valid_types
@@ -173,3 +183,167 @@ def test_practice_handoff_interface_only(learner, made_course):
     d = h.model_dump()
     for forbidden in ("question", "options", "correct_answer", "score"):
         assert forbidden not in d
+
+
+def _ctx(**overrides):
+    values = dict(
+        course_id="c", course_title="课程", goal="",
+        kc_id="kc", kc_title="知识点", kc_description="一个概念的真实描述",
+        kc_category="core", kc_difficulty="medium", step_title="知识点",
+        step_objective="理解定义和适用条件", step_minutes=30,
+    )
+    values.update(overrides)
+    return ExplanationContext(**values)
+
+
+def test_candidate_pool_math_does_not_force_code():
+    candidates = _candidate_sections(_ctx(
+        kc_title="导数", kc_description="函数变化率的数学定义", kc_category="mathematics",
+    ))
+    assert "formula" in candidates
+    assert "code_walkthrough" not in candidates
+
+
+def test_candidate_pool_programming_can_offer_code():
+    candidates = _candidate_sections(_ctx(
+        kc_title="Python 函数", kc_description="定义参数和返回值", kc_category="programming",
+    ))
+    assert "code_walkthrough" in candidates
+
+
+def test_simple_concept_does_not_force_formula_or_table():
+    candidates = _candidate_sections(_ctx(
+        kc_title="颜色", kc_description="颜色是视觉感知中的一种属性", kc_category="concept",
+    ))
+    assert "formula" not in candidates
+    assert "table" not in candidates
+
+
+def test_complex_knowledge_requires_long_form_depth():
+    minimum, target = _depth_requirements(_ctx(
+        kc_title="微积分与梯度基础",
+        kc_description="偏导数、链式法则与梯度下降",
+        kc_category="mathematics",
+    ))
+    assert minimum >= 10_000
+    assert target > minimum
+
+
+def test_simple_concept_can_remain_short():
+    assert _depth_requirements(_ctx(
+        kc_title="颜色",
+        kc_description="颜色是视觉感知的一种属性",
+        kc_category="concept",
+    )) == (0, 0)
+
+
+def test_markdown_normalization_restores_paragraphs_without_breaking_nabla():
+    raw = "第一段。\\n第二段包含 $\\nabla f$。"
+    normalized = _normalize_latex_markdown(raw)
+    assert "第一段。\n第二段" in normalized
+    assert "$\\nabla f$" in normalized
+
+
+def test_code_walkthrough_promotes_fenced_code_to_structured_renderer_field():
+    block = ExplanationBlock(
+        type=BlockType.CODE_WALKTHROUGH,
+        title="插入实现",
+        content="说明\n```python\\nclass Trie:\\n    pass\\n```\n逐行解释",
+    )
+    normalized = _normalize_block(block)
+    assert normalized.data["code"] == "class Trie:\n    pass"
+    assert "```" not in normalized.content
+    assert normalized.content == "说明\n\n逐行解释"
+
+
+def test_offline_fallback_has_no_planning_sections_or_generic_learning_advice(learner, made_course):
+    uid, cid, plan_id, step_id, _ = made_course
+    exp = ExplanationService(learner).get_explanation(uid, cid, plan_id, step_id)
+    raw = str(exp)
+    for marker in ("为什么现在学", "知识网络中的位置", "学习路线", "怎么动手把它学会", "与相邻知识点的关系"):
+        assert marker not in raw
+    assert "根据学习主题补充必要基础知识" not in raw
+
+
+def test_llm_diagram_is_about_the_current_knowledge_not_the_learning_route(monkeypatch):
+    import json
+    from langchain_core.runnables import RunnableLambda
+
+    payload = {
+        "title": "梯度下降",
+        "objective": "理解参数如何更新",
+        "blocks": [
+            {
+                "type": "diagram", "title": "参数更新过程", "content": "误差驱动参数更新。",
+                "data": {"nodes": [{"id": "loss", "label": "损失"}, {"id": "update", "label": "更新参数"}],
+                         "edges": [{"source": "loss", "target": "update", "label": "梯度"}]},
+            },
+            {"type": "orientation", "title": "为什么现在学它？", "content": "规划话术", "data": {}},
+        ],
+    }
+    monkeypatch.setattr(
+        "edu_agent.core.llm.get_kb_llm",
+        lambda temperature=0.4: RunnableLambda(lambda _: json.dumps(payload, ensure_ascii=False)),
+    )
+    blocks = _llm_blocks(_ctx(kc_title="梯度下降", kc_category="mathematics"), ["concept", "diagram"])
+    assert [b.type for b in blocks] == [BlockType.DIAGRAM]
+    assert blocks[0].data["edges"][0]["source"] == "loss"
+
+
+def test_llm_blocks_strip_google_thought_wrapper(monkeypatch):
+    import json
+    from langchain_core.runnables import RunnableLambda
+
+    payload = {
+        "title": "导数",
+        "objective": "理解变化率",
+        "blocks": [{
+            "type": "concept",
+            "title": "导数是什么",
+            "content": "导数描述函数在一点附近的瞬时变化率。",
+            "data": {},
+            "source_refs": [],
+        }],
+    }
+    response = "<thought>internal reasoning</thought>" + json.dumps(payload, ensure_ascii=False)
+    monkeypatch.setattr(
+        "edu_agent.core.llm.get_kb_llm",
+        lambda temperature=0.4: RunnableLambda(lambda _: response),
+    )
+    blocks = _llm_blocks(_ctx(kc_title="导数", kc_category="mathematics"), ["concept"])
+    assert len(blocks) == 1
+    assert blocks[0].title == "导数是什么"
+
+
+def test_llm_blocks_accept_latex_backslashes_in_json(monkeypatch):
+    import json
+    from langchain_core.runnables import RunnableLambda
+
+    payload = {
+        "title": "导数",
+        "objective": "理解变化率",
+        "blocks": [{
+            "type": "formula",
+            "title": "导数公式",
+            "content": "公式中的梯度与分式为 \\nabla f = \\frac{\\partial f}{\\partial x}。",
+            "data": {"latex": "\\begin{pmatrix}\\nabla f\\end{pmatrix}"},
+            "source_refs": [],
+        }],
+    }
+    # Simulate a model that emits the LaTeX backslash unescaped in JSON.
+    response = (
+        json.dumps(payload, ensure_ascii=False)
+        .replace("\\\\partial", "\\partial")
+        .replace("\\\\nabla", "\\nabla")
+        .replace("\\\\frac", "\\frac")
+        .replace("\\\\begin", "\\begin")
+        .replace("\\\\end", "\\end")
+    )
+    monkeypatch.setattr(
+        "edu_agent.core.llm.get_kb_llm",
+        lambda temperature=0.4: RunnableLambda(lambda _: response),
+    )
+    blocks = _llm_blocks(_ctx(kc_title="导数", kc_category="mathematics"), ["formula"])
+    assert len(blocks) == 1
+    assert "\\nabla" in blocks[0].content
+    assert "\\frac" in blocks[0].content
