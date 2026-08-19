@@ -1135,6 +1135,24 @@
   overflow-x: auto;
   font-size: 13px;
 }
+.exp-ascii-tree {
+  margin: 16px 0;
+  padding: 14px 16px;
+  overflow-x: auto;
+  border: 1px solid var(--ea-border);
+  border-radius: 8px;
+  background: var(--ea-bg-hover);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+.exp-ascii-tree code {
+  font: inherit;
+  white-space: inherit;
+}
 .exp-annotations {
   list-style: none;
   margin: 10px 0 0;

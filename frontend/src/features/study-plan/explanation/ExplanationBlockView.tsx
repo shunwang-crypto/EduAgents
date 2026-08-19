@@ -24,7 +24,33 @@ export default function ExplanationBlockView({ block }: { block: ExplanationBloc
 }
 
 function MarkdownContent({ content }: { content?: string }) {
-  return content?.trim() ? <RichMarkdown content={content} /> : null;
+  if (!content?.trim()) return null;
+  const ascii = splitAsciiTree(content);
+  if (!ascii) return <RichMarkdown content={content} />;
+  return (
+    <>
+      {ascii.before && <RichMarkdown content={ascii.before} />}
+      <pre className="exp-ascii-tree" aria-label="ASCII tree"><code>{ascii.tree}</code></pre>
+      {ascii.after && <RichMarkdown content={ascii.after} />}
+    </>
+  );
+}
+
+function splitAsciiTree(content: string): { before: string; tree: string; after: string } | null {
+  const normalized = content.replace(/\\n/g, "\n");
+  const lines = normalized.split("\n");
+  const branchLine = /^\s*(?:[│ ]*[├└]──)/;
+  const firstBranch = lines.findIndex((line) => branchLine.test(line));
+  if (firstBranch < 0) return null;
+  let start = firstBranch;
+  if (firstBranch > 0 && /^\s*root\b/i.test(lines[firstBranch - 1])) start = firstBranch - 1;
+  let end = firstBranch;
+  while (end + 1 < lines.length && branchLine.test(lines[end + 1])) end++;
+  return {
+    before: lines.slice(0, start).join("\n").trim(),
+    tree: lines.slice(start, end + 1).join("\n"),
+    after: lines.slice(end + 1).join("\n").trim(),
+  };
 }
 
 function PlainBlock({ block }: { block: ExplanationBlock }) {

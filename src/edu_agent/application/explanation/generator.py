@@ -61,6 +61,12 @@ _SYSTEM = (
     "理解知识的重要媒介时使用；formula 只在数学关系确实重要时使用；image 只在真实图片显著"
     "帮助理解时使用。所有 LaTeX 命令必须放在 $...$ 或 $$...$$ 数学分隔符内，不能把裸反斜杠"
     "命令直接写进普通段落。\n"
+    "当 Trie、树、图或流程的结构本身有助于理解时，优先生成 diagram block，并用 "
+    "data.nodes=[{id,label,...}] 与 data.edges=[{source,target,label}] 表达真实节点和关系；"
+    "Trie 节点还要用 is_end 布尔字段明确终止状态。"
+    "不要把 ASCII tree 当作普通 Markdown 文本输出；如果无法可靠给出结构化关系，宁可只写准确说明。"
+    "Trie 的终止标记属于节点状态，不是新分支：已有 apple 后插入 app 时，不创建任何节点或分支，"
+    "只把第二个 p 标记为单词结束，原有的 p -> l -> e 必须继续保留。\n"
     "不要生成练习题、测试题、测验、判题或要求用户作答。只输出当前请求明确指定的 JSON，"
     "不要添加 JSON 之外的说明。"
 )
@@ -130,6 +136,9 @@ def _candidate_sections(ctx: ExplanationContext | str, kc_id: str = "") -> List[
     operational = has(
         "安装", "配置", "部署", "命令", "工作流", "操作", "排错", "setup", "deploy", "workflow",
     )
+    structural_knowledge = has(
+        "trie", "前缀树", "树结构", "二叉树", "图结构", "图论", "tree structure", "graph structure",
+    )
 
     def add(*names: str) -> None:
         for name in names:
@@ -152,6 +161,8 @@ def _candidate_sections(ctx: ExplanationContext | str, kc_id: str = "") -> List[
         add("big_picture", "contrast", "table", "worked_example")
     if operational:
         add("big_picture", "worked_example", "misconception", "table")
+    if structural_knowledge:
+        add("diagram")
 
     if not (mathematical or programming or algorithm or ai_system or humanities or operational):
         if len(text.strip()) > 100 or sources:
@@ -179,6 +190,7 @@ def generate_explanation(
     if not blocks:
         raise RuntimeError("模型未返回可用的知识讲解内容，请稍后重新生成")
     blocks = _deduplicate_blocks([_normalize_block(block) for block in blocks])
+    _validate_trie_prefix_diagrams(ctx, blocks)
     return _assemble(ctx, exp_id, plan_id, blocks)
 
 
@@ -429,6 +441,8 @@ def _normalize_block(block: ExplanationBlock) -> ExplanationBlock:
     block.content = _normalize_latex_markdown(block.content)
     if block.type == BlockType.CODE_WALKTHROUGH:
         _extract_code_walkthrough(block)
+    if block.type == BlockType.DIAGRAM:
+        _extract_ascii_tree(block)
     if block.type == BlockType.FORMULA:
         formula = block.data.get("formula")
         if not block.data.get("latex") and isinstance(formula, str):
@@ -436,6 +450,118 @@ def _normalize_block(block: ExplanationBlock) -> ExplanationBlock:
     if isinstance(block.data.get("explanation"), str):
         block.data["explanation"] = _normalize_latex_markdown(block.data["explanation"])
     return block
+
+
+def _extract_ascii_tree(block: ExplanationBlock) -> None:
+    """Convert a generated ASCII Trie/tree into structured diagram data."""
+    if block.data.get("nodes") and block.data.get("edges"):
+        return
+    content = re.sub(r"\\n", "\n", block.content or "")
+    if not re.search(r"(?:^|\n)\s*root\b|(?:^|\n)\s*[├└]──", content):
+        return
+    token_re = re.compile(
+        r"(?P<branch>[├└]──)?\s*['\"](?P<label>[^'\"]+)['\"]"
+        r"\s*\(\s*is_end(?:_of_word)?\s*:\s*(?P<end>True|False)\s*\)"
+    )
+    nodes: list[dict] = [{"id": "root", "label": "root"}]
+    edges: list[dict] = []
+    stack: list[tuple[int, str]] = [(-1, "root")]
+    node_number = 0
+    tree_lines: list[str] = []
+    for line in content.splitlines():
+        if not re.search(r"root\b|[├└]──", line):
+            continue
+        matches = list(token_re.finditer(line))
+        if line.lstrip().startswith("root"):
+            tree_lines.append(line)
+            continue
+        for match in matches:
+            marker_start = match.start("branch") if match.group("branch") else match.start()
+            indent = len(line[:marker_start].expandtabs(4))
+            while stack and stack[-1][0] >= indent:
+                stack.pop()
+            parent = stack[-1][1] if stack else "root"
+            node_number += 1
+            node_id = f"tree-{node_number}"
+            label = f"{match.group('label')} (is_end: {match.group('end')})"
+            nodes.append({"id": node_id, "label": label, "is_end": match.group("end") == "True"})
+            edges.append({"source": parent, "target": node_id, "label": match.group("label")})
+            stack.append((indent, node_id))
+        tree_lines.append(line)
+    if len(nodes) <= 1 or len(edges) != len(nodes) - 1:
+        return
+    block.data["nodes"] = nodes
+    block.data["edges"] = edges
+    block.data["diagram_type"] = "tree"
+    tree_text = "\n".join(tree_lines)
+    block.content = content.replace(tree_text, "").strip()
+
+
+def _validate_trie_prefix_diagrams(
+    ctx: ExplanationContext, blocks: Sequence[ExplanationBlock]
+) -> None:
+    """Reject the known app/apple Trie corruption instead of displaying it."""
+    context = _joined_context(ctx)
+    if "trie" not in context and "前缀树" not in context:
+        return
+    exact_app = re.compile(r"(?<![A-Za-z])app(?![A-Za-z])", re.IGNORECASE)
+    for block in blocks:
+        title = block.title.lower()
+        if block.type != BlockType.DIAGRAM or not exact_app.search(title):
+            continue
+        if block.data.get("diagram_type") != "tree" and not any(
+            marker in title for marker in ("trie", "树", "结构")
+        ):
+            continue
+        nodes = block.data.get("nodes")
+        edges = block.data.get("edges")
+        if not isinstance(nodes, list) or not isinstance(edges, list):
+            raise RuntimeError("Trie 的 app 插入图缺少结构化 nodes/edges")
+        by_id = {
+            str(node.get("id")): node
+            for node in nodes
+            if isinstance(node, dict) and node.get("id") is not None
+        }
+        outgoing: dict[str, list[str]] = {}
+        for edge in edges:
+            if not isinstance(edge, dict):
+                continue
+            source = str(edge.get("source") or "")
+            target = str(edge.get("target") or "")
+            if source and target in by_id:
+                outgoing.setdefault(source, []).append(target)
+
+        def node_token(node_id: str) -> str:
+            node = by_id.get(node_id, {})
+            label = str(node.get("label") or node.get("name") or "").strip()
+            quoted = re.match(r"^['\"]([^'\"]+)['\"]", label)
+            if quoted:
+                return quoted.group(1).lower()
+            return label.split(" ", 1)[0].strip("'\"").lower()
+
+        roots = [node_id for node_id in by_id if node_token(node_id) == "root"]
+        current = roots[0] if roots else ""
+        path: list[str] = []
+        for expected in ("a", "p", "p", "l", "e"):
+            matches = [
+                target for target in outgoing.get(current, [])
+                if node_token(target) == expected
+            ]
+            if not matches:
+                raise RuntimeError(
+                    "Trie 语义校验失败：已有 apple 后插入 app 必须保留 a-p-p-l-e 路径"
+                )
+            current = matches[0]
+            path.append(current)
+        terminal_node = by_id[path[2]]
+        terminal = terminal_node.get(
+            "is_end",
+            terminal_node.get("is_end_of_word", terminal_node.get("is_terminal")),
+        )
+        if terminal is not True:
+            raise RuntimeError(
+                "Trie 语义校验失败：插入 app 后第二个 p 必须标记为单词结束"
+            )
 
 
 def _extract_code_walkthrough(block: ExplanationBlock) -> None:

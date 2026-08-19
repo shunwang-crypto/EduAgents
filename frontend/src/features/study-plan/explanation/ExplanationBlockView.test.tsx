@@ -78,6 +78,23 @@ describe("ExplanationBlockView adaptive rich blocks", () => {
     expect(screen.getByAltText("系统架构")).toBeTruthy();
   });
 
+  it("renders legacy ASCII trees in a non-wrapping pre fallback", () => {
+    render(
+      <ExplanationBlockView
+        block={block({
+          type: "diagram",
+          content: "插入前后结构如下：\n\nroot\n └── 'a'\n      └── 'p'\n\n第二个 p 保留后继。",
+        })}
+      />
+    );
+    const tree = screen.getByLabelText("ASCII tree");
+    expect(tree.tagName).toBe("PRE");
+    expect(tree.classList.contains("exp-ascii-tree")).toBe(true);
+    expect(tree.textContent).toContain("      └── 'p'");
+    expect(screen.getByText("插入前后结构如下：")).toBeTruthy();
+    expect(screen.getByText("第二个 p 保留后继。")).toBeTruthy();
+  });
+
   // 图示优先结构化：按依赖分层成流程图，分支节点同层并排
   it("layers diagram nodes by dependency and keeps branches side by side", () => {
     render(

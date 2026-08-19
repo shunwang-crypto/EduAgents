@@ -15,11 +15,12 @@ import logging
 import uuid
 from typing import Optional
 
-from edu_agent.application.explanation.context_builder import ExplanationContextBuilder
+from edu_agent.application.explanation.context_builder import ExplanationContext, ExplanationContextBuilder
 from edu_agent.application.explanation.generator import (
     generate_explanation,
     _deduplicate_blocks,
     _normalize_block,
+    _validate_trie_prefix_diagrams,
 )
 from edu_agent.application.explanation.models import PracticeHandoff, StepExplanation
 from edu_agent.application.explanation.validator import ExplanationValidator
@@ -70,7 +71,7 @@ class ExplanationService:
         existing = self.learner.repo.get_step_explanation(user_id, course_id, step_id)
         if existing is not None:
             if existing.get("context_hash") == ctx.context_hash and int(existing.get("schema_version") or 1) >= 2:
-                return self._hydrate(existing, step, kc_id)
+                return self._hydrate(existing, step, kc_id, ctx)
             # context 或 schema 变化 → 重新生成，避免继续返回旧的短卡片内容。
             logger.info(
                 "explanation cache stale (context/schema changed); regenerate step=%s", step_id
@@ -121,7 +122,9 @@ class ExplanationService:
             }
         )
 
-    def _hydrate(self, row: dict, step: dict, kc_id: str) -> dict:
+    def _hydrate(
+        self, row: dict, step: dict, kc_id: str, ctx: ExplanationContext
+    ) -> dict:
         try:
             content = json.loads(row.get("content_json") or "{}")
         except json.JSONDecodeError:
@@ -133,6 +136,7 @@ class ExplanationService:
         explanation.blocks = _deduplicate_blocks(
             [_normalize_block(block) for block in explanation.blocks]
         )
+        _validate_trie_prefix_diagrams(ctx, explanation.blocks)
         explanation.step_id = step.get("step_id", "")
         return self._to_dict(explanation, step)
 

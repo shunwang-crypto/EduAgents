@@ -20,6 +20,7 @@ from edu_agent.application.explanation.generator import (
     _llm_blocks,
     _normalize_latex_markdown,
     _normalize_block,
+    _validate_trie_prefix_diagrams,
 )
 from edu_agent.application.explanation.validator import ExplanationValidator
 from edu_agent.application.explanation.service import ExplanationService, build_practice_handoff
@@ -211,6 +212,13 @@ def test_candidate_pool_programming_can_offer_code():
     assert "code_walkthrough" in candidates
 
 
+def test_candidate_pool_trie_offers_structured_diagram():
+    candidates = _candidate_sections(_ctx(
+        kc_title="Trie 插入算法", kc_description="前缀树节点与边的结构", kc_category="programming",
+    ))
+    assert "diagram" in candidates
+
+
 def test_simple_concept_does_not_force_formula_or_table():
     candidates = _candidate_sections(_ctx(
         kc_title="颜色", kc_description="颜色是视觉感知中的一种属性", kc_category="concept",
@@ -254,6 +262,109 @@ def test_code_walkthrough_promotes_fenced_code_to_structured_renderer_field():
     assert normalized.data["code"] == "class Trie:\n    pass"
     assert "```" not in normalized.content
     assert normalized.content == "说明\n\n逐行解释"
+
+
+def test_ascii_trie_tree_is_normalized_without_changing_app_semantics():
+    block = ExplanationBlock(
+        type=BlockType.DIAGRAM,
+        title='插入 "app" 后的树结构',
+        content="""root
+ └── 'a' (is_end: False)
+      └── 'p' (is_end: False)
+           └── 'p' (is_end: True)
+                └── 'l' (is_end: False)
+                     └── 'e' (is_end: True)""",
+    )
+    normalized = _normalize_block(block)
+    assert normalized.content == ""
+    assert normalized.data["diagram_type"] == "tree"
+    nodes = normalized.data["nodes"]
+    edges = normalized.data["edges"]
+    assert len(nodes) == 6
+    assert len(edges) == 5
+    assert [edge["source"] for edge in edges] == [
+        "root", "tree-1", "tree-2", "tree-3", "tree-4",
+    ]
+    assert nodes[3]["label"].startswith("p ")
+    assert nodes[3]["is_end"] is True
+    assert nodes[4]["label"].startswith("l ")
+    assert edges[3]["source"] == nodes[3]["id"]
+
+
+def test_ascii_tree_parser_preserves_branch_parentage():
+    block = ExplanationBlock(
+        type=BlockType.DIAGRAM,
+        title="Trie 分支",
+        content="""root
+├── 'a' (is_end: False)
+│   ├── 'b' (is_end: True)
+│   └── 'c' (is_end: True)
+└── 'd' (is_end: True)""",
+    )
+    normalized = _normalize_block(block)
+    edges = normalized.data["edges"]
+    assert [(edge["source"], edge["target"]) for edge in edges] == [
+        ("root", "tree-1"),
+        ("tree-1", "tree-2"),
+        ("tree-1", "tree-3"),
+        ("root", "tree-4"),
+    ]
+
+
+def test_trie_app_diagram_semantic_guard_accepts_preserved_suffix():
+    block = _normalize_block(ExplanationBlock(
+        type=BlockType.DIAGRAM,
+        title='插入 "app" 后的树结构',
+        content="""root
+ └── 'a' (is_end: False)
+      └── 'p' (is_end: False)
+           └── 'p' (is_end: True)
+                └── 'l' (is_end: False)
+                     └── 'e' (is_end: True)""",
+    ))
+    _validate_trie_prefix_diagrams(
+        _ctx(kc_title="Trie 插入", kc_description="前缀树插入算法"),
+        [block],
+    )
+
+
+def test_trie_app_diagram_semantic_guard_rejects_new_branch_or_lost_suffix():
+    invalid = ExplanationBlock(
+        type=BlockType.DIAGRAM,
+        title='插入 "app" 后的树结构',
+        data={
+            "diagram_type": "tree",
+            "nodes": [
+                {"id": "root", "label": "root"},
+                {"id": "a", "label": "a"},
+                {"id": "p1", "label": "p"},
+                {"id": "p2", "label": "p", "is_end": True},
+                {"id": "new", "label": "app", "is_end": True},
+            ],
+            "edges": [
+                {"source": "root", "target": "a"},
+                {"source": "a", "target": "p1"},
+                {"source": "p1", "target": "p2"},
+                {"source": "p2", "target": "new"},
+            ],
+        },
+    )
+    with pytest.raises(RuntimeError, match="保留 a-p-p-l-e 路径"):
+        _validate_trie_prefix_diagrams(
+            _ctx(kc_title="Trie 插入", kc_description="前缀树插入算法"),
+            [invalid],
+        )
+
+
+def test_non_tree_markdown_is_not_misclassified_as_ascii_tree():
+    block = ExplanationBlock(
+        type=BlockType.DIAGRAM,
+        title="函数关系",
+        content="平方根 root 是普通说明，不包含树形分支。",
+    )
+    normalized = _normalize_block(block)
+    assert normalized.data == {}
+    assert normalized.content == "平方根 root 是普通说明，不包含树形分支。"
 
 
 def test_offline_fallback_has_no_planning_sections_or_generic_learning_advice(learner, made_course):
